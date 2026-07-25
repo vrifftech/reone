@@ -30,6 +30,7 @@
 #include "reone/resource/exception/notfound.h"
 #include "reone/resource/provider/gffs.h"
 #include "reone/resource/resources.h"
+#include "reone/scene/graph.h"
 #include "reone/system/exception/validation.h"
 #include "reone/system/logutil.h"
 
@@ -139,6 +140,10 @@ void Module::loadParty(const std::string &entry, bool fromSave) {
     glm::vec3 position(0.0f);
     float facing = 0.0f;
     getEntryPoint(entry, position, facing);
+
+    if (!fromSave) {
+        position.z += kElevationTestZ;
+    }
 
     _area->loadParty(position, facing, fromSave);
     _area->onPartyLeaderMoved(true);
