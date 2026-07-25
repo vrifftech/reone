@@ -325,6 +325,8 @@ private:
     void doUpdatePerception();
     void updateObjectSelection();
 
+    bool hasCreatureCollision(const Creature &creature, const glm::vec3 &origin, const glm::vec3 &destination) const;
+
     bool matchesCriterias(const Creature &creature, const SearchCriteriaList &criterias, std::shared_ptr<Object> target = nullptr) const;
 
     /**

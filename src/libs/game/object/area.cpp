@@ -17,6 +17,8 @@
 
 #include "reone/game/object/area.h"
 
+#include <cmath>
+
 #include "reone/game/minigame.h"
 
 #include "reone/game/camerastyles.h"
@@ -79,6 +81,35 @@ static constexpr float kMaxCollisionDistance2 = kMaxCollisionDistance * kMaxColl
 
 static glm::vec3 g_defaultAmbientColor {0.2f};
 static CameraStyle g_defaultCameraStyle {"", 3.2f, 83.0f, 0.45f, 55.0f};
+
+static constexpr float kCreatureCollisionEpsilon = 0.01f;
+
+static bool segmentIntersectsCircle(const glm::vec2 &origin, const glm::vec2 &destination, const glm::vec2 &center, float radius) {
+    glm::vec2 movement(destination - origin);
+    float movementLength2 = glm::dot(movement, movement);
+    if (movementLength2 == 0.0f) {
+        return false;
+    }
+
+    glm::vec2 offset(origin - center);
+    float radius2 = radius * radius;
+    float originDistance2 = glm::dot(offset, offset);
+    if (originDistance2 <= radius2) {
+        if (originDistance2 == 0.0f) {
+            return false;
+        }
+        return glm::dot(movement, offset) <= 0.0f;
+    }
+
+    float projection = glm::dot(offset, movement);
+    float discriminant = projection * projection - movementLength2 * (originDistance2 - radius2);
+    if (discriminant < 0.0f) {
+        return false;
+    }
+
+    float time = (-projection - std::sqrt(discriminant)) / movementLength2;
+    return time >= 0.0f && time <= 1.0f;
+}
 
 Area::Area(
     uint32_t id,
@@ -837,6 +868,10 @@ bool Area::moveCreature(const std::shared_ptr<Creature> &creature, const glm::ve
         }
     }
 
+    if (hasCreatureCollision(*creature, origin, dest)) {
+        return false;
+    }
+
     // Test elevation at destination
 
     if (!sceneGraph.testElevation(dest, collision)) {
@@ -857,6 +892,21 @@ bool Area::moveCreature(const std::shared_ptr<Creature> &creature, const glm::ve
     checkTriggersIntersection(creature);
 
     return true;
+}
+
+bool Area::hasCreatureCollision(const Creature &creature, const glm::vec3 &origin, const glm::vec3 &destination) const {
+    for (const auto &object : _objectsByType.at(ObjectType::Creature)) {
+        const auto &other = static_cast<const Creature &>(*object);
+        if (&other == &creature || other.isDead()) {
+            continue;
+        }
+
+        float radius = creature.creaturePersonalSpace() + other.creaturePersonalSpace() + kCreatureCollisionEpsilon;
+        if (segmentIntersectsCircle(glm::vec2(origin), glm::vec2(destination), glm::vec2(other.position()), radius)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool Area::moveCreatureTowards(const std::shared_ptr<Creature> &creature, const glm::vec2 &dest, bool run, float dt) {
