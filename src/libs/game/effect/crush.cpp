@@ -21,8 +21,9 @@ namespace reone {
 
 namespace game {
 
-void CrushEffect::applyTo(Object &object) {
+EffectApplicationResult CrushEffect::onApply(Object &object, EffectInstance &) {
     // TODO: implement
+    return EffectApplicationResult::Retained;
 }
 
 } // namespace game

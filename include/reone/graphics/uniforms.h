@@ -53,6 +53,7 @@ struct UniformsFeatureFlags {
     static constexpr int premulalpha = 1 << 12;
     static constexpr int envmapcube = 1 << 13;
     static constexpr int staticobj = 1 << 14;
+    static constexpr int shell = 1 << 15;
 };
 
 struct alignas(16) GlobalUniformsLight {
@@ -117,6 +118,7 @@ struct LocalUniforms {
     float bumpMapScale;
     float waterAlpha;
     float billboardSize;
+    float shellOffset;
 
     LocalUniforms() {
         reset();
@@ -135,6 +137,7 @@ struct LocalUniforms {
         bumpMapScale = 1.0f;
         waterAlpha = 0.0f;
         billboardSize = 1.0f;
+        shellOffset = 0.0f;
     }
 };
 

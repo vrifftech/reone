@@ -17,6 +17,7 @@
 
 #pragma once
 
+#include "reone/resource/types.h"
 #include "reone/game/types.h"
 
 namespace reone {
@@ -42,6 +43,9 @@ struct VisualEffectDesc {
     std::string label;
     std::shared_ptr<graphics::Model> impRootMNode;
     std::shared_ptr<audio::AudioClip> soundImpact;
+    int progFXDuration {-1};
+    std::shared_ptr<audio::AudioClip> soundDuration;
+    std::shared_ptr<audio::AudioClip> soundCessation;
 };
 
 class IVisualEffects {
@@ -62,9 +66,6 @@ public:
     void clear();
 
     std::optional<const VisualEffectDesc *> get(uint32_t id) const override;
-
-private:
-    void workaroundLabels();
 
 private:
     resource::TwoDAs &_twoDas;

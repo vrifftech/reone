@@ -21,8 +21,9 @@ namespace reone {
 
 namespace game {
 
-void ForceSightEffect::applyTo(Object &object) {
+EffectApplicationResult ForceSightEffect::onApply(Object &object, EffectInstance &) {
     // TODO: implement
+    return EffectApplicationResult::Retained;
 }
 
 } // namespace game

@@ -16,14 +16,22 @@
  */
 
 #include "reone/game/effect/heal.h"
-#include "reone/game/object.h"
+#include "reone/game/object/creature.h"
 
 namespace reone {
 
 namespace game {
 
-void HealEffect::applyTo(Object &object) {
-    object.heal(_damageToHeal);
+EffectApplicationResult HealEffect::onApply(Object &object, EffectInstance &instance) {
+    if (instance.restoring) return EffectApplicationResult::Applied;
+    if (instance.integerParameter(1) == 54) {
+        if (auto *creature = dyn_cast<Creature>(&object))
+            creature->regenerateForcePoints(instance.integerParameter(0));
+    } else if (auto *creature = dyn_cast<Creature>(&object)) {
+        creature->applyHealingEffect(instance.integerParameter(0), instance.boundCreator(),
+                                     instance.integerParameter(2) != 0);
+    }
+    return EffectApplicationResult::Applied;
 }
 
 } // namespace game

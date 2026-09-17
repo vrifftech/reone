@@ -23,17 +23,13 @@ namespace reone {
 
 namespace game {
 
-class ForceShieldEffect : public Effect {
+class ForceShieldEffect : public CopyableEffect<ForceShieldEffect> {
 public:
     ForceShieldEffect(int shield) :
-        Effect(EffectType::ForceShield),
-        _shield(shield) {
-    }
+        CopyableEffect(EffectType::ForceShield) { setSaveFacingInteger(0, shield); }
 
-    void applyTo(Object &object) override;
+    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
 
-private:
-    int _shield;
 };
 
 } // namespace game

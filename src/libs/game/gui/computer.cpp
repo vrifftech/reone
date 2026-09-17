@@ -96,7 +96,7 @@ void ComputerGUI::onGUILoaded() {
     bindControls();
     configureMessage();
     configureReplies();
-    hideK1StaticBands();
+    hideStaticBands();
 }
 
 void ComputerGUI::configureMessage() {
@@ -115,7 +115,7 @@ void ComputerGUI::configureReplies() {
     });
 }
 
-void ComputerGUI::hideK1StaticBands() {
+void ComputerGUI::hideStaticBands() {
     if (_game.isTSL()) {
         return;
     }

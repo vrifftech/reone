@@ -28,6 +28,7 @@ namespace game {
 
 class Placeable : public Object {
 public:
+    std::string getOnSpellCastAt() const override { return _onSpellCastAt; }
     Placeable(
         uint32_t id,
         std::string sceneName,
@@ -63,6 +64,7 @@ public:
 
     int appearance() const { return _appearance; }
     Faction faction() const { return _faction; }
+    void setFaction(Faction faction) { _faction = faction; }
     std::shared_ptr<scene::WalkmeshSceneNode> walkmesh() const { return _walkmesh; }
 
     void setLocked(bool locked) { _locked = locked; }
@@ -74,6 +76,10 @@ public:
     void runOnInvDisturbed(uint32_t triggerrer, InventoryDisturbType type, uint32_t item);
 
     // END Scripts
+
+    void applyDamageEffect(
+        int amount,
+        const std::shared_ptr<Object> &damager) override;
 
 private:
     friend class ModuleSnapshotBuilder;

@@ -20,6 +20,7 @@
 #include <algorithm>
 
 #include "reone/game/action/usefeat.h"
+#include "reone/game/action/movetoobject.h"
 #include "reone/game/attack.h"
 #include "reone/game/object.h"
 #include "reone/system/logutil.h"
@@ -44,6 +45,32 @@ bool Action::runtimeDependenciesLive() const {
 void Action::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
     warn("Action execution not implemented: " + std::to_string(static_cast<int>(_type)));
     complete();
+}
+
+uint32_t Action::serializedActionId() const {
+    if (_savedAction) return _savedAction->actionId;
+    // IDs already used by the queue producers and existing codecs.
+    switch (_type) {
+    case ActionType::MoveToPoint:
+    case ActionType::MoveToLocation: return 1;
+    case ActionType::PlayAnimation: return 6;
+    case ActionType::EquipItem: return 8;
+    case ActionType::UnequipItem: return 11;
+    case ActionType::AttackObject: return 12;
+    case ActionType::UseFeat:
+        return isPhysicalAttackFeat(static_cast<const UseFeatAction &>(*this).feat()) ? 12 : 0xffff;
+    case ActionType::CastSpellAtObject:
+    case ActionType::CastSpellAtLocation: return 15;
+    case ActionType::MoveToObject: {
+        const auto &move = static_cast<const MoveToObjectAction &>(*this);
+        return move.usesPointPath() ? 1 : 17;
+    }
+    case ActionType::StartConversation: return 24;
+    case ActionType::Wait: return 30;
+    case ActionType::DoCommand: return 37;
+    case ActionType::FollowLeader: return 61;
+    default: return 0xffff; // Do not reinterpret an unrepresented engine enum.
+    }
 }
 
 bool isHostileAction(Action &action) {

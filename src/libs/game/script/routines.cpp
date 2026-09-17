@@ -102,12 +102,11 @@ void Routines::insert(
         [this, fn, retType, constructsEffect](auto &args, auto &execution) {
             RoutineContext ctx(*_game, *_services, execution);
             auto result = fn(args, std::move(ctx));
-            // Retail stamps VM-created CGameEffect values with OBJECT_SELF.
-            // Keep that save-facing creator independently of executable
-            // subclass behavior so delayed continuations can serialize it.
+            // Stamp VM-created effect values with OBJECT_SELF.
             if (constructsEffect) {
                 auto effect = std::dynamic_pointer_cast<Effect>(result.engineType);
                 if (effect) {
+                    effect->setSaveFacingId(_game->allocateEffectId());
                     effect->captureSaveFacingScriptArguments(args, *_game);
                 }
                 auto caller = execution.findArg(ArgKind::Caller);

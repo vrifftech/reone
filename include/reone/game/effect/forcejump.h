@@ -24,17 +24,18 @@ namespace reone {
 
 namespace game {
 
-class ForceJumpEffect : public Effect {
+class ForceJumpEffect : public CopyableEffect<ForceJumpEffect> {
 public:
     ForceJumpEffect(std::shared_ptr<Object> target, int advanced) :
-        Effect(EffectType::ForceJump),
+        CopyableEffect(EffectType::ForceJump),
         _target(target),
         _advanced(advanced) {
         setSaveFacingInteger(0, advanced);
         setSaveFacingObject(0, target);
     }
 
-    void applyTo(Object &object) override {
+    EffectApplicationResult onApply(Object &object, EffectInstance &) override {
+        return EffectApplicationResult::Retained;
     }
     void retireAreaRuntime(
         const std::set<const Object *> &retainedObjects) override {

@@ -23,20 +23,21 @@ namespace reone {
 
 namespace game {
 
-class AreaOfEffectEffect : public Effect {
+class AreaOfEffectEffect : public CopyableEffect<AreaOfEffectEffect> {
 public:
     AreaOfEffectEffect(int areaEffectId,
                        std::string onEnterScript,
                        std::string heartbeatScript,
                        std::string onExitScript) :
-        Effect(EffectType::AreaOfEffect),
+        CopyableEffect(EffectType::AreaOfEffect),
         _areaEffectId(areaEffectId),
         _onEnterScript(std::move(onEnterScript)),
         _heartbeatScript(std::move(heartbeatScript)),
         _onExitScript(std::move(onExitScript)) {
     }
 
-    void applyTo(Object &object) override {
+    EffectApplicationResult onApply(Object &object, EffectInstance &) override {
+        return EffectApplicationResult::Retained;
     }
 
 private:

@@ -24,6 +24,7 @@
 #include "reone/script/di/module.h"
 
 #include "../animations.h"
+#include "../autobalance.h"
 #include "../camerastyles.h"
 #include "../d20/classes.h"
 #include "../d20/feats.h"
@@ -82,6 +83,7 @@ private:
     scene::SceneModule &_scene;
     script::ScriptModule &_script;
 
+    std::unique_ptr<AutoBalance> _autoBalance;
     std::unique_ptr<CameraStyles> _cameraStyles;
     std::unique_ptr<Classes> _classes;
     std::unique_ptr<DifficultyOptions> _difficultyOptions;

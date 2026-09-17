@@ -31,7 +31,7 @@ public:
         glm::vec2 offset {0.0f};
         bool active {false};
         /**
-         * Absolute deadline in world milliseconds. The retail record stores a
+         * Absolute deadline in world milliseconds. The saved record stores a
          * day/time pair; it is composed on restore and split again on save, so
          * the running action never rebuilds a calendar.
          */
@@ -44,7 +44,8 @@ public:
                        bool run,
                        float range,
                        bool force = false,
-                       float timeout = -1.0f);
+                       float timeout = -1.0f,
+                       bool pointPath = false);
 
     MoveToObjectAction(Game &game,
                        ServicesView &services,
@@ -52,7 +53,8 @@ public:
                        bool run,
                        float range,
                        float timeout,
-                       ForcedState forcedState);
+                       ForcedState forcedState,
+                       bool force = true);
 
     static bool classof(Action *from) {
         return from->type() == ActionType::MoveToObject;
@@ -66,6 +68,7 @@ public:
     const std::shared_ptr<Object> &target() const { return _moveTo; }
     float range() const { return _range; }
     bool isForced() const { return _force; }
+    bool usesPointPath() const { return _pointPath || _force || _timeout >= 0.0f; }
     float timeout() const { return _timeout; }
     const ForcedState &forcedState() const { return _forcedState; }
 
@@ -74,6 +77,7 @@ private:
     bool _run;
     float _range;
     bool _force;
+    bool _pointPath {false};
     float _timeout;
     ForcedState _forcedState;
 };

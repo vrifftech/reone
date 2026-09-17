@@ -21,8 +21,9 @@ namespace reone {
 
 namespace game {
 
-void VPRegenModifierEffect::applyTo(Object &object) {
+EffectApplicationResult VPRegenModifierEffect::onApply(Object &object, EffectInstance &) {
     // TODO: implement
+    return EffectApplicationResult::Retained;
 }
 
 } // namespace game

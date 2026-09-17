@@ -115,21 +115,21 @@ std::optional<IReputes::State> Reputes::parse(const resource::Gff &gff) const {
     loadBase(*repute, factions.size(), values);
 
     for (const auto &saved : repList) {
-        uint32_t factionId1 = 0;
-        uint32_t factionId2 = 0;
+        uint32_t source = 0;
+        uint32_t target = 0;
         uint32_t reputation = 0;
-        if (!saved->readDword(factionId1, "FactionID1") ||
-            !saved->readDword(factionId2, "FactionID2") ||
+        if (!saved->readDword(source, "FactionID1") ||
+            !saved->readDword(target, "FactionID2") ||
             !saved->readDword(reputation, "FactionRep")) {
             return std::nullopt;
         }
 
-        // FAC stores the target as ID1 and the NPC source as ID2. Player (0)
-        // is not an NPC source; invalid pairs are ignored by the retail setter.
-        if (factionId1 >= values.size() || factionId2 == 0 || factionId2 >= values.size()) {
+        // FAC uses source rows and NPC target columns; player-target values
+        // remain derived from the base table.
+        if (source >= values.size() || target == 0 || target >= values.size()) {
             continue;
         }
-        values[factionId2][factionId1] = std::clamp(
+        values[source][target] = std::clamp(
             static_cast<int64_t>(reputation),
             static_cast<int64_t>(kMinRepute),
             static_cast<int64_t>(kMaxRepute));
@@ -160,7 +160,7 @@ void Reputes::loadBase(
 
     // Preserve Reone's established source-row/target-column runtime contract
     // for authored base relationships. Cells outside the base table retain the
-    // retail faction-manager initialization value of 100.
+    // faction-manager initialization value of 100.
     for (size_t row = 0; row < baseCount; ++row) {
         for (size_t column = 0; column < baseCount; ++column) {
             const std::string &label = baseLabels[column];

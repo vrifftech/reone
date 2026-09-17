@@ -17,19 +17,22 @@
 
 #pragma once
 
-#include "../effect.h"
+#include "creaturestate.h"
 
 namespace reone {
 
 namespace game {
 
-class MindTrickEffect : public Effect {
+class MindTrickEffect : public CopyableEffect<MindTrickEffect> {
 public:
     MindTrickEffect() :
-        Effect(EffectType::MindTrick) {
+        CopyableEffect(EffectType::MindTrick) {
+        setSaveFacingInteger(0, static_cast<int>(CreatureState::MindTrick));
     }
 
-    void applyTo(Object &object) override;
+    EffectInstance saveFacingInstance() const override;
+    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
+    EffectRemovalResult onRemove(Object &object, const EffectInstance &) override;
 };
 
 } // namespace game

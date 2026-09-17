@@ -79,7 +79,7 @@ static void enableBorderFillTint(const std::shared_ptr<Control> &control) {
     control->setTintBorderFill(true);
 }
 
-static void tintK2PanelFill(const std::shared_ptr<ListBox> &listBox, const glm::vec3 &baseColor) {
+static void tintPanelFill(const std::shared_ptr<ListBox> &listBox, const glm::vec3 &baseColor) {
     if (!listBox) {
         return;
     }
@@ -119,10 +119,10 @@ void Equipment::onGUILoaded() {
         _controls.BTN_CHANGE2->setSelectable(false);
     }
     if (_game.isTSL()) {
-        useK2ShellTitle(_controls.LBL_TITLE);
-        fillK2SectionStrip(_controls.LBL_BAR1, _controls.LBL_BAR2);
+        useShellTitle(_controls.LBL_TITLE);
+        fillSectionStrip(_controls.LBL_BAR1, _controls.LBL_BAR2);
         for (auto &button : {_controls.BTN_BACK, _controls.BTN_EQUIP, _controls.BTN_SWAPWEAPONS}) {
-            enableK2ButtonBodyFill(button);
+            enableButtonBodyFill(button);
         }
     }
     // _controls.btnCharLeft->setVisible(false);
@@ -130,8 +130,8 @@ void Equipment::onGUILoaded() {
     _controls.LB_DESC->setVisible(false);
     _controls.LB_DESC->setProtoMatchContent(true);
     _controls.LBL_CANTEQUIP->setVisible(false);
-    tintK2LoadoutOverlay();
-    updateK2LoadoutOverlayVisibility(true);
+    tintLoadoutOverlay();
+    updateLoadoutOverlayVisibility(true);
 
     configureItemsListBox();
 
@@ -200,12 +200,12 @@ void Equipment::configureItemsListBox() {
     auto &protoItem = _controls.LB_ITEMS->protoItem();
 
     if (_game.isTSL()) {
-        enableK2ButtonBodyFill(protoItem);
+        enableButtonBodyFill(protoItem);
         protoItem.setBorderFill("uibit_fill_2wt");
         protoItem.setHilightFill("uibit_fill_2wt");
         protoItem.setTintBorderFill(true);
-        tintK2PanelFill(_controls.LB_ITEMS, _baseColor);
-        tintK2PanelFill(_controls.LB_DESC, _baseColor);
+        tintPanelFill(_controls.LB_ITEMS, _baseColor);
+        tintPanelFill(_controls.LB_DESC, _baseColor);
     } else {
         protoItem.setBorderColor(_baseColor);
         protoItem.setHilightColor(_hilightColor);
@@ -409,7 +409,7 @@ void Equipment::selectSlot(Slot slot) {
 
     _controls.LB_DESC->setVisible(!noneSelected);
     _controls.LBL_SLOTNAME->setVisible(noneSelected);
-    updateK2LoadoutOverlayVisibility(noneSelected);
+    updateLoadoutOverlayVisibility(noneSelected);
 
     if (!_game.isTSL()) {
         _controls.LBL_PORT_BORD->setVisible(noneSelected);
@@ -424,7 +424,7 @@ void Equipment::selectSlot(Slot slot) {
     }
 }
 
-void Equipment::tintK2LoadoutOverlay() {
+void Equipment::tintLoadoutOverlay() {
     if (!_game.isTSL())
         return;
 
@@ -433,7 +433,7 @@ void Equipment::tintK2LoadoutOverlay() {
     enableBorderFillTint(_controls.LBL_DEF_BACK);
 }
 
-void Equipment::updateK2LoadoutOverlayVisibility(bool visible) {
+void Equipment::updateLoadoutOverlayVisibility(bool visible) {
     if (!_game.isTSL())
         return;
 

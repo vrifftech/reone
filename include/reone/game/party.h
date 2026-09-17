@@ -18,6 +18,7 @@
 #pragma once
 
 #include "reone/game/galaxymapstate.h"
+#include "reone/game/runtimeref.h"
 #include "reone/input/event.h"
 
 #include <array>
@@ -127,6 +128,7 @@ public:
     struct Member {
         int npc {0};
         std::shared_ptr<Creature> creature;
+        RuntimeObjectRef<Object> lastTarget;
     };
 
     Party(Game &game) :
@@ -165,7 +167,7 @@ public:
     /**
      * Hand control to a creature, leaving the rest of the party alone.
      *
-     * Retail models temporary control as a roster NPC taking the player's
+     * The game models temporary control as a roster NPC taking the player's
      * place: the outgoing actor is parked rather than demoted to a companion,
      * and the companions travelling with it are untouched. The incoming
      * creature occupies the leading slot exactly once, however it was
@@ -173,7 +175,7 @@ public:
      */
     void setControlledMember(int npc, const std::shared_ptr<Creature> &creature);
     void setPersistedState(PersistedState state);
-    /** Retail LoadTableInfo semantics: persisted fields replace all bindings. */
+    /** Persisted party-table fields replace all bindings. */
     void loadPersistedState(PersistedState state);
 
     void setPartyLeader(int npc);
@@ -233,7 +235,7 @@ public:
 
     /**
      * Add or replace the detached persistent record from a live creature.
-     * Retail AddNPC/AddPUP does not implicitly bind the supplied module object.
+     * This does not implicitly bind the supplied module object.
      */
     bool addAvailableRosterRecord(
         const RosterIdentity &identity,
@@ -397,6 +399,7 @@ private:
     // Apply the party XP pool value to every current member's creature XP.
     void syncMembersXP();
 
+    void saveLeaderAttackTarget();
     void onLeaderChanged();
 };
 

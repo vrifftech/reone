@@ -23,13 +23,14 @@ namespace reone {
 
 namespace game {
 
-class TimeStopEffect : public Effect {
+class TimeStopEffect : public CopyableEffect<TimeStopEffect> {
 public:
     TimeStopEffect() :
-        Effect(EffectType::TimeStop) {
+        CopyableEffect(EffectType::TimeStop) {
     }
 
-    void applyTo(Object &object) override {
+    EffectApplicationResult onApply(Object &object, EffectInstance &) override {
+        return EffectApplicationResult::Retained;
     }
 };
 

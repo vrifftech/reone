@@ -21,8 +21,9 @@ namespace reone {
 
 namespace game {
 
-void DroidStunEffect::applyTo(Object &object) {
+EffectApplicationResult DroidStunEffect::onApply(Object &object, EffectInstance &) {
     // TODO: implement
+    return EffectApplicationResult::Retained;
 }
 
 } // namespace game

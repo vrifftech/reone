@@ -177,6 +177,8 @@ bool SelectionOverlay::handleMouseButtonDown(const input::MouseButtonEvent &even
         return false;
 
     const ContextAction &ctxAction = slot.actions[slot.indexSelected];
+    if (leader->stateControlsActions()) return true;
+
     std::shared_ptr<Action> action;
     switch (ctxAction.type) {
     case ActionType::AttackObject:
@@ -332,7 +334,9 @@ void SelectionOverlay::renderReticle(std::shared_ptr<Texture> texture, const glm
 }
 
 void SelectionOverlay::renderTitleBar() {
-    if (_selectedObject->name().empty())
+    const auto &title = _selectedObject->feedbackText().empty() ?
+        _selectedObject->name() : _selectedObject->feedbackText();
+    if (title.empty())
         return;
 
     const GraphicsOptions &opts = _game.options().graphics;
@@ -373,7 +377,7 @@ void SelectionOverlay::renderTitleBar() {
             y -= actionHeight + 2 * actionMargin;
         }
         glm::vec3 position(x, y, 0.0f);
-        _font->render(_selectedObject->name(), position, getColorFromSelectedObject(), TextGravity::CenterCenter, fontScale);
+        _font->render(title, position, getColorFromSelectedObject(), TextGravity::CenterCenter, fontScale);
     }
 }
 

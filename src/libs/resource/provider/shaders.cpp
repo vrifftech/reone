@@ -66,6 +66,7 @@ static const std::string kFragNull = "f_null";
 static const std::string kFragOITBlend = "f_oit_blend";
 static const std::string kFragOITModel = "f_oit_model";
 static const std::string kFragOITParticles = "f_oit_particles";
+static const std::string kFragOITProjectedBeam = "f_oit_projectedbeam";
 static const std::string kFragPointLightShadows = "f_ptlightshadow";
 static const std::string kFragPostBoxBlur4 = "f_pp_boxblur4";
 static const std::string kFragPostFXAA = "f_pp_fxaa";
@@ -121,6 +122,7 @@ void Shaders::init() {
     auto fragOITBlend = initShader(ShaderType::Fragment, kFragOITBlend);
     auto fragOITModel = initShader(ShaderType::Fragment, kFragOITModel);
     auto fragOITParticles = initShader(ShaderType::Fragment, kFragOITParticles);
+    auto fragOITProjectedBeam = initShader(ShaderType::Fragment, kFragOITProjectedBeam);
     auto fragPointLightShadows = initShader(ShaderType::Fragment, kFragPointLightShadows);
     auto fragPostBoxBlur4 = initShader(ShaderType::Fragment, kFragPostBoxBlur4);
     auto fragPostFXAA = initShader(ShaderType::Fragment, kFragPostFXAA);
@@ -159,6 +161,7 @@ void Shaders::init() {
     _shaderRegistry.add(ShaderProgramId::oitBlend, initShaderProgram({vertPassthrough, fragOITBlend}));
     _shaderRegistry.add(ShaderProgramId::oitModel, initShaderProgram({vertModel, fragOITModel}));
     _shaderRegistry.add(ShaderProgramId::oitParticles, initShaderProgram({vertParticles, fragOITParticles}));
+    _shaderRegistry.add(ShaderProgramId::oitProjectedBeam, initShaderProgram({vertMVP, fragOITProjectedBeam}));
     _shaderRegistry.add(ShaderProgramId::pointLightShadows, initShaderProgram({vertShadows, geomPointLightShadows, fragPointLightShadows}));
     _shaderRegistry.add(ShaderProgramId::postBoxBlur4, initShaderProgram({vertPassthrough, fragPostBoxBlur4}));
     _shaderRegistry.add(ShaderProgramId::postFXAA, initShaderProgram({vertPassthrough, fragPostFXAA}));

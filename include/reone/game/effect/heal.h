@@ -23,14 +23,15 @@ namespace reone {
 
 namespace game {
 
-class HealEffect : public Effect {
+class HealEffect : public CopyableEffect<HealEffect> {
 public:
     HealEffect(int damageToHeal) :
-        Effect(EffectType::Heal),
+        CopyableEffect(EffectType::Heal),
         _damageToHeal(damageToHeal) {
+        setSaveFacingInteger(0, damageToHeal);
     }
 
-    void applyTo(Object &object) override;
+    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
 
 private:
     int _damageToHeal;

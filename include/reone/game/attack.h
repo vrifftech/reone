@@ -17,6 +17,12 @@
 
 #pragma once
 
+#include <array>
+#include <cstdint>
+#include "reone/game/attackhistory.h"
+
+#include "reone/game/combatfeedback.h"
+#include "reone/game/onhit.h"
 #include "reone/game/effect/damage.h"
 #include "reone/game/types.h"
 #include "reone/system/smallvector.h"
@@ -34,12 +40,14 @@ namespace game {
 class Action;
 class CombatRound;
 class Creature;
+class Effect;
 class Game;
 class IAnimations;
 class Item;
 class Object;
 class ProjectileSpec;
 class ServicesView;
+struct SavedPhysicalAction;
 
 static constexpr float kAttackDamageDelay = 1.0f;
 
@@ -92,6 +100,10 @@ struct AttackBonusBreakdown {
     int closeProximityRangedBonus {0};
     int meleeOnRangedBonus {0};
     int weaponFocusBonus {0};
+    int targetingBonus {0};
+    int superiorWeaponFocusBonus {0};
+    int formBonus {0};
+    int dualStrikeBonus {0};
     int effectBonus {0};
 
     int total() const {
@@ -105,8 +117,62 @@ struct AttackBonusBreakdown {
                closeProximityRangedBonus +
                meleeOnRangedBonus +
                weaponFocusBonus +
+               targetingBonus +
+               superiorWeaponFocusBonus +
+               formBonus +
+               dualStrikeBonus +
                effectBonus;
     }
+};
+
+struct DefenseBreakdown {
+    int total {0};
+    int armor {0};
+    int dexterity {0};
+    int classDefense {0};
+    int natural {0};
+    int dodgeAndDeflection {0};
+    int feat {0};
+    int stance {0};
+    int form {0};
+    int debilitationPenalty {0};
+};
+
+struct PhysicalDamageBonus {
+    int damageAbilityModifier {0};
+    int strengthModifier {0};
+    int weaponSpecialization {0};
+    int combatFeatDamage {0};
+    int preciseShotDamage {0};
+    int formDamage {0};
+    int furyDamage {0};
+    // Two independent active unarmed feat families (209-211 and 212-219).
+    // Rolled once per subattack, then reused by the critical accumulation.
+    int unarmedDice209 {0};
+    int unarmedDice212 {0};
+
+    int total() const {
+        return damageAbilityModifier + weaponSpecialization +
+               combatFeatDamage + preciseShotDamage + formDamage + furyDamage;
+    }
+};
+
+struct DamageBreakdown {
+    DamageBreakdown();
+
+    void addRawDamage(int amount, DamageType type);
+
+    std::array<int, 14> rawDamageSlots;
+    int strengthModifier {0};
+    int otherSpecialBonus {0};
+    int sneakAttack {0};
+    int weaponSpecialization {0};
+    int combatFeatDamage {0};
+    int preciseShotDamage {0};
+    int formDamage {0};
+    int unarmedFeatDamage209 {0};
+    int unarmedFeatDamage212 {0};
+    int criticalMultiplier {0};
 };
 
 /**
@@ -142,7 +208,10 @@ public:
         Creature &attacker,
         Object &target);
 
+    void saveContinuation(SavedPhysicalAction &state, const Game &game) const;
+    void restoreContinuation(const SavedPhysicalAction &state);
     size_t attackCount() const { return _attacks.size(); }
+    AttackResultType rangedResult(bool offHand, size_t index) const;
     void prepareMeleeSequence(
         const IAnimations &animations,
         const std::vector<std::string> &attackAnimations);
@@ -154,6 +223,7 @@ public:
         Object &target);
     int latestMeleeImpactMilliseconds() const;
     void discardPendingMelee();
+    void clearHistory();
     bool hasPendingMelee() const;
 
     /**
@@ -162,34 +232,50 @@ public:
     AttackResultType result() const;
 
 private:
+    struct CriticalThreatBreakdown {
+        int threshold {0};
+        bool threatened {false};
+        int confirmationRoll {0};
+        int confirmationBonus {0};
+        bool confirmed {false};
+        int multiplier {0};
+    };
+
     struct Attack {
         Attack(
             Source source,
             bool ranged,
-            AttackResultType result,
-            int roll,
             AttackBonusBreakdown attackBonusBreakdown,
-            int defense,
-            bool assuredHit) :
+            DamagePacket damage = DamagePacket()) :
             source(source),
             ranged(ranged),
-            result(result),
-            roll(roll),
             attackBonusBreakdown(std::move(attackBonusBreakdown)),
-            defense(defense),
-            assuredHit(assuredHit) {}
+            damage(std::move(damage)) {}
 
+        std::shared_ptr<AttackHistory> history {std::make_shared<AttackHistory>()};
+        std::shared_ptr<AttackEventFields> eventFields {std::make_shared<AttackEventFields>()};
         Source source;
         bool ranged;
-        AttackResultType result;
-        int roll;
+        AttackResultType result {AttackResultType::Invalid};
+        int roll {0};
         AttackBonusBreakdown attackBonusBreakdown;
-        int defense;
-        bool assuredHit;
-        bool stunTarget {false};
+        DefenseBreakdown defenseBreakdown;
+        bool naturalTwenty {false};
+        bool naturalOne {false};
+        bool coupDeGrace {false};
+        CriticalThreatBreakdown criticalThreat;
+        DamageBreakdown damageBreakdown;
         int impactTimeMilliseconds {0};
         bool meleeSignaled {false};
+        RuntimeObjectRef<Item> sourceItem;
+        RuntimeObjectRef<Object> sourceActor;
+        std::vector<DeferredCombatFeedback> deferredFeedback;
+        std::vector<ItemOnHitApplication> onHitApplications;
+        bool onHitResolved {false};
         DamagePacket damage;
+        std::shared_ptr<Effect> secondaryEffect;
+        DurationType secondaryEffectDurationType {DurationType::Instant};
+        float secondaryEffectDuration {0.0f};
     };
 
     void addPhysicalAttack(
@@ -200,7 +286,9 @@ private:
         int attackRollBonus,
         int attackThreatBonus,
         int damageBonus);
-    void resolveDamage(Object &target);
+    void resolveDamage(const Creature &attacker, Object &target);
+    void resolveItemOnHitProperties(
+        const Creature &attacker, Object &target, Attack &attack);
     void signalAttack(
         Attack &attack,
         Game &game,
@@ -240,8 +328,8 @@ public:
      * Create a projectile that fires from either the main hand (from a single
      * blaster or a rifle) or the offhand (dual blasters).
      */
-    explicit Projectile(Source source, bool miss) :
-        _source(source), _miss(miss) {}
+    explicit Projectile(Source source, bool miss, AttackResultType result = AttackResultType::Invalid) :
+        _source(source), _miss(miss), _result(result) {}
 
     ~Projectile() { reset(); }
 
@@ -267,6 +355,7 @@ public:
 private:
     Source _source;
     bool _miss;
+    AttackResultType _result;
     std::shared_ptr<scene::ModelSceneNode> _model;
     std::shared_ptr<scene::ModelSceneNode> _flash;
     glm::vec3 _target {0.0f};
@@ -281,7 +370,8 @@ public:
     /**
      * Add a projectile to the sequence.
      */
-    void push_back(float time, Projectile::Source source, bool miss);
+    void push_back(float time, Projectile::Source source, bool miss,
+                   AttackResultType result = AttackResultType::Invalid);
 
     /**
      * Keep track of time and fire projectiles when necessary. Remove
@@ -301,7 +391,8 @@ private:
     SmallVector<Projectile, 16> _projectiles;
 };
 
-void addProjectilesFromSpec(ProjectileSequence &seq, const ProjectileSpec &spec);
+void addProjectilesFromSpec(ProjectileSequence &seq, const ProjectileSpec &spec,
+                            const AttackBuffer *attacks = nullptr);
 
 class AttackSchedule {
 public:
@@ -316,7 +407,10 @@ public:
 
     State update(const CombatRound &round, Action &action, float dt);
     void startMelee(int latestImpactMilliseconds);
+    void saveContinuation(resource::Gff &state) const;
+    void restoreContinuation(const resource::Gff &state);
 
+    bool holdsCombatRound() const { return _state < WaitFinish; }
     bool isMelee() const { return _melee; }
     int meleeElapsedMilliseconds() const { return _meleeElapsedMilliseconds; }
 
@@ -329,8 +423,17 @@ private:
     float _meleeElapsedRemainderMilliseconds {0.0f};
 };
 
-bool navigateToAttackTarget(Creature &attacker, Object &actor, float dt, bool &reachedOnce);
+bool navigateToAttackTarget(Creature &attacker, Object &target, float dt,
+                            bool &reachedOnce, Game *game = nullptr,
+                            const Action *parent = nullptr);
 
+bool isCreatureCombat(
+    const Creature &attacker,
+    const Object &target);
+std::string selectPhysicalMeleeAttackAnimation(
+    Creature &attacker,
+    const Object &target,
+    CreatureWieldType wield);
 std::string getRangedAttackAnim(Creature &attacker, int kind);
 
 } // namespace game

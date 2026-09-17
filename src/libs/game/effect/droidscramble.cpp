@@ -21,8 +21,20 @@ namespace reone {
 
 namespace game {
 
-void DroidScrambleEffect::applyTo(Object &object) {
-    // TODO: implement
+EffectInstance DroidScrambleEffect::saveFacingInstance() const {
+    auto record = Effect::saveFacingInstance();
+    record.serializedType = 8;
+    return record;
+}
+
+EffectApplicationResult DroidScrambleEffect::onApply(Object &object, EffectInstance &instance) {
+    CreatureStateEffect state(CreatureState::DroidScramble);
+    return state.onApply(object, instance);
+}
+
+EffectRemovalResult DroidScrambleEffect::onRemove(Object &object, const EffectInstance &instance) {
+    CreatureStateEffect state(CreatureState::DroidScramble);
+    return state.onRemove(object, instance);
 }
 
 } // namespace game

@@ -22,6 +22,9 @@ namespace reone {
 namespace game {
 
 void GameModule::init() {
+    _autoBalance = std::make_unique<AutoBalance>(
+        _gameId,
+        _resource.twoDas());
     _cameraStyles = std::make_unique<CameraStyles>(_resource.twoDas());
     _classes = std::make_unique<Classes>(_resource.strings(), _resource.twoDas());
     _difficultyOptions = std::make_unique<DifficultyOptions>(_resource.twoDas());
@@ -38,6 +41,7 @@ void GameModule::init() {
     _visualEffects = std::make_unique<VisualEffects>(_resource.twoDas(), _resource.audioClips(), _resource.models());
 
     _services = std::make_unique<GameServices>(
+        *_autoBalance,
         *_cameraStyles,
         *_classes,
         *_difficultyOptions,
@@ -53,6 +57,7 @@ void GameModule::init() {
         *_animations,
         *_visualEffects);
 
+    _autoBalance->init();
     _cameraStyles->init();
     _difficultyOptions->init();
     _guiSounds->init();
@@ -81,6 +86,7 @@ void GameModule::deinit() {
     _difficultyOptions.reset();
     _classes.reset();
     _cameraStyles.reset();
+    _autoBalance.reset();
 }
 
 } // namespace game

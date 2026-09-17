@@ -30,6 +30,7 @@ namespace reone {
 
 namespace game {
 
+class IAutoBalance;
 class ICameraStyles;
 class IClasses;
 class IDifficultyOptions;
@@ -46,6 +47,7 @@ class IAnimations;
 class IVisualEffects;
 
 struct GameServices {
+    IAutoBalance &autoBalance;
     ICameraStyles &cameraStyles;
     IClasses &classes;
     IDifficultyOptions &difficultyOptions;
@@ -62,6 +64,7 @@ struct GameServices {
     IVisualEffects &visualEffects;
 
     GameServices(
+        IAutoBalance &autoBalance,
         ICameraStyles &cameraStyles,
         IClasses &classes,
         IDifficultyOptions &difficultyOptions,
@@ -76,6 +79,7 @@ struct GameServices {
         IProjectiles &projectiles,
         IAnimations &animations,
         IVisualEffects &visualEffects) :
+        autoBalance(autoBalance),
         cameraStyles(cameraStyles),
         classes(classes),
         difficultyOptions(difficultyOptions),

@@ -18,6 +18,7 @@
 #pragma once
 
 #include "reone/game/types.h"
+#include "reone/game/savedruntime.h"
 
 namespace reone {
 
@@ -31,6 +32,12 @@ class TwoDA;
 namespace game {
 
 class Creature;
+class Spell;
+class Object;
+class Item;
+class Game;
+struct ServicesView;
+struct EffectInstance;
 
 enum class ProjectileAttackType {
     Basic = 1,
@@ -48,6 +55,20 @@ class IProjectiles {
 public:
     virtual ~IProjectiles() = default;
     virtual void clear() = 0;
+    virtual void launchLightsaberThrow(Creature &, const EffectInstance &, Game &, ServicesView &) = 0;
+    virtual void update(float dt, Game &, ServicesView &) = 0;
+    virtual void retireAreaRuntime() = 0;
+    // Presentation hooks remain optional for headless providers.
+    virtual uint64_t beginSpell(Object &, Object *, const glm::vec3 &, const Spell &,
+                               ProjectilePathType, Game &, ServicesView &) { return 0; }
+    virtual void releaseSpell(uint64_t, float, Game &, ServicesView &) {}
+    virtual void cancelSpell(uint64_t) {}
+    virtual bool blocksRangedParry(const Creature &) const { return false; }
+    virtual void launchReflected(Creature &, Creature &, const Item &, Game &, ServicesView &) {}
+    virtual void launchSafeProjectile(Creature &, Object &, const Item &,
+                                      const AttackEventFields &, Game &, ServicesView &, uint16_t = 0) {}
+    virtual std::vector<SavedProjectile> savePresentations() const { return {}; }
+    virtual void restorePresentations(std::vector<SavedProjectile>, Game &, ServicesView &) {}
     virtual ProjectileSpec *get(ProjectileAttackType attack, CreatureWieldType wield, int appearance) = 0;
 };
 
@@ -58,10 +79,30 @@ public:
 
     void init();
     void clear() override;
+    void launchLightsaberThrow(Creature &, const EffectInstance &, Game &, ServicesView &) override;
+    void update(float dt, Game &, ServicesView &) override;
+    void retireAreaRuntime() override;
+    uint64_t beginSpell(Object &, Object *, const glm::vec3 &, const Spell &,
+                        ProjectilePathType, Game &, ServicesView &) override;
+    void releaseSpell(uint64_t, float, Game &, ServicesView &) override;
+    void cancelSpell(uint64_t) override;
+    bool blocksRangedParry(const Creature &) const override;
+    void launchReflected(Creature &, Creature &, const Item &, Game &, ServicesView &) override;
+    void launchSafeProjectile(Creature &, Object &, const Item &,
+                              const AttackEventFields &, Game &, ServicesView &, uint16_t = 0) override;
+    std::vector<SavedProjectile> savePresentations() const override;
+    void restorePresentations(std::vector<SavedProjectile>, Game &, ServicesView &) override;
 
     ProjectileSpec *get(ProjectileAttackType attack, CreatureWieldType wield, int appearance) override;
 
 private:
+    struct ActiveProjectile;
+    void attachPresentation(ActiveProjectile &, Game &, ServicesView &, bool restoring);
+    void startLeg(ActiveProjectile &, Game &, ServicesView &, bool restoring = false);
+    void releaseHand(const ActiveProjectile &);
+    std::vector<std::shared_ptr<ActiveProjectile>> _active;
+    uint64_t _nextPresentationId {1};
+
     void parseHumanoidWeaponDischarge(resource::TwoDA &weaponDa);
 
     void parseDroidWeaponDischarge(resource::TwoDA &weaponDa,

@@ -32,6 +32,20 @@ namespace game {
 class Game;
 struct ServicesView;
 
+class CombatDispatchAction : public Action {
+public:
+    CombatDispatchAction(Game &game, ServicesView &services, int mode = 1) :
+        Action(game, services, ActionType::CombatDispatch), _mode(mode) {}
+    static bool classof(Action *action) { return action->type() == ActionType::CombatDispatch; }
+    uint32_t serializedActionId() const override { return 63; }
+    void execute(std::shared_ptr<Action>, Object &, float) override;
+    bool cancel(std::shared_ptr<Action>, Object &) override;
+    std::optional<SavedActionRecord> saveFacingState() const override;
+private:
+    int _mode;
+};
+
+
 /**
  * Combat round consists of either one or two actions. Second action is only
  * present when both combatants are creatures.
@@ -65,6 +79,8 @@ struct CombatRound {
         RuntimeObjectRef<Creature> attacker;
         RuntimeObjectRef<Object> target;
         bool actorQueueAssociated {false};
+        bool retired {false};
+        int slot {0};
 
         bool participantBindingsLive() const;
         bool remainsInActorQueue() const;
@@ -75,6 +91,14 @@ struct CombatRound {
     State state {Pending};
     bool duel {false};
     float time {0.0f};
+    uint64_t id {0};
+    float duration {3.0f};
+    float pauseRemaining {0.0f};
+    RuntimeObjectRef<Object> pauseOwner;
+    RuntimeObjectRef<Object> master;
+    RuntimeObjectRef<Object> engaged;
+    bool suspends(const Action &action) const;
+    float actionDelta(float dt) const { return duration > 0.0f ? dt * 3.0f / duration : 3.0f; }
 
     bool canExecute(Action &action) const;
 };
@@ -103,18 +127,59 @@ public:
      */
     const CombatRound &addAction(const std::shared_ptr<Action> &action, Object &actor);
 
+    void beginCast(const std::shared_ptr<Action> &, Creature &, float seconds);
+    void finishCast(Creature &);
+    bool isRoundMaster(const Creature &creature) const;
+    bool isActionPaused(const Action &action) const;
+    bool isSpellEngaged(const Creature &caster, const Creature &target) const;
+    std::optional<SavedRoundClock> saveRound(const Action &) const;
+    void restoreRound(const std::shared_ptr<Action> &, const std::shared_ptr<Creature> &, const SavedRoundClock &);
+    bool scheduleEquipment(Object &actor, const OrdinaryActionQueue::Node &node);
+    bool hasScheduled(const Object &actor) const;
+    void ensureDispatcher(Creature &actor);
+    void transferEquipment(Creature &actor);
+    void discardEquipment(Object &actor);
+    bool blocksOwnerActions(const Creature &actor) const;
+    std::vector<SavedScheduledAction> saveScheduled(const Object &actor) const;
+    float scheduledTime(const Object &actor) const;
+    void restoreScheduled(const std::shared_ptr<Creature> &actor,
+                          const std::vector<SavedScheduledAction> &records,
+                          const std::vector<bool> &bound, float time);
+    void cancelActions(Object &actor);
+    void endRound(Creature &actor, int runEndRound);
     void update(float dt);
-    void reset() { _rounds.clear(); }
+    void reset() { _rounds.clear(); _scheduled.clear(); _equipmentTime.clear(); _nextRoundId = 1; }
     size_t roundCount() const { return _rounds.size(); }
 
 private:
-    using RoundQueue = std::deque<std::unique_ptr<CombatRound>>;
+    using RoundQueue = std::deque<std::shared_ptr<CombatRound>>;
+    struct ScheduledEntry {
+        SavedScheduledAction saved;
+        OrdinaryActionQueue::Node node;
+        bool referencesBound {true};
+        bool refusalReported {false};
+    };
+    struct ScheduledOwner {
+        RuntimeObjectRef<Creature> actor;
+        float time {0.0f};
+        std::deque<std::shared_ptr<ScheduledEntry>> actions;
+    };
 
     Game &_game;
     ServicesView &_services;
 
     RoundQueue _rounds;
+    uint64_t _nextRoundId {1};
+    std::map<uint32_t, std::shared_ptr<ScheduledOwner>> _scheduled;
+    std::map<uint32_t, float> _equipmentTime;
 
+    void updateEquipment(float dt);
+    void rescaleRound(CombatRound &round, int milliseconds, bool force);
+    void releasePartner(Creature &actor);
+    void finishOwner(Creature &actor, int runEndRound, bool suppressScript);
+    void continueOwner(const CombatRound::RoundAction &entry);
+
+    void configureSpellPair(CombatRound &, const std::shared_ptr<Action> &, Creature &);
     void updateRound(CombatRound &round, float dt);
     void finishRound(CombatRound &round);
     void pruneInvalidRounds();

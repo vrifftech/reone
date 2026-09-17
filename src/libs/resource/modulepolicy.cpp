@@ -178,7 +178,7 @@ private:
 std::optional<ModuleSourceMetadata> mountMetadata(ModuleArchiveFamily family) {
     switch (family) {
     // Module archives, saved module state and the dialogue archive are all
-    // encapsulated class 2. Class 1 is evidence-backed and belongs to the
+    // encapsulated class 2. Class 1 is supported and belongs to the
     // global patch archive and package texture archives, none of which is a
     // module source, so no module family may claim it.
     case ModuleArchiveFamily::PrimaryMod:

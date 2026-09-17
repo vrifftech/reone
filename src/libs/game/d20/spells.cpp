@@ -16,6 +16,7 @@
  */
 
 #include "reone/game/d20/spells.h"
+#include <boost/algorithm/string.hpp>
 
 #include "reone/resource/2da.h"
 #include "reone/resource/provider/2das.h"
@@ -153,6 +154,7 @@ void Spells::init() {
     if (!spells)
         return;
 
+    const auto ranges = _twoDas.get("ranges");
     for (int row = 0; row < spells->getRowCount(); ++row) {
         SpellType type = static_cast<SpellType>(row);
         std::string name(_strings.getText(spells->getInt(row, "name", -1)));
@@ -169,10 +171,26 @@ void Spells::init() {
         float conjTime = spells->getInt(row, "conjtime") / 1000.0f;
         float castTime = spells->getInt(row, "casttime") / 1000.0f;
         uint32_t itemTargeting = spells->getInt(row, "itemtargeting");
+        uint32_t formMask = static_cast<uint32_t>(
+            spells->getInt(row, "formmask"));
         bool hostile = spells->getBool(row, "hostilesetting");
         std::string projModel = spells->getString(row, "projmodel");
 
         auto spell = std::make_shared<Spell>();
+        spell->catchTime = std::max(0, spells->getInt(row, "catchtime")) / 1000.0f;
+        spell->catchAnim = spells->getString(row, "catchanim");
+        spell->projectile = spells->getBool(row, "proj");
+        const auto path = boost::algorithm::to_lower_copy(spells->getString(row, "projtype"));
+        static const std::map<std::string, ProjectilePathType> paths {
+            {"homing", ProjectilePathType::Homing}, {"ballistic", ProjectilePathType::Ballistic},
+            {"highballistic", ProjectilePathType::HighBallistic}, {"accelerating", ProjectilePathType::Accelerating},
+            {"spiral", ProjectilePathType::Spiral}, {"linked", ProjectilePathType::Linked},
+            {"bounce", ProjectilePathType::Bounce}, {"burst", ProjectilePathType::Burst},
+            {"grenade", ProjectilePathType::Grenade}};
+        auto parsedPath = paths.find(path);
+        if (parsedPath != paths.end()) spell->projectilePath = parsedPath->second;
+        spell->projectileSpawn = boost::algorithm::to_lower_copy(spells->getString(row, "projspwnpoint"));
+        spell->projectileOrientation = boost::algorithm::to_lower_copy(spells->getString(row, "projorientation"));
         spell->type = type;
         spell->name = std::move(name);
         spell->description = std::move(description);
@@ -181,6 +199,10 @@ void Spells::init() {
         spell->prerequisites = std::move(prerequisites);
         spell->masterSpell = masterSpell;
         spell->userType = userType;
+        spell->innateLevel = static_cast<uint8_t>(spells->getInt(row, "inate", 0xff));
+        spell->forcePointCost = std::clamp(spells->getInt(row, "forcepoints"), 0, 255);
+        const std::string alignment = spells->getString(row, "goodevil");
+        spell->alignment = alignment.empty() ? 'N' : alignment.front();
         for (const auto &[clazz, column] : kClassLevelColumns) {
             auto maybeRequirement = spells->getIntOpt(row, column);
             if (maybeRequirement) {
@@ -194,6 +216,23 @@ void Spells::init() {
         spell->conjTime = conjTime;
         spell->castTime = castTime;
         spell->itemTargeting = itemTargeting;
+        spell->requireItemMask = static_cast<uint32_t>(spells->getInt(row, "requireitemmask", 0));
+        spell->forbidItemMask = static_cast<uint32_t>(spells->getInt(row, "forbiditemmask", 0));
+        const auto range = spells->getString(row, "range");
+        int rangeRow = -1;
+        if (!range.empty()) {
+            switch (range.front()) {
+            case 'P': case 'T': rangeRow = 1; break;
+            case 'S': rangeRow = 2; break;
+            case 'M': rangeRow = 3; break;
+            case 'L': rangeRow = 4; break;
+            case 'W': rangeRow = 19; break;
+            default: break;
+            }
+        }
+        if (ranges && rangeRow >= 0)
+            spell->range = std::max(0.0f, ranges->getFloat(rangeRow, "primaryrange", 0.0f));
+        spell->formMask = formMask;
         spell->hostile = hostile;
         spell->projModel = projModel.empty() ? nullptr : _models.get(projModel);
         _spells.insert(std::make_pair(type, std::move(spell)));

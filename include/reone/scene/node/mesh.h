@@ -21,6 +21,10 @@
 
 namespace reone {
 
+namespace graphics {
+struct Material;
+}
+
 namespace scene {
 
 class ModelSceneNode;
@@ -49,6 +53,10 @@ public:
     void update(float dt) override;
 
     void render(IRenderPass &pass);
+    void renderBumpedOutShell(
+        IRenderPass &pass,
+        graphics::Texture &texture,
+        float offset);
     void renderShadow(IRenderPass &pass);
 
     bool shouldRender() const;
@@ -63,6 +71,10 @@ public:
     void setEnvironmentMap(graphics::Texture *texture) override;
     void setAlpha(float alpha) { _alpha = alpha; }
     void setSelfIllumColor(glm::vec3 color) { _selfIllumColor = std::move(color); }
+    void setProjectedBeamTarget(SceneNode *target) {
+        _projectedBeam = true;
+        _projectedBeamTarget = target;
+    }
 
 private:
     struct NodeTextures {
@@ -103,12 +115,20 @@ private:
 
     float _windTime {0.0f};
 
+    bool _projectedBeam {false};
+    SceneNode *_projectedBeamTarget {nullptr};
+
     void initTextures();
     void initDanglyMesh();
 
     void refreshAdditionalTextures();
 
     bool isLightingEnabled() const;
+    std::vector<glm::mat4> buildSkinBoneTransforms() const;
+    void drawWithMaterial(
+        IRenderPass &pass,
+        graphics::Material &material);
+    void renderProjectedBeam(IRenderPass &pass);
 
     // Animation
 

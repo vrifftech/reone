@@ -50,11 +50,8 @@ namespace {
 // Odyssey models look down +Y.
 const glm::vec3 kModelForward(0.0f, 1.0f, 0.0f);
 
-// reone's existing keyboard rotation rates (ThirdPersonCamera), used here as the
-// calibration point for a full-turn axis. MiniGame.LateralAccel is deliberately
-// not used: the swoop race authors 300 and steers laterally with it, the turret
-// authors 1200 and never translates at all, and KotOR.js ignores it for the
-// turret too, so it has no confirmed turret aim meaning.
+// Use the existing ThirdPersonCamera rotation rates for turret aiming.
+// MiniGame.LateralAccel controls translation, not angular speed here.
 constexpr float kTurnRateMin = 1.0f;      // radians per second
 constexpr float kTurnRateMax = 2.5f;      // radians per second
 constexpr float kTurnAcceleration = 1.0f; // radians per second squared
@@ -482,10 +479,7 @@ const char *turretRequestResolutionMessage(TurretRequestResolution resolution) {
 
 std::string turretReturnModule(const std::string &turretModule,
                                const std::string &originModule) {
-    // Vanilla turret exit, confirmed from local assets: the M12ab enemy death
-    // scripts (k_pebo_sthdeath2..7) and the module heartbeat (k_pebo_mgheart)
-    // both end the sequence with StartNewModule("ebo_m12aa"). Other modules are
-    // not wired, so they fall back to wherever the session started.
+    // M12ab returns to ebo_m12aa. Other turret modules return to the session origin.
     if (boost::iequals(turretModule, "m12ab")) {
         return "ebo_m12aa";
     }
