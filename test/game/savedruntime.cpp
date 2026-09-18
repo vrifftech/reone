@@ -1400,7 +1400,7 @@ TEST(SavedRuntimePublication, should_publish_supported_events_without_dispatchin
         SavedExecutionSupport::RepresentableButUnsupported);
     EXPECT_EQ(
         module->savedEventQueue().events[2].executionSupport(),
-        SavedExecutionSupport::RetailDiscards);
+        SavedExecutionSupport::Discarded);
 
     EffectInstance expiring;
     expiring.subType = static_cast<uint16_t>(DurationType::Temporary);
@@ -1563,7 +1563,7 @@ TEST(SavedEventQueue, should_preserve_K1_and_K2_records_absolute_time_payload_an
     EXPECT_TRUE(std::holds_alternative<SerializedScriptSituation>(queue.events[0].payload));
     EXPECT_TRUE(std::holds_alternative<EffectInstance>(queue.events[1].payload));
     EXPECT_TRUE(std::holds_alternative<std::monostate>(queue.events[2].payload));
-    EXPECT_EQ(queue.events[3].executionSupport(), SavedExecutionSupport::RetailDiscards);
+    EXPECT_EQ(queue.events[3].executionSupport(), SavedExecutionSupport::Discarded);
     EXPECT_FALSE(queue.events[3].shouldRestore());
     EXPECT_TRUE(std::holds_alternative<UnsupportedSavedPayload>(queue.events[4].payload));
     EXPECT_FALSE(queue.events[4].shouldRestore());
