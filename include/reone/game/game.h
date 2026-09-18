@@ -44,8 +44,6 @@
 #include "gui/ingame.h"
 #include "gui/loadscreen.h"
 #include "gui/mainmenu.h"
-#include "gui/deathdisplay.h"
-#include "temporarydeath.h"
 #include "gui/map.h"
 #include "gui/partyselect.h"
 #include "gui/pazaak.h"
@@ -144,8 +142,7 @@ public:
         PazaakWager,
         PazaakSetup,
         PazaakBoard,
-        Turret,
-        Death
+        Turret
     };
 
     Game(
@@ -196,9 +193,7 @@ public:
     OptionsView &options() { return _options; }
     const OptionsView &options() const { return _options; }
     Party &party() { return _party; }
-    const Party &party() const { return _party; }
     Combat &combat() { return _combat; }
-    const Combat &combat() const { return _combat; }
     Journal &journal() { return _journal; }
     MessageLog &messageLog() { return _messageLog; }
     FloatingText &floatingText() { return _floatingText; }
@@ -212,14 +207,10 @@ public:
     const std::set<std::string> &saveNames() const { return _saveNames; }
 
     void initLocalServices();
-    std::shared_ptr<Spell> getSpell(SpellType type) const;
     void setSceneSurfaces();
 
     void setCursorType(resource::CursorType type);
-    void setPaused(bool paused) { _paused = paused; }
-    bool clientCombatMode() const { return _clientCombatMode; }
-    void syncClientCombatMode();
-    void setKeepStealthInDialog(bool value) { _keepStealthInDialog = value; }
+    void setPaused(bool paused);
     void setRelativeMouseMode(bool relative);
 
     void openMainMenu();
@@ -431,16 +422,6 @@ public:
     // Objects
 
     std::shared_ptr<Object> getObjectById(uint32_t id) const;
-    uint32_t lastTarget() const {
-        auto target = _lastTarget.resolve();
-        return target ? target->id() : script::kObjectInvalid;
-    }
-    void setLastTarget(uint32_t objectId) {
-        _lastTarget = RuntimeObjectRef<Object>(getObjectById(objectId));
-    }
-    bool floatingTextEnabled() const {
-        return (_options.game.feedbackOptions & 0x10) != 0;
-    }
     int scaleDamageForDifficulty(int damage, const Object &target) const;
     bool isRuntimeObjectLive(const Object &object) const;
 
@@ -602,21 +583,10 @@ public:
      *
      * This is the canonical runtime clock. It advances with simulation dt and
      * is never rescaled; Mod_MinPerHour only changes how the calendar divides
-     * it. The game saves store a day and a time of day instead, so that split
+     * it. Retail saves store a day and a time of day instead, so that split
      * happens at the save and load boundaries and nowhere else.
      */
     uint64_t worldTimeMilliseconds() const { return _worldTimeMilliseconds; }
-    void queueEffectApplication(Object &target, EffectInstance effect, uint32_t delayMilliseconds = 0);
-    void queueScriptEvent(Object &target, Object *caller, const Event &event);
-    void queueEffectRemoval(Object &target, EffectId id);
-    void queueObjectDestruction(Object &target, float delay);
-    void cancelObjectDestruction(Object &target);
-    void updateTemporaryDeath();
-    void runDeathSequence();
-    void dismissDeathSequence(const Creature &creature);
-    bool hasModalPanel() const;
-    void requestEndGame() { _endGamePending = true; }
-
 
     uint8_t minutesPerHour() const { return _minutesPerHour; }
 
@@ -660,7 +630,7 @@ public:
      *
      * Mod_MinPerHour shortens the day - an in-game hour lasts that many
      * minutes of world time - it does not change the rate at which the clock
-     * advances. The day length is
+     * advances. Matches CWorldTimer, where m_nMillisecondsInDay =
      * MinutesPerHour * 60 * 1000 * HOURS_IN_DAY and the raw timer accumulates
      * elapsed time.
      */
@@ -872,7 +842,7 @@ private:
         std::string originModule;   // module resref to return to
         glm::vec3 originPosition {0.0f};
         float originFacing {0.0f};
-        bool forcedSuccess {true};  // Finish is always non-blocking success
+        bool forcedSuccess {true};  // PR1: finish is always non-blocking success
     };
 
     MinigameLifecycle _swoopLifecycle;
@@ -901,10 +871,6 @@ private:
     CameraType _cameraType {CameraType::ThirdPerson};
     CameraType _savedCameraType {CameraType::ThirdPerson};
     bool _paused {false};
-    bool _clientCombatMode {false};
-    RuntimeObjectRef<Creature> _clientCombatLeader;
-    RuntimeObjectRef<Area> _clientCombatArea;
-    bool _keepStealthInDialog {false};
     bool _timingDiscontinuity {false};
     GlobalFade _globalFade;
     GlobalFade::ArrivalTicket _fadeArrival;
@@ -953,7 +919,6 @@ private:
     uint64_t _worldTimeMilliseconds {0};
     uint8_t _minutesPerHour {5};
     double _worldTimeFraction {0.0};
-    std::optional<uint64_t> _worldClockSample;
     double _playedTimeFraction {0.0};
 
     std::optional<SaveRequest> _pendingSave;
@@ -967,7 +932,6 @@ private:
 
     // Services
 
-    RuntimeObjectRef<Object> _lastTarget;
     Party _party;
     Combat _combat;
     SwoopRace _swoopRace;
@@ -992,11 +956,6 @@ private:
     std::unique_ptr<DialogGUI> _dialog;
     std::unique_ptr<ComputerGUI> _computer;
     std::unique_ptr<ConfirmPopup> _confirmPopup;
-    std::unique_ptr<ConfirmPopup> _deathMessage;
-    std::unique_ptr<DeathDisplay> _deathDisplay;
-    TemporaryDeathRecovery _temporaryDeathRecovery;
-    bool _gameOver {false};
-    bool _endGamePending {false};
     std::unique_ptr<ContainerGUI> _container;
     std::unique_ptr<PartySelection> _partySelect;
     std::unique_ptr<SaveLoad> _saveLoad;
@@ -1064,7 +1023,7 @@ private:
 
     void stopMovement();
 
-    void advanceWorldTime(double dt);
+    void advanceWorldTime(float dt);
     void advancePlayedTime(float dt);
     std::shared_ptr<const resource::SaveWorkingState>
     prepareCurrentModuleWorkingState();
@@ -1142,8 +1101,8 @@ private:
     // return to the origin, but only a win emits the completion state.
     void finishTurretLifecycle(Turret::Outcome outcome);
 
-    // Apply post-turret globals for K1 M12ab after a victory.
-    // Other modules are unchanged.
+    // Apply the vanilla post-turret globals for the given turret module
+    // (K1 M12ab confirmed; others no-op). Only a victory writes them.
     void applyTurretResult(const std::string &turretModule, Turret::Outcome outcome);
 
     // Give up on a scheduled turret session and go back where it started.
@@ -1165,8 +1124,9 @@ private:
     // StartNewModule startpoint the race-end script uses), or "" if unknown.
     std::string swoopReturnWaypoint(const std::string &raceModule) const;
 
-    // Record a winning finish time for K1 Taris so the post-race script can
-    // process the result. Other planets are unchanged.
+    // Apply the planet-specific forced-success race result for the given race
+    // module (K1 Taris confirmed; others no-op). Sets the player's finish-time
+    // globals and runs the vanilla post-race result script.
     void applySwoopForcedSuccessResult(const std::string &raceModule);
     void applyTarisForcedWinningTime();
 

@@ -25,26 +25,24 @@ namespace reone {
 
 namespace game {
 
-EffectApplicationResult DamageImmunityIncreaseEffect::onApply(
-    Object &, EffectInstance &) {
-    return (_percentImmunity >= 0) ? EffectApplicationResult::Retained
-        : EffectApplicationResult::Rejected;
+bool DamageImmunityIncreaseEffect::onApply(
+    Object &, const EffectInstance &) {
+    return _percentImmunity >= 0;
 }
 
-EffectApplicationResult DamageImmunityDecreaseEffect::onApply(
-    Object &object, EffectInstance &instance) {
+bool DamageImmunityDecreaseEffect::onApply(
+    Object &object, const EffectInstance &instance) {
     if (_percentImmunity < 0 || object.plotFlag()) {
-        return EffectApplicationResult::Rejected;
+        return false;
     }
     auto *target = dyn_cast<Creature>(&object);
     if (!target) {
-        return EffectApplicationResult::Retained;
+        return true;
     }
     auto creator = instance.boundCreator();
-    return (!target->hasEffectImmunity(
+    return !target->hasEffectImmunity(
         ImmunityType::DamageImmunityDecrease,
-        creator ? dyn_cast<Creature>(creator.get()) : nullptr)) ? EffectApplicationResult::Retained
-        : EffectApplicationResult::Rejected;
+        creator ? dyn_cast<Creature>(creator.get()) : nullptr);
 }
 
 } // namespace game

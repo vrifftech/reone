@@ -23,18 +23,16 @@ namespace reone {
 
 namespace game {
 
-EffectApplicationResult ACDecreaseEffect::onApply(
-    Object &object, EffectInstance &instance) {
+bool ACDecreaseEffect::onApply(
+    Object &object, const EffectInstance &instance) {
     auto *creature = dyn_cast<Creature>(&object);
-    if (!creature) return EffectApplicationResult::Retained;
-    if (instance.integerParameter(1) <= 0 || creature->plotFlag()) {
-        return EffectApplicationResult::Rejected;
+    if (!creature || _value <= 0 || creature->plotFlag()) {
+        return false;
     }
     auto creator = instance.boundCreator();
-    return (!creature->hasEffectImmunity(
+    return !creature->hasEffectImmunity(
         ImmunityType::AcDecrease,
-        creator ? dyn_cast<Creature>(creator.get()) : nullptr)) ? EffectApplicationResult::Retained
-        : EffectApplicationResult::Rejected;
+        creator ? dyn_cast<Creature>(creator.get()) : nullptr);
 }
 
 } // namespace game

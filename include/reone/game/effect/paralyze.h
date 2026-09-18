@@ -17,17 +17,19 @@
 
 #pragma once
 
-#include "creaturestate.h"
+#include "../effect.h"
 
 namespace reone {
 
 namespace game {
 
-class ParalyzeEffect : public CreatureStateEffect {
+class ParalyzeEffect : public Effect {
 public:
-    explicit ParalyzeEffect(bool bypassPackageInspection = false);
+    ParalyzeEffect() :
+        Effect(EffectType::Paralyze) {
+    }
 
-    std::shared_ptr<script::EngineType> cloneForScript() const override;
+    void applyTo(Object &object) override;
 };
 
 } // namespace game

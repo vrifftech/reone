@@ -23,16 +23,14 @@ namespace reone {
 
 namespace game {
 
-class TemporaryForcePointsEffect : public CopyableEffect<TemporaryForcePointsEffect> {
+class TemporaryForcePointsEffect : public Effect {
 public:
     TemporaryForcePointsEffect(int tempForce) :
-        CopyableEffect(EffectType::TemporaryForcePoints),
+        Effect(EffectType::TemporaryForcePoints),
         _tempForce(tempForce) {
-        setSaveFacingInteger(0, tempForce);
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
-    EffectRemovalResult onRemove(Object &object, const EffectInstance &) override;
+    void applyTo(Object &object) override;
 
 private:
     int _tempForce;

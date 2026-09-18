@@ -17,8 +17,6 @@
 
 #pragma once
 
-#include "types.h"
-
 #include <memory>
 #include <string>
 
@@ -39,9 +37,6 @@ void validateTwoDARow(
     const resource::TwoDA &table,
     const std::string &resRef,
     int row);
-
-int readRacialAbilityAdjustment(
-    const resource::TwoDA &table, int row, Ability ability);
 
 } // namespace game
 

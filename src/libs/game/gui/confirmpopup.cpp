@@ -40,7 +40,7 @@ void ConfirmPopup::preload(IGUI &gui) {
 
     // The confirmation dialog is authored for 640x480 in both games. It
     // scales and centers with the game-wide Scaled default from the base
-    // preload; an explicit Center here kept it at its original size.
+    // preload; an explicit Center here kept it at native size.
     gui.setResolution(kAuthoredCanvasWidth, kAuthoredCanvasHeight);
 }
 
@@ -91,9 +91,8 @@ void ConfirmPopup::onGUILoaded() {
     _gui->addControlToFront(_icon, IGUI::ControlCoordinates::Screen);
 }
 
-void ConfirmPopup::show(const std::string &message, std::shared_ptr<graphics::Texture> icon,
-                        std::function<void()> onConfirm) {
-    _onConfirm = std::move(onConfirm);
+void ConfirmPopup::show(const std::string &message, std::shared_ptr<graphics::Texture> icon) {
+    _onConfirm = {};
     _onCancel = {};
     _controls.BTN_CANCEL->setVisible(false);
     // Reserve a gutter for the icon, if any, before the message is broken

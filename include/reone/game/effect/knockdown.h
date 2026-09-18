@@ -23,14 +23,13 @@ namespace reone {
 
 namespace game {
 
-class KnockdownEffect : public CopyableEffect<KnockdownEffect> {
+class KnockdownEffect : public Effect {
 public:
     KnockdownEffect() :
-        CopyableEffect(EffectType::Knockdown) {
+        Effect(EffectType::Knockdown) {
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override {
-        return EffectApplicationResult::Retained;
+    void applyTo(Object &object) override {
     }
 };
 

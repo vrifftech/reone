@@ -110,11 +110,6 @@ public:
                                const glm::ivec2 &gridSize,
                                const std::vector<ParticleInstance> &particles) = 0;
 
-    virtual void drawProjectedBeam(graphics::Mesh &mesh,
-                                   const glm::mat4 &transform,
-                                   const glm::mat4 &transformInv,
-                                   const glm::vec4 &color) = 0;
-
     virtual void drawGrass(float radius,
                            float quadSize,
                            graphics::Texture &texture,

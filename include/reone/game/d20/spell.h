@@ -42,9 +42,6 @@ struct Spell {
     std::vector<SpellType> prerequisites;
     std::optional<SpellType> masterSpell;
     int userType {-1};
-    uint8_t innateLevel {0xff};
-    int forcePointCost {0};
-    char alignment {'N'};
     std::unordered_map<ClassType, int> classLevelRequirements;
     uint32_t category {0};
     std::string impactScript;
@@ -52,19 +49,9 @@ struct Spell {
     std::shared_ptr<audio::AudioClip> castSound;
     float conjTime {0.0f};
     float castTime {0.0f};
-    float catchTime {0.0f};
-    std::string catchAnim;
     uint32_t itemTargeting {0};
-    uint32_t requireItemMask {0};
-    uint32_t forbidItemMask {0};
-    float range {0.0f};
-    uint32_t formMask {0};
     bool hostile {false};
     std::shared_ptr<graphics::Model> projModel;
-    bool projectile {false};
-    ProjectilePathType projectilePath {ProjectilePathType::Default};
-    std::string projectileSpawn;
-    std::string projectileOrientation;
 
     std::optional<int> getClassLevelRequirement(ClassType clazz) const {
         auto maybeRequirement = classLevelRequirements.find(clazz);

@@ -118,7 +118,7 @@ void GameGUI::loadBackground(BackgroundType type) {
         case BackgroundType::Menu:
         case BackgroundType::Load:
             // TSL's pause-menu plate is transparent outside its authored
-            // frame. The menus put blackfill behind it so the paused
+            // frame. The retail menus put blackfill behind it so the paused
             // world cannot show through at wider aspect ratios.
             resRef = "blackfill";
             break;
@@ -126,7 +126,7 @@ void GameGUI::loadBackground(BackgroundType type) {
         case BackgroundType::Computer1:
             // The terminal bezel is the computer_p panel's own fill; using it
             // as the backdrop too drew a cropped second copy behind the
-            // panel. The terminal sits on a void fill.
+            // panel. The retail terminal sits on a void fill.
             resRef = "black";
             break;
         default:
@@ -284,7 +284,7 @@ std::shared_ptr<Texture> GameGUI::itemFrameTexture(int stackSize) const {
     return _services.resource.textures.get(resRef, TextureUsage::GUI);
 }
 
-void GameGUI::tintInGameFooter() {
+void GameGUI::tintK2InGameFooter() {
     if (!_game.isTSL()) {
         return;
     }
@@ -296,7 +296,7 @@ void GameGUI::tintInGameFooter() {
     }
 }
 
-void GameGUI::tintInGameHeader() {
+void GameGUI::tintK2InGameHeader() {
     if (!_game.isTSL()) {
         return;
     }
@@ -309,7 +309,7 @@ void GameGUI::tintInGameHeader() {
     }
 }
 
-void GameGUI::enableButtonBodyFill(Control &control) {
+void GameGUI::enableK2ButtonBodyFill(Control &control) {
     if (!_game.isTSL()) {
         return;
     }
@@ -328,15 +328,15 @@ void GameGUI::enableButtonBodyFill(Control &control) {
     control.setHilight(std::move(hilight));
 }
 
-void GameGUI::enableButtonBodyFill(const std::shared_ptr<Control> &control) {
+void GameGUI::enableK2ButtonBodyFill(const std::shared_ptr<Control> &control) {
     if (!control) {
         return;
     }
 
-    enableButtonBodyFill(*control);
+    enableK2ButtonBodyFill(*control);
 }
 
-void GameGUI::fillSectionStrip(const std::shared_ptr<Control> &topBar, const std::shared_ptr<Control> &bottomBar) {
+void GameGUI::fillK2SectionStrip(const std::shared_ptr<Control> &topBar, const std::shared_ptr<Control> &bottomBar) {
     static constexpr int kLineThickness = 2;
 
     if (!_game.isTSL() || !topBar || !bottomBar) {
@@ -369,7 +369,7 @@ void GameGUI::fillSectionStrip(const std::shared_ptr<Control> &topBar, const std
     _gui->addControlToFront(std::move(fill), IGUI::ControlCoordinates::Authored);
 }
 
-void GameGUI::useShellTitle(const std::shared_ptr<Control> &control) {
+void GameGUI::useK2ShellTitle(const std::shared_ptr<Control> &control) {
     if (!_game.isTSL() || !control) {
         return;
     }
@@ -378,7 +378,7 @@ void GameGUI::useShellTitle(const std::shared_ptr<Control> &control) {
     control->setVisible(false);
 }
 
-void GameGUI::updateFilterButton(const std::shared_ptr<Control> &button, bool selected) {
+void GameGUI::updateK2FilterButton(const std::shared_ptr<Control> &button, bool selected) {
     if (!button) {
         return;
     }

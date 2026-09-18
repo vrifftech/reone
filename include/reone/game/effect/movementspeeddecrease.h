@@ -23,16 +23,14 @@ namespace reone {
 
 namespace game {
 
-class MovementSpeedDecreaseEffect : public CopyableEffect<MovementSpeedDecreaseEffect> {
+class MovementSpeedDecreaseEffect : public Effect {
 public:
     MovementSpeedDecreaseEffect(int percentChange) :
-        CopyableEffect(EffectType::MovementSpeedDecrease),
+        Effect(EffectType::MovementSpeedDecrease),
         _percentChange(percentChange) {
-        setSaveFacingInteger(0, percentChange);
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
-    EffectRemovalResult onRemove(Object &object, const EffectInstance &) override;
+    void applyTo(Object &object) override;
 
 private:
     int _percentChange;

@@ -15,7 +15,6 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include "reone/game/projectiles.h"
 #include "reone/game/game.h"
 #include "reone/game/savedruntime.h"
 
@@ -361,26 +360,9 @@ static pazaak::MainDeck randomPazaakMainDeck() {
     return pazaak::MainDeck(std::move(cards));
 }
 
-// KotOR II owns five extra card types after the numbered ones. Their order
-// follows the authored side-deck screen: Tiebreaker, Double, Flip 2&4, Flip 3&6
-// and Value Change.
-static std::optional<pazaak::CardDefinition> getPazaakCardDefinition(int cardId, bool tsl) {
-    if (cardId < 0 || cardId >= (tsl ? 23 : 18)) {
+static std::optional<pazaak::CardDefinition> k1PazaakCardDefinition(int cardId) {
+    if (cardId < 0 || cardId >= 18) {
         return std::nullopt;
-    }
-    if (cardId >= 18) {
-        switch (cardId) {
-        case 18:
-            return pazaak::CardDefinition::tiebreaker();
-        case 19:
-            return pazaak::CardDefinition::doubleCard();
-        case 20:
-            return pazaak::CardDefinition::flipTwoFour();
-        case 21:
-            return pazaak::CardDefinition::flipThreeSix();
-        default:
-            return pazaak::CardDefinition::valueChange();
-        }
     }
     int magnitude = cardId % 6 + 1;
     if (cardId < 6) {
@@ -392,27 +374,33 @@ static std::optional<pazaak::CardDefinition> getPazaakCardDefinition(int cardId,
     return pazaak::CardDefinition::signSelectable(magnitude);
 }
 
-static std::optional<pazaak::CardDefinition> parsePazaakDeckCard(
-    const std::string &token, bool tsl) {
-
-    if (tsl) {
-        // KotOR II special-card tokens, from the card descriptions.
-        if (token == "$$") {
-            return pazaak::CardDefinition::doubleCard();
-        }
-        if (token == "F1") {
-            return pazaak::CardDefinition::flipTwoFour();
-        }
-        if (token == "F2") {
-            return pazaak::CardDefinition::flipThreeSix();
-        }
-        if (token == "TT") {
-            return pazaak::CardDefinition::tiebreaker();
-        }
-        if (token == "VV") {
-            return pazaak::CardDefinition::valueChange();
-        }
+// KotOR II owns five extra card types after the numbered ones. Their order
+// follows the authored side-deck screen: Tiebreaker, Double, Flip 2&4, Flip 3&6
+// and Value Change.
+static std::optional<pazaak::CardDefinition> k2PazaakCardDefinition(int cardId) {
+    if (cardId < 0 || cardId >= 23) {
+        return std::nullopt;
     }
+    if (cardId < 18) {
+        return k1PazaakCardDefinition(cardId);
+    }
+    switch (cardId) {
+    case 18:
+        return pazaak::CardDefinition::tiebreaker();
+    case 19:
+        return pazaak::CardDefinition::doubleCard();
+    case 20:
+        return pazaak::CardDefinition::flipTwoFour();
+    case 21:
+        return pazaak::CardDefinition::flipThreeSix();
+    default:
+        return pazaak::CardDefinition::valueChange();
+    }
+}
+
+static std::optional<pazaak::CardDefinition> parseK1PazaakDeckCard(
+    const std::string &token) {
+
     if (token.size() != 2 ||
         (token[0] != '+' && token[0] != '-' && token[0] != '*') ||
         token[1] < '1' || token[1] > '6') {
@@ -431,9 +419,9 @@ static std::optional<pazaak::CardDefinition> parsePazaakDeckCard(
     }
 }
 
-static std::optional<pazaak::SideDeck> loadPazaakOpponentDeck(
+static std::optional<pazaak::SideDeck> loadK1PazaakOpponentDeck(
     const resource::TwoDA &decks,
-    int row, bool tsl) {
+    int row) {
 
     if (row < 0 || row >= decks.getRowCount()) {
         return std::nullopt;
@@ -441,8 +429,54 @@ static std::optional<pazaak::SideDeck> loadPazaakOpponentDeck(
     std::vector<pazaak::CardDefinition> cards;
     cards.reserve(pazaak::kSideDeckSize);
     for (size_t i = 0; i < pazaak::kSideDeckSize; ++i) {
-        auto card = parsePazaakDeckCard(
-            decks.getString(row, "card" + std::to_string(i)), tsl);
+        auto card = parseK1PazaakDeckCard(
+            decks.getString(row, "card" + std::to_string(i)));
+        if (!card) {
+            return std::nullopt;
+        }
+        cards.push_back(*card);
+    }
+    return pazaak::SideDeck {
+        cards[0], cards[1], cards[2], cards[3], cards[4],
+        cards[5], cards[6], cards[7], cards[8], cards[9],
+    };
+}
+
+static std::optional<pazaak::CardDefinition> parseK2PazaakDeckCard(
+    const std::string &token) {
+
+    // KotOR II special-card tokens, verified from shipped card descriptions.
+    if (token == "$$") {
+        return pazaak::CardDefinition::doubleCard();
+    }
+    if (token == "F1") {
+        return pazaak::CardDefinition::flipTwoFour();
+    }
+    if (token == "F2") {
+        return pazaak::CardDefinition::flipThreeSix();
+    }
+    if (token == "TT") {
+        return pazaak::CardDefinition::tiebreaker();
+    }
+    if (token == "VV") {
+        return pazaak::CardDefinition::valueChange();
+    }
+    // Otherwise the KotOR I grammar (+N / -N / *N) applies unchanged.
+    return parseK1PazaakDeckCard(token);
+}
+
+static std::optional<pazaak::SideDeck> loadK2PazaakOpponentDeck(
+    const resource::TwoDA &decks,
+    int row) {
+
+    if (row < 0 || row >= decks.getRowCount()) {
+        return std::nullopt;
+    }
+    std::vector<pazaak::CardDefinition> cards;
+    cards.reserve(pazaak::kSideDeckSize);
+    for (size_t i = 0; i < pazaak::kSideDeckSize; ++i) {
+        auto card = parseK2PazaakDeckCard(
+            decks.getString(row, "card" + std::to_string(i)));
         if (!card) {
             return std::nullopt;
         }
@@ -654,10 +688,6 @@ void Game::initConsole() {
     }
 }
 
-std::shared_ptr<Spell> Game::getSpell(SpellType type) const {
-    return _services.game.spells.get(type);
-}
-
 void Game::initLocalServices() {
     auto routines = std::make_unique<Routines>(_gameId, this, &_services);
     routines->init();
@@ -761,16 +791,11 @@ bool Game::consumeTimingDiscontinuity() {
 }
 
 void Game::update(float frameTime) {
-    if (_endGamePending) {
-        openMainMenu();
-        return;
-    }
     // Presentation advances once, before callbacks can replace its request.
     // The driver rebases frameTime after synchronous loading; movies suspend it.
     _globalFade.update(frameTime);
     float dt = frameTime * _gameSpeed;
     if (_movie) {
-        _worldClockSample.reset();
         updateMovie(dt);
         return;
     }
@@ -807,7 +832,6 @@ void Game::update(float frameTime) {
     if (!_nextModule.empty()) {
         loadNextModule();
     }
-    syncClientCombatMode();
     updateCamera(dt);
 
     if (_swoopRace.isActive()) {
@@ -841,28 +865,15 @@ void Game::update(float frameTime) {
         }
     }
 
-    updateTemporaryDeath();
-
     bool updModule = !_movie && _module && (_screen == Screen::InGame || _screen == Screen::Conversation);
-    const auto clockSample = _services.system.clock.micros();
-    const auto elapsed = _worldClockSample ? clockSample - *_worldClockSample : 0;
-    _worldClockSample = clockSample;
     if (updModule && !_paused) {
         _floatingText.update(dt);
-        advanceWorldTime(static_cast<double>(elapsed) * static_cast<double>(_gameSpeed) / 1000000.0);
+        advanceWorldTime(dt);
         advancePlayedTime(dt);
         auto updatedModule = _module;
         auto generation = _runtimeSessionGeneration;
         updatedModule->update(dt);
-        if (_module == updatedModule && _runtimeSessionGeneration == generation) {
-            _combat.update(dt);
-        }
-        if (_module == updatedModule && _runtimeSessionGeneration == generation) {
-            _services.game.projectiles.update(dt, *this, _services);
-        }
-        if (_module == updatedModule && _runtimeSessionGeneration == generation) {
-            updatedModule->dispatchDueSavedEvents();
-        }
+        _combat.update(dt);
         if (_module == updatedModule && _runtimeSessionGeneration == generation) {
             settleFadeArrival();
         }
@@ -872,7 +883,6 @@ void Game::update(float frameTime) {
         settleFadeArrival();
     }
 
-    syncClientCombatMode();
     auto gui = getScreenGUI();
     if (gui) {
         gui->update(dt);
@@ -1034,7 +1044,7 @@ Game::PreparedDestinationModule Game::prepareDestinationModule(
     prepared.are = prepared.resources->areaAre();
     prepared.git = prepared.resources->areaGit();
     prepared.name = prepared.resources->moduleName();
-    // GIT.UseTemplates is the world-representation discriminator.
+    // GIT.UseTemplates is the retail world-representation discriminator.
     // Mod_IsSaveGame describes the surrounding IFO but cannot turn a
     // template GIT into an authoritative instance graph (or vice versa).
     const bool authoritativeSavedWorld =
@@ -1181,7 +1191,7 @@ bool Game::loadPreparedModule(
             return false;
         }
 
-        // The game serializes resident Party members before destroying their
+        // Retail serializes resident Party members before destroying their
         // source representations. Reone retains the Creature storage, but the
         // live action/timer objects still belong to the outgoing Area. Capture
         // their existing save-facing forms now and reconstruct them only after
@@ -1220,7 +1230,7 @@ bool Game::loadPreparedModule(
                     if (!savedAction || savedAction->actionId != 37 ||
                         savedAction->parameters.size() != 1) {
                         throw ValidationException(
-                            "Party delayed action has no serializable timed-event representation");
+                            "Party delayed action has no retail timed-event representation");
                     }
                     auto situation = std::get_if<SerializedScriptSituation>(
                         &savedAction->parameters.front().payload);
@@ -1432,7 +1442,7 @@ bool Game::loadPreparedModule(
                 loadDefaultParty();
             }
 
-            // The game makes restored effects, actions and events visible before
+            // Retail makes restored effects, actions and events visible before
             // authored OnLoad/OnEnter scripts inspect or mutate them. Binding
             // remains explicit and graph-local; only publication moves ahead
             // of the entry hooks.
@@ -1452,7 +1462,7 @@ bool Game::loadPreparedModule(
                     std::move(state.actionReferencesBound);
                 creature->_savedRuntimeParsed = true;
                 creature->_savedRuntimePublished = false;
-                creature->_actions.clear();
+                creature->_loadedSaveActionSlots.clear();
 
                 for (auto &delayed : state.delayedEvents) {
                     _module->enqueueBoundSaveEvent(
@@ -1533,7 +1543,6 @@ void Game::retireActiveModuleRuntime() {
     _globalFade.invalidateModule();
     _fadeArrival.reset();
     _fadeArrivalModule.reset();
-    _lastTarget.reset();
     _lastRenderedSceneOutput = nullptr;
     _runtimeSessionPlayable = false;
 
@@ -1563,7 +1572,6 @@ void Game::retireActiveModuleRuntime() {
 }
 
 void Game::retireActiveAreaRuntime() {
-    _services.game.projectiles.retireAreaRuntime();
     auto module = _module;
     auto area = module ? module->area() : nullptr;
     if (area) {
@@ -1634,10 +1642,6 @@ void Game::retireRuntimeSession() {
     _cameraType = CameraType::ThirdPerson;
     _savedCameraType = CameraType::ThirdPerson;
     _paused = false;
-    _clientCombatMode = false;
-    _clientCombatLeader.reset();
-    _clientCombatArea.reset();
-    _keepStealthInDialog = false;
     _relativeMouseMode = false;
 
     _statusSummary.reset();
@@ -1683,7 +1687,6 @@ void Game::retireRuntimeSession() {
     _worldTimeMilliseconds = 0;
     _minutesPerHour = 5;
     _worldTimeFraction = 0.0;
-    _worldClockSample.reset();
 
     _nextModule.clear();
     _nextEntry.clear();
@@ -1691,12 +1694,6 @@ void Game::retireRuntimeSession() {
 }
 
 void Game::resetGame() {
-    _temporaryDeathRecovery.reset();
-    _gameOver = false;
-    _endGamePending = false;
-    _deathMessage.reset();
-    _deathDisplay.reset();
-    _lastTarget.reset();
     retireRuntimeSession();
 
     _quitRequested = false;
@@ -1743,7 +1740,8 @@ Game::PreparedSaveLoad Game::prepareSaveLoad(const resource::SaveSlotDescriptor 
     }
     (void)resource::parseGVT(*prepared.globalVars);
 
-    // Optional save-wide records are decoded while the candidate is still private.
+    // Save-wide records remain optional where retail permits them, but any
+    // record supplied by the slot is decoded while the candidate is private.
     prepared.partyTable = decodeSaveGff(
         prepared.session->findMetadata(ResourceId("partytable", ResType::Res)));
     prepared.inventory = decodeSaveGff(
@@ -1848,9 +1846,10 @@ bool Game::restoreSaveLoad(PreparedSaveLoad prepared) {
     // still unpublished.
     deserializeGlobalVariables(*prepared.globalVars);
 
-    // Deserialize the party from records read before retiring the previous session.
-    // A save may contain save-wide state without an instantiated module graph;
-    // transition autosaves build the module from templates and the player from pifo.ifo.
+    // Deserialize party from records inspected before the old session was
+    // retired. A disk restore and a saved module graph are independent: retail
+    // transition autosaves restore save-wide state while constructing the
+    // module world from installed templates and the player from pifo.ifo.
     const auto &ifo = prepared.destination.ifo;
     replaceCustomTokens(parseCustomTokens(*ifo));
     std::string entry;
@@ -1882,13 +1881,16 @@ bool Game::restoreSaveLoad(PreparedSaveLoad prepared) {
         entry = prepared.autosave->startWaypoint;
     }
 
-    // Party creation clears the detached companion ActionList before binding
-    // its representation into the active area.
+    // Retail CreateParty clears the detached NPC/PUP ActionList when it
+    // respawns those representations as part of a full disk restore. This is
+    // intentionally different from ordinary travel, whose UpdateMembers(0)
+    // queue is restored below. The module player is loaded through the IFO or
+    // pifo path and is not one of these spawned detached followers.
     auto discardDetachedRosterActions = [](const std::shared_ptr<Creature> &creature) {
         if (!creature) return;
         creature->_savedActionQueue = SavedActionQueue {};
         creature->_savedActionReferencesBound.clear();
-        creature->_actions.clear();
+        creature->_loadedSaveActionSlots.clear();
     };
     for (const auto &member : _party.members()) {
         if (member.creature && member.creature != _party.player() &&
@@ -2015,7 +2017,7 @@ void Game::deserializeParty(
     if (!players.empty()) {
         const int controlledNpc =
             ptGff ? parsePartyTable(*ptGff).controlledNpc : -1;
-        // K2 may mark the controlled module creature primary even while
+        // Retail K2 may mark the controlled module creature primary even while
         // pc.utc holds a distinct canonical player. PARTYTABLE is authoritative.
         if (controlledNpc != -1) {
             try {
@@ -2099,7 +2101,7 @@ void Game::publishPartyRuntimeState(
 Party::PersistedState Game::parsePartyTable(const resource::Gff &ptGff) const {
     Party::PersistedState state;
     state.pcName = ptGff.getString("PT_PCNAME");
-    // GFF labels are capped at sixteen bytes. KotOR II stores the
+    // GFF labels are capped at sixteen bytes. Retail KotOR II stores the
     // component count under this exact truncated label.
     state.itemComponent = ptGff.getUint("PT_ITEM_COMPONEN");
     if (!ptGff.has("PT_ITEM_COMPONEN")) {
@@ -2258,7 +2260,7 @@ void Game::deserializePazaakPartyTable(resource::Gff &ptGff) {
 }
 
 void Game::saveNpcState(int npc) {
-    // The game bounds the roster flat, then treats an empty slot as nothing to
+    // Retail bounds the roster flat, then treats an empty slot as nothing to
     // save rather than an error.
     if (npc < 0 || npc >= static_cast<int>(Party::kMaxNpcCount)) {
         return;
@@ -2328,7 +2330,7 @@ std::shared_ptr<Creature> Game::materializeRosterCreature(
             throw ValidationException("Could not bind materialized roster creature");
         }
         // Initial restoration performs one graph-wide bind/publication after
-        // every object exists. A lazy GetNPCObject call in an
+        // every object exists. A retail-style lazy GetNPCObject call in an
         // already playable session must complete the same detached-record
         // publication for this one newly materialized object immediately.
         if (_runtimeSessionPlayable) {
@@ -2398,7 +2400,7 @@ void Game::deserializePartyMembers(resource::Gff &ptGff) {
     }
 
     auto actualPlayer = _party.actualPlayer();
-    // A zero-member controlled-NPC PARTYTABLE is used by K2 prologue
+    // A zero-member controlled-NPC PARTYTABLE is used by retail K2 prologue
     // saves for an NPC operating alone while the canonical PC remains in
     // limbo. Non-empty lists retain the usual implicit canonical PC member.
     const bool canonicalPlayerIsActive =
@@ -3109,7 +3111,7 @@ void Game::prepareSavedRuntimeNamespace(
         pauseTime = ifo.getUint("Mod_PauseTime");
     } else {
         // Read-only compatibility for saves written by the short-lived Reone
-        // field-name mistake. New snapshots always emit the saved fields.
+        // field-name mistake. New snapshots always emit the retail fields.
         pauseDay = ifo.getUint("Mod_CalendarDay");
         pauseTime = ifo.getUint("Mod_TimeOfDay");
     }
@@ -3130,13 +3132,15 @@ void Game::restoreWorldTime(
                           ? 5
                           : static_cast<uint8_t>(minutesPerHour);
 
-    // Compose the clock from the saved day/time pair. Oversized time-of-day values
-    // carry into later days so saves written with the older fixed day length still
-    // load. Both inputs are Dwords, so the 64-bit composition cannot overflow.
+    // Compose the canonical clock from the retail day/time pair. An oversized
+    // time of day carries into later days rather than being rejected, as
+    // CWorldTimer::GetWorldTime does: saves written before the day length
+    // became Mod_MinPerHour-derived hold a time of day on the old fixed
+    // 24-hour scale, and must still load. Both fields are Dwords, so the
+    // composition cannot overflow the 64-bit clock.
     _worldTimeMilliseconds =
         pauseDay * millisecondsPerWorldDay() + pauseTime;
     _worldTimeFraction = 0.0;
-    _worldClockSample.reset();
 }
 
 void Game::reserveSavedObjectIds(
@@ -3194,31 +3198,19 @@ void Game::publishSavedRuntimeState() {
     for (const auto &[_, object] : _objectById) {
         object->publishSavedRuntimeState();
     }
-    for (const auto &[_, object] : _objectById) {
-        auto actor = std::dynamic_pointer_cast<Creature>(object);
-        if (!actor) continue;
-        for (const auto &action : actor->actions()) {
-            const auto &saved = action->originalSavedAction();
-            if (saved && saved->round) _combat.restoreRound(action, actor, *saved->round);
-        }
-    }
-    for (const auto &[_, object] : _objectById) {
-        auto actor = std::dynamic_pointer_cast<Creature>(object);
-        if (actor) _combat.restoreScheduled(actor, actor->_savedScheduledActions,
-            actor->_savedScheduledReferencesBound, actor->_savedScheduledTime);
-    }
-    _module->restoreProjectilePresentations();
     _module->publishSavedEventQueue();
-    syncClientCombatMode();
 }
 
-void Game::advanceWorldTime(double dt) {
+void Game::advanceWorldTime(float dt) {
     if (dt <= 0.0f) {
         return;
     }
-    // One simulation second advances the world clock by 1000 milliseconds.
-    // Mod_MinPerHour changes the day boundary, not the clock rate; scaling the
-    // clock rate would shorten effect durations and delayed actions.
+    // One second of simulation is one thousand world milliseconds.
+    // Mod_MinPerHour shortens the day, it does not accelerate the clock:
+    // CWorldTimer accumulates elapsed time into m_nSnapshotTime and only
+    // derives the day boundary from m_nMillisecondsInDay. Scaling the rate
+    // here instead made every duration measured in world time short by
+    // 60 / Mod_MinPerHour.
     double gameMilliseconds =
         _worldTimeFraction + static_cast<double>(dt) * 1000.0;
     uint64_t wholeMilliseconds =
@@ -3229,74 +3221,27 @@ void Game::advanceWorldTime(double dt) {
     _worldTimeMilliseconds += wholeMilliseconds;
 }
 
-void Game::queueScriptEvent(Object &target, Object *caller, const Event &event) {
-    SavedEventRecord queued;
-    queued.day = worldTimeDay();
-    queued.time = worldTimeOfDay();
-    queued.object = SavedObjectReference::fromRuntimeId(target.id());
-    queued.caller = SavedObjectReference::fromRuntimeId(caller ? caller->id() : script::kObjectInvalid);
-    queued.eventId = static_cast<uint32_t>(SavedEventType::SignalEvent);
-    SavedScriptEvent payload;
-    payload.type = static_cast<uint16_t>(event.number());
-    payload.integers = event.integers();
-    payload.floats = event.floats();
-    payload.strings = event.strings();
-    for (uint32_t id : event.objects()) payload.objects.push_back(SavedObjectReference::fromRuntimeId(id));
-    queued.payload = std::move(payload);
-    const bool bound = queued.bindObjectReferences(*this);
-    _module->enqueueBoundSaveEvent(std::move(queued), bound);
-}
+std::optional<float> Game::remainingEffectDuration(
+    const EffectInstance &effect) const {
+    if (effect.durationType() != DurationType::Temporary) {
+        return std::nullopt;
+    }
+    if (effect.expiryDay == 0 && effect.expiryTime == 0) {
+        return std::max(0.0f, effect.duration);
+    }
 
-void Game::queueEffectApplication(Object &target, EffectInstance effect, uint32_t delayMilliseconds) {
-    SavedEventRecord event;
-    const uint64_t when = worldTimeMilliseconds() + delayMilliseconds;
-    event.day = static_cast<uint32_t>(when / millisecondsPerWorldDay());
-    event.time = static_cast<uint32_t>(when % millisecondsPerWorldDay());
-    event.object = SavedObjectReference::fromRuntimeId(target.id());
-    event.eventId = static_cast<uint32_t>(SavedEventType::ApplyEffect);
-    event.payload = std::move(effect);
-    const bool bound = bindSavedObjectReference(event.object);
-    _module->enqueueBoundSaveEvent(std::move(event), bound);
-}
-
-void Game::queueObjectDestruction(Object &target, float delay) {
-    cancelObjectDestruction(target);
-    const uint64_t time = worldTimeMilliseconds() + static_cast<uint64_t>(delay * 1000.0f);
-    SavedEventRecord event;
-    event.day = static_cast<uint32_t>(time / millisecondsPerWorldDay());
-    event.time = static_cast<uint32_t>(time % millisecondsPerWorldDay());
-    event.eventId = static_cast<uint32_t>(SavedEventType::DestroyObject);
-    event.object = SavedObjectReference::fromRuntimeId(target.id());
-    const bool bound = bindSavedObjectReference(event.object);
-    _module->enqueueBoundSaveEvent(std::move(event), bound);
-}
-
-void Game::cancelObjectDestruction(Object &target) {
-    if (_module) _module->cancelObjectDestruction(target);
-}
-
-void Game::queueEffectRemoval(Object &target, EffectId id) {
-    SavedEventRecord event;
-    event.day = worldTimeDay();
-    event.time = worldTimeOfDay();
-    event.object = SavedObjectReference::fromRuntimeId(target.id());
-    event.eventId = static_cast<uint32_t>(SavedEventType::RemoveEffect);
-    EffectInstance value;
-    value.id = id;
-    value.creatorId = kSavedEffectInvalidObjectId;
-    event.payload = std::move(value);
-    const bool bound = bindSavedObjectReference(event.object);
-    _module->enqueueBoundSaveEvent(std::move(event), bound);
-}
-
-std::optional<float> Game::remainingEffectDuration(const EffectInstance &effect) const {
-    if (effect.durationType() != DurationType::Temporary) return std::nullopt;
-    if (effect.expiryOrigin == EffectExpiryOrigin::RuntimeCountdown ||
-        effect.expiryOrigin == EffectExpiryOrigin::None) return effect.duration;
-    const uint64_t expiry = static_cast<uint64_t>(effect.expiryDay) * millisecondsPerWorldDay() + effect.expiryTime;
-    return expiry >= _worldTimeMilliseconds
-        ? static_cast<float>(expiry - _worldTimeMilliseconds) / 1000.0f
-        : -static_cast<float>(_worldTimeMilliseconds - expiry) / 1000.0f;
+    // Save-facing expiry provenance, converted once here at the restoration
+    // boundary. Live effects then count down in world seconds and never
+    // reconstruct a calendar day again.
+    uint64_t expiry =
+        static_cast<uint64_t>(effect.expiryDay) * millisecondsPerWorldDay() +
+        effect.expiryTime;
+    if (expiry <= _worldTimeMilliseconds) {
+        return 0.0f;
+    }
+    double remainingSeconds =
+        static_cast<double>(expiry - _worldTimeMilliseconds) / 1000.0;
+    return static_cast<float>(remainingSeconds);
 }
 
 void Game::renderGUI() {
@@ -3693,7 +3638,6 @@ void Game::updateMusic() {
 }
 
 void Game::loadNextModule() {
-    _temporaryDeathRecovery.reset();
     std::string target(_nextModule);
 
     // Capture the origin (current module + leader location) before the deferred
@@ -3993,7 +3937,7 @@ void Game::setGlobalBoolean(const std::string &name, bool value) {
 }
 
 void Game::setGlobalNumber(const std::string &name, int value) {
-    // SetGlobalNumber stores the low byte in its signed-char table.
+    // Retail SetGlobalNumber stores the low byte in its signed-char table.
     // Express that conversion portably instead of relying on plain-char
     // signedness or an implementation-defined narrowing conversion.
     uint8_t raw = static_cast<uint8_t>(value);
@@ -4013,12 +3957,8 @@ void Game::setGlobalLocation(const std::string &name, const std::shared_ptr<Loca
     _globalLocations[name] = location;
 }
 
-void Game::syncClientCombatMode() {
-    auto leader = _party.getLeader();
-    auto area = _module ? _module->area() : nullptr;
-    _clientCombatLeader = RuntimeObjectRef<Creature>(leader);
-    _clientCombatArea = RuntimeObjectRef<Area>(area);
-    _clientCombatMode = leader && area && area->isObjectResident(*leader) && leader->clientCombatMode();
+void Game::setPaused(bool paused) {
+    _paused = paused;
 }
 
 void Game::setRelativeMouseMode(bool relative) {
@@ -4110,7 +4050,7 @@ struct SwoopTrackFrame {
 // teleport the bike into the void, so the proven leader anchor is kept.
 constexpr float kTrackFrameMaxDistance = 64.0f;
 
-// Non-blocking finish threshold (forward-progress units). The race finishes
+// PR1 non-blocking finish threshold (forward-progress units). The race finishes
 // a margin past the furthest mapped obstacle, or at a conservative fallback
 // distance when no obstacle placements exist.
 constexpr float kSwoopFinishMargin = 500.0f;
@@ -4278,7 +4218,7 @@ void Game::openSwoopRace() {
         trackModel, mg.player.trackResRef, haveLytTrackPos ? &lytTrackPos : nullptr,
         leader->position(), leader->getFacing());
 
-    // Choose a non-blocking finish threshold. Loop/finish handling is
+    // Choose a non-blocking finish threshold (PR1). Vanilla loop/finish is
     // script-driven and not yet implemented, so use the furthest mapped LYT
     // obstacle (the obstacle field spans the playable track) plus a margin, or
     // a conservative fallback distance when no obstacle placements are present.
@@ -4481,8 +4421,10 @@ void Game::finishSwoopLifecycle(bool success) {
 }
 
 std::string Game::swoopReturnWaypoint(const std::string &raceModule) const {
-    // Return Taris races to the mechanic waypoint inside the post-race trigger.
-    // Other planets use the saved pre-race position until their return routes are wired.
+    // Vanilla race-end transition target (StartNewModule waypoint), confirmed
+    // from assets. K1 Taris: heartbeat.ncs returns to tar_m03af at the
+    // tar03_wpmechanic waypoint, which sits inside the tar03_postrace trigger.
+    // Other planets are not yet wired (empty = use the saved pre-race position).
     if (boost::iequals(raceModule, "tar_m03mg")) {
         return "tar03_wpmechanic";
     }
@@ -4490,17 +4432,29 @@ std::string Game::swoopReturnWaypoint(const std::string &raceModule) const {
 }
 
 void Game::applyTarisForcedWinningTime() {
-    // Read the current heat's time-to-beat in MIN*10000 + SEC*100 + MSEC units.
-    // The winning time must remain above 25 because the next target is the player
-    // time minus 25. A zero player time would make the next target negative.
+    // Read the current heat's time-to-beat. k_ptar_racefirst sets these to
+    // MIN_BEAT=0 / SEC_BEAT=38 / MSEC_BEAT=43 for heat 1 (total=3843 in the
+    // vanilla comparison unit: MIN*10000 + SEC*100 + MSEC, confirmed by
+    // disassembly of k_ptar_postswoop.ncs subroutine at 0x0524).
+    //
+    // We must win (playerTotal < beatTotal) AND keep playerTotal > 25 so that
+    // the win-handler's beat update (k_ptar_postswoop 0x0572,
+    // new_beat = playerTime - 25cs) stays strictly positive. Setting
+    // player=0:00.00 underflows to MIN_BEAT=-1 (total=-4025), making every
+    // subsequent heat unwinnable.
     int beatMin  = getGlobalNumber("TAR_SWOOP_MIN_BEAT");
     int beatSec  = getGlobalNumber("TAR_SWOOP_SEC_BEAT");
     int beatMsec = getGlobalNumber("TAR_SWOOP_MSEC_BEAT");
     int beatTotal = beatMin * 10000 + beatSec * 100 + beatMsec;
 
-    // Choose a winning time while keeping the next target positive. Use a 50-unit
-    // margin when there is room, a one-unit margin for low targets, and the first
-    // heat's default winning time for degenerate targets.
+    // Choose a player time that wins with comfortable headroom. A 50cs margin
+    // keeps enough distance from the beat target while the next beat
+    // (playerTotal - 25) stays well above zero.
+    //   - Normal case (beatTotal > 150): subtract the full 50cs margin;
+    //     guarantees playerTotal > 100 and next beat stays positive.
+    //   - Low beat (26-150): win by 1cs, floor at 26 so next beat stays > 0.
+    //   - Degenerate beat (<= 25): use the asset-confirmed heat-1 reference
+    //     (3793 = 3843 - 50); this path should not occur in normal Taris flow.
     static constexpr int kMargin = 50;
     static constexpr int kMinSafe = 26;                     // next beat = playerTotal - 25 > 0
     static constexpr int kMinSafePlayerTime = 100;          // floor for the comfortable-margin branch
@@ -4532,11 +4486,26 @@ void Game::applyTarisForcedWinningTime() {
 }
 
 void Game::applySwoopForcedSuccessResult(const std::string &raceModule) {
-    // Set the race-state globals consumed by the post-race trigger. The trigger
-    // checks TAR_SWOOP_RUN, compares the recorded time against TAR_SWOOP_*_BEAT,
-    // updates the result and race counter, and starts the post-race conversation.
-    // Leave those result and scene updates to the trigger; only record a winning
-    // time and mark the run complete here. Other planets are not yet wired.
+    // K1 Taris swoop result contract, confirmed from local assets:
+    //   tar_m03mg.are -> player OnHeartbeat = "heartbeat" is the race brain. At
+    //     race start it sets the boolean global TAR_SWOOP_RUN = TRUE
+    //     (SetGlobalBoolean) and records the run time in TAR_SWOOP_MIN / _SEC /
+    //     _MSEC; reone substitutes the race and never runs heartbeat.
+    //   The post-race scene is the "tar03_postrace" trigger, whose ScriptOnEnter
+    //     is k_ptar_postswoop. Disassembly of k_ptar_postswoop.ncs shows it
+    //     begins with: if (!GetGlobalBoolean("TAR_SWOOP_RUN")) return; then
+    //     SetGlobalBoolean("TAR_SWOOP_RUN", FALSE); compares the run time vs the
+    //     TAR_SWOOP_*_BEAT targets; SetGlobalNumber("Tar_SwoopStatus", 2) when
+    //     the player time is lower (won) else 1; increments Tar_SwoopRaceCounter;
+    //     and starts the announcer/Brejik scene (ActionStartConversation, using
+    //     the entering PC).
+    // So forced success must reproduce heartbeat's race-state outputs: set
+    // TAR_SWOOP_RUN = TRUE so postswoop passes its guard, then choose a player
+    // time strictly less than TAR_SWOOP_*_BEAT so postswoop computes a win.
+    // Win state (Tar_SwoopStatus) and the scene are produced by the vanilla
+    // trigger->postswoop chain (see Area::updateLeaderTriggerOccupancy and the
+    // return-waypoint placement). No result/winner globals are set here.
+    // Other planets are not yet wired.
     if (!boost::iequals(raceModule, "tar_m03mg")) {
         return;
     }
@@ -4752,8 +4721,14 @@ void Game::finishTurretLifecycle(Turret::Outcome outcome) {
 }
 
 void Game::applyTurretResult(const std::string &turretModule, Turret::Outcome outcome) {
-    // A victory in M12ab clears the remaining-fighters count and marks the turret
-    // sequence complete. Defeat or abandonment leaves the sequence outstanding.
+    // K1 M12ab result contract, confirmed from local assets: k_pebo_mgload seeds
+    // the globals ebo_num_fighters (Number) and ebo_turret_done (Boolean); each
+    // enemy death script decrements ebo_num_fighters and, on the last kill, sets
+    // ebo_turret_done before returning to ebo_m12aa. reone substitutes the
+    // minigame and never runs those scripts, so reproduce their outputs here.
+    //
+    // Only the last kill writes them in vanilla, so only a victory writes them
+    // here: a defeat or an abandoned session leaves the turret outstanding.
     if (!boost::iequals(turretModule, "m12ab")) {
         return;
     }
@@ -5049,7 +5024,7 @@ bool Game::playPazaak(
     params.opponentId = opponent->id();
     params.opponentName = opponent->name().empty() ? opponent->tag() : opponent->name();
 
-    // A match always plays with the cards the player actually owns, read
+    // A native match always plays with the cards the player actually owns, read
     // from PARTYTABLE.res. Only the developer command uses temporary cards.
     if (!_party.hasValidPazaakData()) {
         error("Unable to start Pazaak: PARTYTABLE.res has no valid Pazaak data");
@@ -5064,7 +5039,8 @@ bool Game::playPazaak(
         if (counts[cardId] == 0) {
             continue;
         }
-        auto definition = getPazaakCardDefinition(cardId, isTSL());
+        auto definition = isTSL() ? k2PazaakCardDefinition(cardId)
+                                  : k1PazaakCardDefinition(cardId);
         if (!definition) {
             error("Unable to start Pazaak: invalid player collection card ID");
             return false;
@@ -5101,7 +5077,9 @@ bool Game::playPazaak(
                 error("Unable to start Pazaak: pazaakdecks.2da is missing");
                 return false;
             }
-            params.opponentSideDeck = loadPazaakOpponentDeck(*decks, opponentDeck, isTSL());
+            params.opponentSideDeck = isTSL()
+                                          ? loadK2PazaakOpponentDeck(*decks, opponentDeck)
+                                          : loadK1PazaakOpponentDeck(*decks, opponentDeck);
         } catch (const std::exception &e) {
             error("Unable to read pazaakdecks.2da: " + std::string(e.what()));
             return false;
@@ -5122,16 +5100,16 @@ bool Game::startDevelopmentPazaak(std::string opponentName, int maximumWager) {
     // The developer route never touches save-owned cards or credits: it uses a
     // temporary, title-appropriate collection and opponent deck only.
     if (isTSL()) {
-        params.collection = PazaakSession::makeDebugCollection(true);
-        params.opponentSideDeck = PazaakSession::makeDebugOpponentSideDeck(true);
+        params.collection = PazaakSession::k2DefaultCollection();
+        params.opponentSideDeck = PazaakSession::temporaryK2OpponentSideDeck();
         // Deterministic showcase deck covering every KotOR II family. The first
         // four entries become the opening hand: a Value Change card, a
         // sign-selectable card, a fixed card and a non-switchable special.
-        params.initialChosenCards = PazaakSession::specialCardShowcaseSelection();
+        params.initialChosenCards = PazaakSession::k2ShowcaseChosenCards();
         _pazaakShowcaseHands = true;
     } else {
-        params.collection = PazaakSession::makeDebugCollection(false);
-        params.opponentSideDeck = PazaakSession::makeDebugOpponentSideDeck(false);
+        params.collection = PazaakSession::temporaryK1TestCollection();
+        params.opponentSideDeck = PazaakSession::temporaryK1OpponentSideDeck();
     }
     return startPazaakFlow(std::move(params), nullptr, true);
 }
@@ -5471,13 +5449,6 @@ void Game::startDialog(const std::shared_ptr<Object> &owner, const std::string &
     setCursorType(CursorType::Default);
     changeScreen(Screen::Conversation);
 
-    if (!isTSL() || !_keepStealthInDialog) {
-        if (auto creature = std::dynamic_pointer_cast<Creature>(owner)) creature->setStealthMode(false);
-        if (auto leader = _party.getLeader()) leader->setStealthMode(false);
-        if (!computerConversation)
-            for (int i = 0; i < _party.getSize(); ++i)
-                if (auto member = _party.getMember(i)) member->setStealthMode(false);
-    }
     _conversation = conversation;
     _conversation->setAutoSkip(&_conversationAutoSkip);
     _conversation->start(dialog, owner, std::move(admission));
@@ -5531,8 +5502,6 @@ void Game::changeScreen(Screen screen) {
 
 GameGUI *Game::getScreenGUI() const {
     switch (_screen) {
-    case Screen::Death:
-        return isTSL() ? static_cast<GameGUI *>(_deathDisplay.get()) : static_cast<GameGUI *>(_deathMessage.get());
     case Screen::MainMenu:
         return _mainMenu.get();
     case Screen::Loading:

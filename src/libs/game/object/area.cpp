@@ -87,6 +87,7 @@ static constexpr std::array<glm::vec3, 2> kPartyFormationOffsets {{
     glm::vec3(1.5f, -0.7f, 0.0f),
     glm::vec3(-1.5f, 0.8f, 0.0f),
 }};
+static constexpr float kPartyPositionSearchRadius = 10.0f;
 static constexpr float kPartyPositionSearchStep = 1.0f;
 static constexpr int kPartyPositionSearchDirections = 16;
 static constexpr float kPartyMemberSpacing = 1.5f;
@@ -185,8 +186,6 @@ void Area::load(
     auto gitParsed = resource::generated::parseGIT(git);
     deserializeRuntimeState(are, identityContext);
 
-    _playerRestrictMode = are.getBool("RestrictMode");
-    _transitionPending = are.getBool("TransPending");
     loadARE(areParsed);
     loadLYT();
     loadGIT(gitParsed, git, identityContext);
@@ -197,7 +196,6 @@ void Area::activate() {
     // Map is presentation state owned by Game, while loaded areas are cached.
     // Restore this area's map whenever a cached module becomes active again.
     _game.map().load(_name, _map);
-    if (auto module = _game.module()) module->player().setRestrictMode(_playerRestrictMode);
     applySceneProperties();
 
     for (auto &pair : _rooms) {
@@ -221,13 +219,6 @@ void Area::loadARE(const resource::generated::ARE &are) {
     loadGrass(are);
     loadFog(are);
     loadMiniGame(are);
-    _roomForceRatings.clear();
-    if (_game.isTSL()) {
-        for (const auto &room : are.Rooms) {
-            _roomForceRatings.emplace(
-                boost::to_lower_copy(room.RoomName), room.ForceRating);
-        }
-    }
 }
 
 void Area::loadCameraStyle(const resource::generated::ARE &are) {
@@ -243,7 +234,7 @@ void Area::loadCameraStyle(const resource::generated::ARE &are) {
     // Combat
     std::shared_ptr<CameraStyle> combatStyle(_services.game.cameraStyles.get("Combat"));
     if (combatStyle) {
-        _camStyleCombat = *combatStyle;
+        _camStyleDefault = *combatStyle;
     } else {
         _camStyleCombat = g_defaultCameraStyle;
     }
@@ -519,9 +510,7 @@ void Area::loadLYT() {
         if (walkmeshSceneNode) {
             walkmeshSceneNode->setUser(*room);
         }
-        std::string roomName = room->name();
-        auto entry = _rooms.emplace(roomName, std::move(room)).first;
-        _roomOrder.push_back(entry->second.get());
+        _rooms.insert(std::make_pair(room->name(), std::move(room)));
     }
 
     uniwalkFinalize(_pathfinder.uni);
@@ -576,80 +565,8 @@ void Area::initCameras(const glm::vec3 &entryPosition, float entryFacing) {
         []() noexcept {});
 }
 
-Area::~Area() {
-    for (Object *object : _objectsByX) {
-        if (object->_spatialArea == this) {
-            object->_spatialArea = nullptr;
-        }
-    }
-}
-
-void Area::addToSpatialIndex(Object &object) {
-    auto position = std::lower_bound(
-        _objectsByX.begin(), _objectsByX.end(), object.position().x,
-        [](const Object *entry, float x) { return entry->position().x < x; });
-    // AddObjectToArea inserts before existing equal-X entries.
-    _objectsByX.insert(position, &object);
-    object._spatialArea = this;
-}
-
-void Area::removeFromSpatialIndex(Object &object) {
-    auto position = std::find(_objectsByX.begin(), _objectsByX.end(), &object);
-    if (position != _objectsByX.end()) {
-        _objectsByX.erase(position);
-    }
-    if (object._spatialArea == this) {
-        object._spatialArea = nullptr;
-    }
-    // Removal does not compensate the last successful query index.
-}
-
-void Area::updateObjectSpatialIndex(Object &object) {
-    auto position = std::find(_objectsByX.begin(), _objectsByX.end(), &object);
-    if (position == _objectsByX.end()) {
-        return;
-    }
-    // Movement swaps only across strictly smaller/larger X values;
-    // equal-X entries retain their current order, unlike remove-and-reinsert.
-    while (position + 1 != _objectsByX.end() &&
-           object.position().x > (*(position + 1))->position().x) {
-        std::iter_swap(position, position + 1);
-        ++position;
-    }
-    while (position != _objectsByX.begin() &&
-           object.position().x < (*(position - 1))->position().x) {
-        std::iter_swap(position, position - 1);
-        --position;
-    }
-}
-
-Object *Area::getObjectInShape(
-    bool first, float minX, float maxX,
-    const std::function<bool(const Object &)> &matches) {
-    size_t index = _shapeQueryIndex + 1;
-    if (first) {
-        auto begin = std::lower_bound(
-            _objectsByX.begin(), _objectsByX.end(), minX,
-            [](const Object *entry, float x) { return entry->position().x < x; });
-        index = static_cast<size_t>(begin - _objectsByX.begin());
-    }
-    for (; index < _objectsByX.size(); ++index) {
-        Object *object = _objectsByX[index];
-        if (object->position().x > maxX) {
-            break;
-        }
-        if (matches(*object)) {
-            _shapeQueryIndex = index;
-            return object;
-        }
-    }
-    // Failed First/Next calls leave the last successful index unchanged.
-    return nullptr;
-}
-
 void Area::add(const std::shared_ptr<Object> &object) {
-    if (!object || !_game.isRuntimeObjectAttachable(*object) ||
-        (object->_spatialArea && object->_spatialArea != this)) {
+    if (!object || !_game.isRuntimeObjectAttachable(*object)) {
         throw ValidationException(
             "Area can only own a published or staged runtime object");
     }
@@ -663,7 +580,6 @@ void Area::add(const std::shared_ptr<Object> &object) {
 
     try {
         _objects.push_back(object);
-        addToSpatialIndex(*object);
         _objectsByType[object->type()].push_back(object);
         _objectsByTag[object->tag()].push_back(object);
 
@@ -770,37 +686,6 @@ void Area::determineObjectRoom(Object &object) {
     object.setRoom(room);
 }
 
-int Area::getRoomForceRating(const glm::vec3 &position) const {
-    if (!_game.isTSL() || _roomForceRatings.empty()) {
-        return 0;
-    }
-    // K2 GetRoomIndex checks walkable room surfaces along z +/-1000,
-    // stopping at the first room hit. Do not use visibility, an actor's
-    // potentially stale room pointer, or the nearest room center.
-    auto surfaces = _services.game.surfaces.getWalkableSurfaces();
-    const glm::vec3 origin = position + glm::vec3(0.0f, 0.0f, 1000.0f);
-    const glm::vec3 direction(0.0f, 0.0f, -1.0f);
-    for (const Room *room : _roomOrder) {
-        auto mesh = room->walkmesh();
-        if (!mesh) continue;
-        auto localOrigin = glm::vec3(
-            mesh->absoluteTransformInverse() * glm::vec4(origin, 1.0f));
-        if (mesh->walkmesh().raycast(
-                surfaces, localOrigin, direction, 2000.0f,
-                /*ignoreBackface=*/true).fail != graphics::RAYCAST_OK) {
-            continue;
-        }
-        auto found = _roomForceRatings.find(boost::to_lower_copy(room->name()));
-        if (found == _roomForceRatings.end()) {
-            throw ValidationException("Missing ARE room ForceRating mapping: " + room->name());
-        }
-        return found->second;
-    }
-    // The caller assumes a valid room index. Reject malformed runtime
-    // placement rather than indexing -1 or inventing a neutral Force rating.
-    throw ValidationException("No walkable room for ForceRating lookup in " + _name);
-}
-
 void Area::doDestroyObjects() {
     for (auto &object : _objectsToDestroy) {
         doDestroyObject(object);
@@ -809,7 +694,6 @@ void Area::doDestroyObjects() {
 }
 
 void Area::detachObjectRuntime(const std::shared_ptr<Object> &object) {
-    removeFromSpatialIndex(*object);
     auto room = object->room();
     if (room) {
         object->setRoom(nullptr);
@@ -1020,7 +904,7 @@ bool Area::landObject(Object &object) {
     return false;
 }
 
-glm::vec3 Area::findPartyPosition(const Creature &member, const glm::vec3 &position, float searchRadius) const {
+glm::vec3 Area::findPartyPosition(const Creature &member, const glm::vec3 &position) const {
     auto &sceneGraph = _services.scene.graphs.get(_sceneName);
     const auto &creatures = _objectsByType.at(ObjectType::Creature);
 
@@ -1046,7 +930,7 @@ glm::vec3 Area::findPartyPosition(const Creature &member, const glm::vec3 &posit
         return result;
     }
 
-    for (float radius = kPartyPositionSearchStep; radius <= searchRadius; radius += kPartyPositionSearchStep) {
+    for (float radius = kPartyPositionSearchStep; radius <= kPartyPositionSearchRadius; radius += kPartyPositionSearchStep) {
         for (int i = 0; i < kPartyPositionSearchDirections; ++i) {
             float angle = i * glm::two_pi<float>() / kPartyPositionSearchDirections;
             glm::vec3 candidate(position.x + radius * glm::sin(angle), position.y + radius * glm::cos(angle), position.z);
@@ -1205,7 +1089,7 @@ void Area::placeControlledCreature(
     const glm::vec3 &position,
     float facing) {
 
-    // SwitchPlayerCharacter transfers control in the existing Area.
+    // Retail SwitchPlayerCharacter transfers control in the existing Area.
     // Only the incoming actor inherits the outgoing leader's transform;
     // unrelated followers and the parked actor retain their current runtime
     // state and placement.
@@ -1277,17 +1161,6 @@ void Area::update(float dt) {
 
 bool Area::moveCreature(const std::shared_ptr<Creature> &creature, const glm::vec2 &dir, bool run, float dt,
                         float maxDistance) {
-    if (!creature || creature->isMovementRestricted()) return false;
-    if (run && creature->isRunLimited()) {
-        run = false;
-        creature->setMovementType(Creature::MovementType::Walk);
-    }
-    float speed = run ? creature->runSpeed() : creature->walkSpeed();
-    return moveCreatureByDistance(creature, dir, std::min(speed * dt, maxDistance));
-}
-
-bool Area::moveCreatureByDistance(const std::shared_ptr<Creature> &creature,
-                                  const glm::vec2 &dir, float speedDt) {
     static glm::vec3 up {0.0f, 0.0f, 1.0f};
     static glm::vec3 zOffset {0.0f, 0.0f, 0.1f};
 
@@ -1304,6 +1177,12 @@ bool Area::moveCreatureByDistance(const std::shared_ptr<Creature> &creature,
     glm::vec3 origin(creature->position());
     origin.z += 0.1f;
 
+    float speed = run ? creature->runSpeed() : creature->walkSpeed();
+    float speedDt = speed * dt;
+
+    if (speedDt > maxDistance) {
+        speedDt = maxDistance;
+    }
 
     glm::vec3 dest(origin);
     dest.x += dir.x * speedDt;
@@ -1628,8 +1507,6 @@ void Area::updateHeartbeat(float dt) {
             _game.scriptRunner().run(_onHeartbeat, _id);
         }
         for (auto &object : _objects) {
-            // Creatures own their heartbeat and state-script timer in both games.
-            if (dyn_cast<Creature>(object.get())) continue;
             std::string heartbeat(object->getOnHeartbeat());
             if (!heartbeat.empty()) {
                 _game.scriptRunner().run(heartbeat, object->id());
@@ -1667,7 +1544,6 @@ void Area::setStaticCamera(int cameraId) {
 }
 
 void Area::setThirdPartyCameraStyle(CameraStyleType type) {
-    if (!_thirdPersonCamera) return;
     switch (type) {
     case CameraStyleType::Combat:
         _thirdPersonCamera->setStyle(_camStyleCombat);
@@ -1993,15 +1869,9 @@ void Area::updatePerceptionPair(
     float distance2 = observer->getSquareDistanceTo(*target);
     float hearingRange = observer->perception().hearingRange;
     float sightRange = observer->perception().sightRange;
-    const bool partyPair = _game.party().isMember(*observer) &&
-                           _game.party().isMember(*target);
-    bool heard = partyPair || distance2 <= hearingRange * hearingRange;
-    bool seen = partyPair || (distance2 <= sightRange * sightRange &&
-                              isObjectSeen(*observer, *target));
-
-    observer->updateMindTrickPerception(*target, heard, seen);
-    if (!observer->isRuntimeLive() || !target->isRuntimeLive() ||
-        !isObjectResident(*observer) || !isObjectResident(*target)) return;
+    bool heard = distance2 <= hearingRange * hearingRange;
+    bool seen = distance2 <= sightRange * sightRange &&
+                isObjectSeen(*observer, *target);
 
     bool wasHeard = observer->perception().hears(target->id());
     bool wasSeen = observer->perception().sees(target->id());

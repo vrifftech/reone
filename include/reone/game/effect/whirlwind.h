@@ -23,13 +23,13 @@ namespace reone {
 
 namespace game {
 
-class WhirlWindEffect : public CopyableEffect<WhirlWindEffect> {
+class WhirlWindEffect : public Effect {
 public:
     WhirlWindEffect() :
-        CopyableEffect(EffectType::WhirlWind) {
+        Effect(EffectType::WhirlWind) {
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
+    void applyTo(Object &object) override;
 };
 
 } // namespace game

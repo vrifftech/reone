@@ -23,10 +23,10 @@ namespace reone {
 
 namespace game {
 
-class ACIncreaseEffect : public CopyableEffect<ACIncreaseEffect> {
+class ACIncreaseEffect : public Effect {
 public:
     ACIncreaseEffect(int value, ACBonus modifyType, int damageType) :
-        CopyableEffect(EffectType::ACIncrease),
+        Effect(EffectType::ACIncrease),
         _value(value),
         _modifyType(modifyType),
         _damageType(damageType) {
@@ -36,7 +36,7 @@ public:
         setSaveFacingInteger(5, damageType);
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
+    void applyTo(Object &object) override;
 
     int bonus() const { return _value; }
     ACBonus modifierType() const { return _modifyType; }

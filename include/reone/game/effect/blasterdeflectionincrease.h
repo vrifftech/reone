@@ -23,15 +23,14 @@ namespace reone {
 
 namespace game {
 
-class BlasterDeflectionIncreaseEffect : public CopyableEffect<BlasterDeflectionIncreaseEffect> {
+class BlasterDeflectionIncreaseEffect : public Effect {
 public:
     BlasterDeflectionIncreaseEffect(int change) :
-        CopyableEffect(EffectType::BlasterDeflectionIncrease),
+        Effect(EffectType::BlasterDeflectionIncrease),
         _change(change) {
-        setSaveFacingInteger(0, change);
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
+    void applyTo(Object &object) override;
 
 private:
     int _change;

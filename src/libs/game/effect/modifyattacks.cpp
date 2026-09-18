@@ -16,7 +16,6 @@
  */
 
 #include "reone/game/effect/modifyattacks.h"
-#include "reone/game/game.h"
 
 #include "reone/game/object/creature.h"
 
@@ -24,26 +23,20 @@ namespace reone {
 
 namespace game {
 
-EffectApplicationResult ModifyAttacksEffect::onApply(Object &object, EffectInstance &instance) {
+bool ModifyAttacksEffect::onApply(Object &object, const EffectInstance &) {
     auto *creature = dyn_cast<Creature>(&object);
     if (!creature) {
-        return EffectApplicationResult::Retained;
-    }
-    // K1 alone rejects an already over-limit owner before mutation.
-    if (!creature->game().isTSL() && creature->modifiedAttacks() > 2) {
-        return EffectApplicationResult::Rejected;
+        return false;
     }
 
-    creature->adjustModifiedAttacks(instance.integerParameter(0));
-    return EffectApplicationResult::Retained;
+    creature->adjustModifiedAttacks(_attacks);
+    return true;
 }
 
-EffectRemovalResult ModifyAttacksEffect::onRemove(Object &object, const EffectInstance &instance) {
+void ModifyAttacksEffect::onRemove(Object &object, const EffectInstance &) {
     if (auto *creature = dyn_cast<Creature>(&object)) {
-        creature->adjustModifiedAttacks(-instance.integerParameter(0));
+        creature->adjustModifiedAttacks(-_attacks);
     }
-
-    return EffectRemovalResult::Removed;
 }
 
 } // namespace game

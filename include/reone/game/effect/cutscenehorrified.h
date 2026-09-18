@@ -23,13 +23,13 @@ namespace reone {
 
 namespace game {
 
-class CutsceneHorrifiedEffect : public CopyableEffect<CutsceneHorrifiedEffect> {
+class CutsceneHorrifiedEffect : public Effect {
 public:
     CutsceneHorrifiedEffect() :
-        CopyableEffect(EffectType::CutSceneHorrified) {
+        Effect(EffectType::CutSceneHorrified) {
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
+    void applyTo(Object &object) override;
 };
 
 } // namespace game

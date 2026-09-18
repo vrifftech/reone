@@ -39,7 +39,7 @@ uint32_t displayNumber(
     // K2 persists the display value explicitly. K1 does not and numbers
     // manual games from one while quick/autosave occupy durable slots 0/1.
     // The directory suffix is not authoritative: Reone stores the user-entered
-    // save name there, and lazy names only corroborate this slot model.
+    // save name there, and retail-style names only corroborate this slot model.
     if (metadata.saveNumber) return *metadata.saveNumber;
     return slot >= 2 ? slot - 1 : slot;
 }
@@ -175,7 +175,7 @@ std::string saveGameNumberLabel(const SavedGame &save) {
 }
 
 uint32_t nextManualSaveSlot(const std::vector<SavedGame> &saves) {
-    uint32_t result = 2; // 0/1 are quick/autosave identities.
+    uint32_t result = 2; // 0/1 are retail quick/autosave identities.
     for (const auto &save : saves) {
         if (save.slot >= result && save.slot < 999999) result = save.slot + 1;
     }

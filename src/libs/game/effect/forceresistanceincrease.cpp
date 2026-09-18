@@ -15,38 +15,16 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include "reone/game/object/creature.h"
 #include "reone/game/effect/forceresistanceincrease.h"
-#include "reone/game/effect/forceresistancedecrease.h"
 
-namespace reone::game {
-EffectApplicationResult ForceResistanceIncreaseEffect::onApply(Object &object, EffectInstance &instance) {
-    auto *creature = dyn_cast<Creature>(&object);
-    if (!creature) return EffectApplicationResult::Retained;
-    const int amount = instance.integerParameter(0);
-    if (amount < 0) return EffectApplicationResult::Rejected;
-    creature->forceResistance().applyIncrease(amount);
-    return EffectApplicationResult::Retained;
+namespace reone {
+
+namespace game {
+
+void ForceResistanceIncreaseEffect::applyTo(Object &object) {
+    // TODO: implement
 }
-EffectRemovalResult ForceResistanceIncreaseEffect::onRemove(Object &object, const EffectInstance &instance) {
-    if (auto *creature = dyn_cast<Creature>(&object))
-        creature->forceResistance().removeIncrease(object.effects(), instance);
-    return EffectRemovalResult::Removed;
-}
-EffectApplicationResult ForceResistanceDecreaseEffect::onApply(Object &object, EffectInstance &instance) {
-    auto *creature = dyn_cast<Creature>(&object);
-    if (!creature) return EffectApplicationResult::Retained;
-    auto creator = instance.boundCreator();
-    if (creature->hasEffectImmunity(ImmunityType::ForceResistanceDecrease, dyn_cast<Creature>(creator.get())))
-        return EffectApplicationResult::Rejected;
-    const int amount = instance.integerParameter(0);
-    if (amount < 0 || object.plotFlag()) return EffectApplicationResult::Rejected;
-    creature->forceResistance().applyDecrease(amount);
-    return EffectApplicationResult::Retained;
-}
-EffectRemovalResult ForceResistanceDecreaseEffect::onRemove(Object &object, const EffectInstance &instance) {
-    if (auto *creature = dyn_cast<Creature>(&object))
-        creature->forceResistance().removeDecrease(object.effects(), instance);
-    return EffectRemovalResult::Removed;
-}
-} // namespace reone::game
+
+} // namespace game
+
+} // namespace reone

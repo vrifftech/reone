@@ -52,7 +52,7 @@ public:
         _gui->clearSelection();
     }
 
-    std::shared_ptr<gui::Control> inGameTitleControl() const { return _k2InGameTitleControl; }
+    std::shared_ptr<gui::Control> k2InGameTitleControl() const { return _k2InGameTitleControl; }
 
 protected:
     friend class HUDTestAccess;
@@ -95,13 +95,13 @@ protected:
      * this; calling it there is a no-op.
      */
     void useBakedItemSlotArt(gui::ListBox &listBox);
-    void tintInGameFooter();
-    void tintInGameHeader();
-    void enableButtonBodyFill(gui::Control &control);
-    void enableButtonBodyFill(const std::shared_ptr<gui::Control> &control);
-    void fillSectionStrip(const std::shared_ptr<gui::Control> &topBar, const std::shared_ptr<gui::Control> &bottomBar);
-    void useShellTitle(const std::shared_ptr<gui::Control> &control);
-    void updateFilterButton(const std::shared_ptr<gui::Control> &button, bool selected);
+    void tintK2InGameFooter();
+    void tintK2InGameHeader();
+    void enableK2ButtonBodyFill(gui::Control &control);
+    void enableK2ButtonBodyFill(const std::shared_ptr<gui::Control> &control);
+    void fillK2SectionStrip(const std::shared_ptr<gui::Control> &topBar, const std::shared_ptr<gui::Control> &bottomBar);
+    void useK2ShellTitle(const std::shared_ptr<gui::Control> &control);
+    void updateK2FilterButton(const std::shared_ptr<gui::Control> &button, bool selected);
 
     virtual void configureControls() {}
     void onClick(const std::string &control) override;

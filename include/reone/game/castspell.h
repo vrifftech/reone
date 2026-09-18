@@ -17,9 +17,6 @@
 
 #pragma once
 
-#include "types.h"
-#include "savedruntime.h"
-
 namespace reone {
 
 namespace scene {
@@ -37,43 +34,11 @@ class Action;
 class CombatRound;
 class Creature;
 class Object;
-class Game;
-class Spell;
-class Location;
-
-struct SpellCastContext {
-    int spellId {-1};
-    int casterLevel {0};
-    int metaMagic {255};
-    int forcePointCost {0};
-};
-
-bool admitSpellCast(const Object &actor, const Spell &spell, bool freeCast, bool itemCast = false);
-float spellRange(const Object &actor, const Spell &spell, const Object *target = nullptr);
-bool withinSpellRange(const Object &actor, const Spell &spell, const glm::vec3 &position,
-                      const Object *target = nullptr);
-bool commitSpellCast(Object &actor, const Spell &spell, bool freeCast,
-                     SpellCastContext &context, bool itemCast = false);
-ProjectilePathType normalizeProjectilePath(ProjectilePathType path);
-uint32_t spellProjectileTimeMilliseconds(
-    const Spell &spell, const glm::vec3 &origin, const glm::vec3 &destination,
-    ProjectilePathType path, bool tsl);
-float spellProjectileTime(const Spell &spell, const glm::vec3 &origin,
-                          const glm::vec3 &destination, ProjectilePathType path, bool tsl = true);
-ProjectilePathType effectiveProjectilePath(const Spell &spell, ProjectilePathType overridePath);
-
-bool queueSpellImpact(Game &game, const Spell &spell, Object &caster,
-                      Object *target, const Location &location,
-                      const SpellCastContext &context, Object *item = nullptr, uint32_t delayMilliseconds = 0);
-
-void runSpellImpact(Game &game, const Spell &spell, Object &caster,
-                    Object *target, const std::shared_ptr<Location> &location,
-                    const SpellCastContext *context = nullptr);
 
 class SpellSchedule {
 public:
-    explicit SpellSchedule(float conjTime, float castTime, float catchTime = 0.0f) :
-        _conjTime(conjTime), _castTime(castTime), _catchTime(catchTime) {}
+    explicit SpellSchedule(float conjTime, float castTime) :
+        _conjTime(conjTime), _castTime(castTime) {}
 
     enum State {
         WaitConjure,
@@ -87,19 +52,12 @@ public:
     };
 
     State update(const CombatRound &round, Action &action, float dt);
-    State update(bool canStart, bool roundFinished, float dt);
-    void save(SavedCastAction &record) const;
-    void restore(const SavedCastAction &record);
-    bool awaitingRelease() const { return _state < WaitFinish; }
-    bool holdsRound() const { return _state < WaitFinish || remaining() > 0.0f; }
-    float remaining() const { return std::max(0.0f, _conjTime + _castTime + _catchTime - _time); }
 
 private:
     State _state {WaitConjure};
     float _time {0.0f};
     float _conjTime {0.0f};
     float _castTime {0.0f};
-    float _catchTime {0.0f};
 };
 
 class Grenade {

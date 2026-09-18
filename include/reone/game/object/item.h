@@ -17,8 +17,6 @@
 
 #pragma once
 
-#include "../onhit.h"
-
 #include <limits>
 
 #include "reone/audio/clip.h"
@@ -50,7 +48,6 @@ public:
         std::shared_ptr<audio::AudioClip> shotSound2;
         std::shared_ptr<audio::AudioClip> impactSound1;
         std::shared_ptr<audio::AudioClip> impactSound2;
-        bool shieldHit {false};
     };
 
     struct PropertyEntry {
@@ -61,10 +58,7 @@ public:
         uint8_t paramValue {0};
         uint16_t propertyName {0};
         uint16_t subtype {0};
-        uint8_t upgradeType {0xff};
-        uint8_t usesPerDay {0xff};
-        bool usable {true};
-        uint64_t cooldownUntil {0};
+        uint8_t upgradeType {0};
     };
 
     Item(
@@ -114,10 +108,9 @@ public:
     float attackRange() const { return _attackRange; }
     int bodyVariation() const { return _bodyVariation; }
     int damageFlags() const {
-        // A zero or missing base-item damage flag selects bludgeoning.
         return _damageFlags != 0
                    ? _damageFlags
-                   : static_cast<int>(DamageType::Bludgeoning);
+                   : static_cast<int>(DamageType::Universal);
     }
     int dieToRoll() const { return _dieToRoll; }
     int modelVariation() const { return _modelVariation; }
@@ -133,27 +126,16 @@ public:
     const std::string &description() const { return _description.str(); }
     const std::string &descIdentified() const { return _descIdentified.str(); }
     int baseItemType() const { return _baseItem; }
-    int itemType() const { return _itemType; }
     int criticalThreat() const { return _criticalThreat; }
     int criticalHitMultiplier() const { return _criticalHitMultiplier; }
     FeatType weaponFocusFeat() const { return _weaponFocusFeat; }
     FeatType weaponSpecializationFeat() const { return _weaponSpecializationFeat; }
     int baseDefense() const { return _baseDefense; }
     int maxDexterityBonus() const { return _maxDexterityBonus; }
-    int maxDexterityBonusAdjustment() const;
     ACBonus acBonusType() const { return _acBonusType; }
     std::optional<SpellType> activateSpell() const { return _activateSpell; }
-    uint32_t forceItemMask() const;
-    std::optional<size_t> spellProperty(SpellType spell) const;
-    bool canUseSpell(size_t property) const;
-    // Debit a just-dispatched use; return true when the item is exhausted.
-    bool consumeSpellUse(size_t property);
+    int activateSpellCost() const { return _activateSpellCost; }
     const std::vector<PropertyEntry> &properties() const { return _properties; }
-    std::vector<ItemOnHitProperty> itemOnHitProperties() const;
-
-    bool isPropertyActive(const PropertyEntry &property) const;
-    static bool isPropertyActive(uint32_t upgrades, uint8_t upgradeType);
-    uint32_t upgrades() const { return _upgrades; }
 
     bool hasDisguise() const { return _disguiseAppearance >= 0; }
     int disguiseAppearance() const { return _disguiseAppearance; }
@@ -178,7 +160,6 @@ private:
     uint32_t _addCost {0};
     bool _stolen {false};
     uint16_t _stackSize {1};
-    uint32_t _upgrades {0};
     bool _identified {true};
     uint8_t _modelVariation {0};
     uint8_t _bodyVariation {0};
@@ -188,7 +169,7 @@ private:
 
     uint32_t _ownerId {0};
 
-    // baseitems.2da defines the repository limit. The permissive
+    // baseitems.2da defines the retail repository limit. The permissive
     // fallback preserves behavior for incomplete custom/test tables.
     uint16_t _maxStackSize {std::numeric_limits<uint16_t>::max()};
 
@@ -223,7 +204,7 @@ private:
     ACBonus _acBonusType {ACBonus::Invalid};
 
     std::optional<SpellType> _activateSpell;
-    int _itemType {0};
+    int _activateSpellCost {0};
     int _disguiseAppearance {-1};
     std::vector<PropertyEntry> _properties;
     std::shared_ptr<audio::AudioSource> _audioSource;

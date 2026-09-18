@@ -23,14 +23,14 @@ namespace reone {
 
 namespace game {
 
-class AssuredHitEffect : public CopyableEffect<AssuredHitEffect> {
+class AssuredHitEffect : public Effect {
 public:
     AssuredHitEffect() :
-        CopyableEffect(EffectType::AssuredHit) {
+        Effect(EffectType::AssuredHit) {
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &instance) override;
-    EffectRemovalResult onRemove(Object &object, const EffectInstance &instance) override;
+    bool onApply(Object &object, const EffectInstance &instance) override;
+    void onRemove(Object &object, const EffectInstance &instance) override;
 };
 
 } // namespace game

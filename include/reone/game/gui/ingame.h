@@ -190,8 +190,8 @@ private:
 
     void updateTabButtons();
     void changeTab(InGameMenuTab tab);
-    void updateSectionTitle();
-    void refreshFooter();
+    void updateK2SectionTitle();
+    void refreshK2Footer();
 
     void loadCharacter();
     void loadEquipment();

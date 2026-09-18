@@ -142,7 +142,7 @@ std::shared_ptr<Gff> SaveWideSnapshotBuilder::buildGlobals() const {
         numbers.size() > kMaxGlobalNumbers ||
         strings.size() > kMaxGlobalStrings ||
         locations.size() > kMaxGlobalLocations) {
-        throw ValidationException("global-variable category exceeds saved-format capacity");
+        throw ValidationException("global-variable category exceeds retail capacity");
     }
 
     ByteBuffer booleanValues(booleans.size() / 8 + 1, 0);
@@ -161,10 +161,10 @@ std::shared_ptr<Gff> SaveWideSnapshotBuilder::buildGlobals() const {
     for (const auto &[name, value] : numbers) {
         (void)name;
         if (value < -128 || value > 127) {
-            throw ValidationException("global number is outside the signed-byte range");
+            throw ValidationException("global number is outside retail signed-byte range");
         }
         // Conversion to uint8_t is defined modulo 256 and therefore preserves
-        // the two's-complement byte for every validated signed value.
+        // the retail two's-complement byte for every validated signed value.
         numberValues.push_back(static_cast<uint8_t>(value));
     }
 
@@ -284,7 +284,7 @@ std::shared_ptr<Gff> SaveWideSnapshotBuilder::buildPartyTable() const {
         std::set<int> puppetIds;
         for (int puppet : state.puppetIds) {
             if (puppet < 0 || puppet >= static_cast<int>(Party::kMaxPuppetCount)) {
-                throw ValidationException("party puppet is outside the supported range");
+                throw ValidationException("party puppet is outside retail range");
             }
             if (!puppetIds.insert(puppet).second) {
                 throw ValidationException("party contains a duplicate active puppet");
@@ -455,17 +455,22 @@ std::shared_ptr<Gff> SaveWideSnapshotBuilder::buildFactions() const {
             throw ValidationException("faction reputation matrix is not square");
         }
     }
-    // Player-target values come from the base table and are not stored in
-    // RepList. Reject changes to that column rather than losing them on reload.
+    // Retail FAC cannot apply records whose source faction is player (ID2=0),
+    // but the authored base table can legitimately give that runtime row
+    // non-100 values. Omit the derived base row; reject only an actual runtime
+    // mutation that a retail reload would lose.
     auto baseState = _game._services.game.reputes.baseState();
-    for (size_t source = 0; source < state.values.size(); ++source) {
-        int baseReputation = 100;
-        if (source < baseState.values.size() && !baseState.values[source].empty()) {
-            baseReputation = baseState.values[source].front();
-        }
-        if (state.values[source].front() != baseReputation) {
-            throw ValidationException(
-                "modified player-target reputation cannot be represented in FAC");
+    if (!state.values.empty()) {
+        for (size_t target = 0; target < state.values.front().size(); ++target) {
+            int baseReputation = 100;
+            if (!baseState.values.empty() &&
+                target < baseState.values.front().size()) {
+                baseReputation = baseState.values.front()[target];
+            }
+            if (state.values.front()[target] != baseReputation) {
+                throw ValidationException(
+                    "modified player-source reputation cannot be represented by retail FAC");
+            }
         }
     }
 
@@ -484,8 +489,8 @@ std::shared_ptr<Gff> SaveWideSnapshotBuilder::buildFactions() const {
     put(*result, Gff::Field::newList("FactionList", std::move(factions)));
 
     std::vector<std::shared_ptr<Gff>> reputations;
-    for (size_t source = 0; source < state.factions.size(); ++source) {
-        for (size_t target = 1; target < state.factions.size(); ++target) {
+    for (size_t target = 0; target < state.factions.size(); ++target) {
+        for (size_t source = 1; source < state.factions.size(); ++source) {
             int reputation = state.values[source][target];
             if (reputation < 0 || reputation > 100) {
                 throw ValidationException("faction reputation is outside 0..100");
@@ -494,9 +499,9 @@ std::shared_ptr<Gff> SaveWideSnapshotBuilder::buildFactions() const {
             reputations.push_back(Gff::Builder()
                                       .type(static_cast<uint32_t>(reputations.size()))
                                       .field(Gff::Field::newDword(
-                                          "FactionID1", static_cast<uint32_t>(source)))
+                                          "FactionID1", static_cast<uint32_t>(target)))
                                       .field(Gff::Field::newDword(
-                                          "FactionID2", static_cast<uint32_t>(target)))
+                                          "FactionID2", static_cast<uint32_t>(source)))
                                       .field(Gff::Field::newDword(
                                           "FactionRep", static_cast<uint32_t>(reputation)))
                                       .build());
@@ -634,7 +639,7 @@ SaveWideSnapshotResult SaveWideSnapshotBuilder::build() const noexcept {
                                const std::shared_ptr<Creature> &creature,
                                bool sharedInventoryOwner = false) {
             if (!creature) {
-                // The game keeps the last AVAILNPC/AVAILPUP record when its
+                // Retail keeps the last AVAILNPC/AVAILPUP record when its
                 // transient runtime object is killed. An available but unbound
                 // slot therefore persists that detached record unchanged.
                 auto working =
@@ -657,7 +662,7 @@ SaveWideSnapshotResult SaveWideSnapshotBuilder::build() const noexcept {
                 0xffffffff,
                 std::nullopt,
                 SerializedIdentityContext::detachedRecord(name + ".utc"));
-            // Reone models the party repository as the actual player's
+            // Reone models the retail party repository as the actual player's
             // non-equipped ItemList. inventory.res owns that topology; pc.utc
             // retains equipment but must not duplicate the shared repository.
             if (sharedInventoryOwner) removeSaveField(*utc, "ItemList");
@@ -818,10 +823,10 @@ void SaveWideSnapshotBuilder::validate(const SaveWideSnapshot &snapshot) const {
     std::set<std::pair<uint32_t, uint32_t>> pairs;
     const size_t factionCount = factions->getList("FactionList").size();
     for (const auto &entry : factions->getList("RepList")) {
-        uint32_t source = entry->getUint("FactionID1", UINT32_MAX);
-        uint32_t target = entry->getUint("FactionID2", UINT32_MAX);
-        if (source >= factionCount || target == 0 || target >= factionCount ||
-            !pairs.emplace(source, target).second) {
+        uint32_t target = entry->getUint("FactionID1", UINT32_MAX);
+        uint32_t source = entry->getUint("FactionID2", UINT32_MAX);
+        if (target >= factionCount || source == 0 || source >= factionCount ||
+            !pairs.emplace(target, source).second) {
             throw ValidationException("FAC contains an invalid or duplicate pair");
         }
     }

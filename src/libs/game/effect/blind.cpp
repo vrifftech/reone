@@ -16,42 +16,13 @@
  */
 
 #include "reone/game/effect/blind.h"
-#include "reone/game/effect/misschance.h"
-#include "reone/game/effect/creaturestate.h"
-#include "reone/game/effect/ultravision.h"
-#include "reone/game/effectfeedback.h"
-#include "reone/game/object/creature.h"
 
 namespace reone {
 
 namespace game {
 
-EffectApplicationResult BlindEffect::onApply(Object &object, EffectInstance &instance) {
-    auto *creature = dyn_cast<Creature>(&object);
-    if (!creature) return EffectApplicationResult::Retained;
-    const int mask = instance.integerParameter(0);
-    if (mask != 8 && mask != 16) return EffectApplicationResult::Rejected;
-    const auto creator = instance.boundCreator();
-    if (mask == 16 && creature->hasEffectImmunity(ImmunityType::Blindness, dyn_cast<Creature>(creator.get()))) {
-        addBlindnessImmunityFeedback(object.game(), object.services(), creator, *creature);
-        return EffectApplicationResult::Rejected;
-    }
-    if (object.plotFlag()) return EffectApplicationResult::Rejected;
-    if (mask == 8 && (creature->visibilityCounterBits() & 6) != 0)
-        return EffectApplicationResult::Retained;
-    auto miss = instance.linkedChild(std::make_shared<MissChanceEffect>(50));
-    miss.setIntegerParameter(1, mask == 8 ? 1 : 0);
-    object.applyEffect(std::move(miss));
-    object.applyEffect(instance.linkedChild(std::make_shared<VisionEffect>(4)));
-    object.applyEffect(instance.linkedChild(std::make_shared<VisualEffectMarkerEffect>(5002)));
-    creature->setVisibilityCounter(static_cast<uint8_t>(mask));
-    return EffectApplicationResult::Retained;
-}
-
-EffectRemovalResult BlindEffect::onRemove(Object &object, const EffectInstance &instance) {
-    if (auto *creature = dyn_cast<Creature>(&object))
-        creature->restoreBlindnessCounter(instance.integerParameter(0), instance.applicationOrder);
-    return EffectRemovalResult::Removed;
+void BlindEffect::applyTo(Object &object) {
+    // TODO: implement
 }
 
 } // namespace game

@@ -23,14 +23,14 @@ namespace reone {
 
 namespace game {
 
-class SeeInvisibleEffect : public CopyableEffect<SeeInvisibleEffect> {
+class SeeInvisibleEffect : public Effect {
 public:
     SeeInvisibleEffect() :
-        CopyableEffect(EffectType::SeeInvisible) {
+        Effect(EffectType::SeeInvisible) {
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &instance) override;
-    EffectRemovalResult onRemove(Object &object, const EffectInstance &instance) override;
+    bool onApply(Object &object, const EffectInstance &instance) override;
+    void onRemove(Object &object, const EffectInstance &instance) override;
 };
 
 } // namespace game

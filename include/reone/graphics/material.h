@@ -43,7 +43,6 @@ public:
     glm::mat3x4 uv {1.0f};
     glm::vec4 color {1.0f};
     int bumpMapFrame {0};
-    float shellOffset {0.0f};
 
     glm::vec3 ambientColor {1.0f};
     glm::vec3 diffuseColor {1.0f};

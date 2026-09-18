@@ -16,17 +16,13 @@
  */
 
 #include "reone/game/effect/resurrection.h"
-#include "reone/game/object/creature.h"
 
 namespace reone {
 
 namespace game {
 
-EffectApplicationResult ResurrectionEffect::onApply(Object &object, EffectInstance &instance) {
-    if (instance.restoring) return EffectApplicationResult::Applied;
-    auto *creature = dyn_cast<Creature>(&object);
-    return creature && creature->applyResurrectionEffect(instance.integerParameter(0))
-        ? EffectApplicationResult::Applied : EffectApplicationResult::Rejected;
+void ResurrectionEffect::applyTo(Object &object) {
+    // TODO: implement
 }
 
 } // namespace game

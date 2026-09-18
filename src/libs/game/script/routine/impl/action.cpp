@@ -286,8 +286,7 @@ static Variable ActionCastSpellAtObject(const std::vector<Variable> &args, const
     auto instantSpell = static_cast<bool>(bInstantSpell);
 
     // Execute
-    auto action = ctx.game.newAction<CastSpellAtObjectAction>(std::move(spell), std::move(oTarget), /*item=*/std::nullopt,
-        cheat, nMetaMagic, nDomainLevel, projectilePathType, instantSpell);
+    auto action = ctx.game.newAction<CastSpellAtObjectAction>(std::move(spell), std::move(oTarget), /*item=*/std::nullopt);
     getCaller(ctx)->addAction(std::move(action));
     return Variable::ofNull();
 }
@@ -445,8 +444,7 @@ static Variable ActionCastSpellAtLocation(const std::vector<Variable> &args, con
     auto bInstantSpell = getIntOrElse(args, 5, 0);
 
     // Transform
-    auto spell = ctx.services.game.spells.get(static_cast<SpellType>(nSpell));
-    if (!spell) return Variable::ofNull();
+    auto spell = static_cast<SpellType>(nSpell);
     auto cheat = static_cast<bool>(bCheat);
     auto projectilePathType = static_cast<ProjectilePathType>(nProjectilePathType);
     auto instantSpell = static_cast<bool>(bInstantSpell);

@@ -23,16 +23,16 @@ namespace reone {
 
 namespace game {
 
-class ImmunityEffect : public CopyableEffect<ImmunityEffect> {
+class ImmunityEffect : public Effect {
 public:
     ImmunityEffect(ImmunityType immunityType) :
-        CopyableEffect(EffectType::Immunity),
+        Effect(EffectType::Immunity),
         _immunityType(immunityType) {
         setSaveFacingInteger(0, static_cast<int>(immunityType));
         setSaveFacingInteger(1, static_cast<int>(RacialType::All));
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
+    void applyTo(Object &object) override;
 
     ImmunityType immunityType() const { return _immunityType; }
 

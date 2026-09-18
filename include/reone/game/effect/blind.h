@@ -23,15 +23,13 @@ namespace reone {
 
 namespace game {
 
-class BlindEffect : public CopyableEffect<BlindEffect> {
+class BlindEffect : public Effect {
 public:
     BlindEffect() :
-        CopyableEffect(EffectType::Blindness) {
-        setSaveFacingInteger(0, 16); // K2 EffectBlind's explicit mask.
+        Effect(EffectType::Blindness) {
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &instance) override;
-    EffectRemovalResult onRemove(Object &object, const EffectInstance &instance) override;
+    void applyTo(Object &object) override;
 };
 
 } // namespace game

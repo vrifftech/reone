@@ -23,18 +23,17 @@ namespace reone {
 
 namespace game {
 
-class ForceResistedEffect : public CopyableEffect<ForceResistedEffect> {
+class ForceResistedEffect : public Effect {
 public:
-    ForceResistedEffect(std::shared_ptr<Object> source) :
-        CopyableEffect(EffectType::ForceResisted),
+    ForceResistedEffect(Object &source) :
+        Effect(EffectType::ForceResisted),
         _source(source) {
-        setSaveFacingObject(0, source);
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
+    void applyTo(Object &object) override;
 
 private:
-    RuntimeObjectRef<Object> _source;
+    Object &_source;
 };
 
 } // namespace game

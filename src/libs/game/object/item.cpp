@@ -34,7 +34,6 @@
 #include "reone/resource/strings.h"
 
 #include <algorithm>
-#include "reone/system/exception/validation.h"
 
 using namespace reone::audio;
 using namespace reone::graphics;
@@ -94,7 +93,6 @@ void Item::deserializeAll(
     gff.readDword(_addCost, "AddCost");
     gff.readBool(_stolen, "Stolen");
     gff.readWord(_stackSize, "StackSize");
-    gff.readDword(_upgrades, "Upgrades");
 
     gff.readBool(_identified, "Identified");
     gff.readByte(_modelVariation, "ModelVariation");
@@ -110,11 +108,6 @@ void Item::deserializeAll(
 }
 
 void Item::deserializeProperties(const resource::Gff &gff) {
-    if (gff.has("PropertiesList")) {
-        _properties.clear();
-        _activateSpell.reset();
-        _disguiseAppearance = -1;
-    }
     for (const auto &prop : gff.getList("PropertiesList")) {
         PropertyEntry entry;
         prop->readByte(entry.chanceAppear, "ChanceAppear");
@@ -124,17 +117,22 @@ void Item::deserializeProperties(const resource::Gff &gff) {
         prop->readByte(entry.paramValue, "Param1Value");
         prop->readWord(entry.subtype, "Subtype");
         prop->readByte(entry.upgradeType, "UpgradeType");
-        prop->readByte(entry.usesPerDay, "UsesPerDay");
-        prop->readBool(entry.usable, "Useable");
-        prop->readDword64(entry.cooldownUntil, "ReoneUseUntil");
 
         if (prop->readWord(entry.propertyName, "PropertyName")) {
             switch (static_cast<ItemProperty>(entry.propertyName)) {
             case ItemProperty::ActivateItem: {
                 _activateSpell = static_cast<SpellType>(entry.subtype);
 
-                if (entry.costValue >= 8 && entry.costValue <= 12 && entry.usesPerDay == 0xff)
-                    entry.usesPerDay = static_cast<uint8_t>(entry.costValue - 7);
+                // CostTable is an index into iprp_costtable.2da: index 3 is
+                // iprp_chargecost.2da table. Other tables are not used.
+                //
+                // CostValue is an index in the corresponding table: index 1 is
+                // a "Single_Use" item. Index 13 is an "Unlimited_Use" item.
+                //
+                // For now, treat everything except "Single_Use" as unlimited.
+                if (entry.costTable == 3 && entry.costValue == 1) {
+                    _activateSpellCost = 1;
+                }
                 break;
             }
             case ItemProperty::Disguise:
@@ -155,7 +153,6 @@ void Item::deserializeBase(const resource::Gff &gff) {
     }
 
     auto baseItems = getRequiredTwoDA(_services.resource.twoDas, "baseitems");
-    _itemType = baseItems->getInt(_baseItem, "itemtype", 0);
     _attackRange = baseItems->getFloat(_baseItem, "maxattackrange", 0.0f);
     _baseDefense = baseItems->getInt(_baseItem, "baseac", 0);
     _criticalHitMultiplier = baseItems->getInt(_baseItem, "crithitmult", 0);
@@ -229,33 +226,12 @@ void Item::loadAmmunitionType() {
 
     auto twoDa = getRequiredTwoDA(_services.resource.twoDas, "ammunitiontypes");
     _ammunitionType = std::make_shared<Item::AmmunitionType>();
-    _ammunitionType->shieldHit = twoDa->getInt(ammunitionIdx, "shieldhit", 0) != 0;
     _ammunitionType->model = _services.resource.models.get(boost::to_lower_copy(twoDa->getString(ammunitionIdx, "model")));
     _ammunitionType->muzzleFlash = _services.resource.models.get(boost::to_lower_copy(twoDa->getString(ammunitionIdx, "muzzleflash")));
     _ammunitionType->shotSound1 = _services.resource.audioClips.get(boost::to_lower_copy(twoDa->getString(ammunitionIdx, "shotsound0")));
     _ammunitionType->shotSound2 = _services.resource.audioClips.get(boost::to_lower_copy(twoDa->getString(ammunitionIdx, "shotsound1")));
     _ammunitionType->impactSound1 = _services.resource.audioClips.get(boost::to_lower_copy(twoDa->getString(ammunitionIdx, "impactsound0")));
     _ammunitionType->impactSound2 = _services.resource.audioClips.get(boost::to_lower_copy(twoDa->getString(ammunitionIdx, "impactsound1")));
-}
-
-int Item::maxDexterityBonusAdjustment() const {
-    if (!_game.isTSL()) {
-        return 0;
-    }
-
-    int result = 0;
-    for (const auto &property : _properties) {
-        if (property.propertyName !=
-                static_cast<uint16_t>(ItemProperty::MaxDexterityBonus) ||
-            !isPropertyActive(property)) {
-            continue;
-        }
-
-        // TSL's ApplyMaxDexBonus adds the property's raw CostValue directly
-        // to the item's retained maximum-Dexterity adjustment.
-        result += property.costValue;
-    }
-    return result;
 }
 
 void Item::clone(const Item &from) {
@@ -274,7 +250,6 @@ void Item::clone(const Item &from) {
     _addCost = from._addCost;
     _stolen = from._stolen;
     _stackSize = from._stackSize;
-    _upgrades = from._upgrades;
     _identified = from._identified;
     _modelVariation = from._modelVariation;
     _bodyVariation = from._bodyVariation;
@@ -314,73 +289,10 @@ void Item::clone(const Item &from) {
     _acBonusType = from._acBonusType;
 
     _activateSpell = from._activateSpell;
-    _itemType = from._itemType;
     _disguiseAppearance = from._disguiseAppearance;
     _properties = from._properties;
 
     _audioSource = from._audioSource;
-}
-
-uint32_t Item::forceItemMask() const {
-    if (_itemType >= 31 && _itemType <= 36) return uint32_t {1} << (_itemType - 31);
-    return _itemType >= 39 && _itemType <= 41 ? 64 : 0;
-}
-
-std::optional<size_t> Item::spellProperty(SpellType spell) const {
-    for (size_t i = 0; i < _properties.size(); ++i) {
-        const auto &property = _properties[i];
-        if (property.propertyName == static_cast<uint16_t>(ItemProperty::ActivateItem) &&
-            property.subtype == static_cast<uint16_t>(spell) && canUseSpell(i)) return i;
-    }
-    return std::nullopt;
-}
-
-bool Item::canUseSpell(size_t index) const {
-    if (index >= _properties.size() || _stackSize == 0) return false;
-    const auto &property = _properties[index];
-    if (property.propertyName != static_cast<uint16_t>(ItemProperty::ActivateItem) ||
-        !isPropertyActive(property)) return false;
-    const int mode = property.costValue;
-    if (mode >= 14 && mode <= 18)
-        return property.usable ||
-            (property.cooldownUntil != 0 && _game.worldTimeMilliseconds() >= property.cooldownUntil);
-    if (!property.usable) return false;
-    if (mode == 1) return _stackSize > 0;
-    if (mode >= 2 && mode <= 6) return static_cast<int>(_charges) >= 7 - mode;
-    if (mode >= 8 && mode <= 12) return property.usesPerDay > 0;
-    return mode == 7 || mode == 13;
-}
-
-bool Item::consumeSpellUse(size_t index) {
-    if (!canUseSpell(index)) return false;
-    auto &property = _properties[index];
-    const int mode = property.costValue;
-    if (mode == 1) {
-        if (_stackSize > 0) --_stackSize;
-        return _stackSize == 0;
-    }
-    if (mode >= 2 && mode <= 6) {
-        _charges = static_cast<uint8_t>(std::max(0, static_cast<int>(_charges) - (7 - mode)));
-        bool usableCharge = false;
-        for (auto &other : _properties) {
-            if (other.propertyName != static_cast<uint16_t>(ItemProperty::ActivateItem) ||
-                other.costValue < 2 || other.costValue > 6) continue;
-            other.usable = _charges >= 7 - other.costValue;
-            usableCharge |= other.usable && isPropertyActive(other);
-        }
-        const bool exhausted = !usableCharge || (!property.usable &&
-            (_itemType == 25 || _itemType == 45 || _itemType == 47));
-        if (exhausted) _stackSize = 0;
-        return exhausted;
-    }
-    if (mode >= 8 && mode <= 12) {
-        if (property.usesPerDay > 0) --property.usesPerDay;
-        property.usable = property.usesPerDay != 0;
-    } else if (mode >= 14 && mode <= 18) {
-        property.usable = false;
-        property.cooldownUntil = _game.worldTimeMilliseconds() + uint64_t(mode - 13) * 60000;
-    }
-    return false;
 }
 
 void Item::update(float dt) {
@@ -469,15 +381,12 @@ bool Item::isStackCompatibleWith(const Item &other) const {
                lhs.paramValue == rhs.paramValue &&
                lhs.propertyName == rhs.propertyName &&
                lhs.subtype == rhs.subtype &&
-               lhs.upgradeType == rhs.upgradeType &&
-               lhs.usesPerDay == rhs.usesPerDay && lhs.usable == rhs.usable &&
-               lhs.cooldownUntil == rhs.cooldownUntil;
+               lhs.upgradeType == rhs.upgradeType;
     };
     return _maxStackSize > 1 &&
            _baseItem == other._baseItem &&
            _plot == other._plot &&
            _charges == other._charges &&
-           _upgrades == other._upgrades &&
            _stolen == other._stolen &&
            _modelVariation == other._modelVariation &&
            _bodyVariation == other._bodyVariation &&
@@ -521,143 +430,6 @@ void Item::setEquipped(bool equipped) {
     _equipped = equipped;
 }
 
-bool Item::isPropertyActive(const PropertyEntry &property) const {
-    return isPropertyActive(_upgrades, property.upgradeType);
-}
-
-static SavingThrow getItemOnHitSavingThrow(ItemOnHitSubtype subtype) {
-    switch (subtype) {
-    case ItemOnHitSubtype::Sleep:
-    case ItemOnHitSubtype::Stun:
-    case ItemOnHitSubtype::Confusion:
-    case ItemOnHitSubtype::Fear:
-    case ItemOnHitSubtype::Slow:
-        return SavingThrow::Will;
-    case ItemOnHitSubtype::Paralyze:
-    case ItemOnHitSubtype::SlayRG:
-    case ItemOnHitSubtype::SlayAG:
-    case ItemOnHitSubtype::Knockdown:
-        return SavingThrow::Fortitude;
-    case ItemOnHitSubtype::AbilityDrain:
-        return SavingThrow::Reflex;
-    case ItemOnHitSubtype::ItemPoison:
-    case ItemOnHitSubtype::InstantDeath:
-        return SavingThrow::None;
-    }
-    assert(false && "unsupported item on-hit subtype");
-    return SavingThrow::None;
-}
-
-static SavingThrowType getItemOnHitSavingThrowType(ItemOnHitSubtype subtype) {
-    switch (subtype) {
-    case ItemOnHitSubtype::Sleep:
-    case ItemOnHitSubtype::Stun:
-    case ItemOnHitSubtype::Confusion:
-        return SavingThrowType::MindAffecting;
-    case ItemOnHitSubtype::Fear:
-        return SavingThrowType::Fear;
-    case ItemOnHitSubtype::Paralyze:
-        return SavingThrowType::Paralysis;
-    case ItemOnHitSubtype::SlayRG:
-    case ItemOnHitSubtype::SlayAG:
-        return SavingThrowType::Death;
-    case ItemOnHitSubtype::Slow:
-    case ItemOnHitSubtype::AbilityDrain:
-    case ItemOnHitSubtype::ItemPoison:
-    case ItemOnHitSubtype::InstantDeath:
-    case ItemOnHitSubtype::Knockdown:
-        return SavingThrowType::All;
-    }
-    assert(false && "unsupported item on-hit subtype");
-    return SavingThrowType::All;
-}
-
-std::vector<ItemOnHitProperty> Item::itemOnHitProperties() const {
-    static constexpr char kOnHitTable[] = "iprp_onhit";
-    static constexpr char kOnHitDurationTable[] = "iprp_onhitdur";
-    static constexpr char kOnHitDifficultyClassTable[] = "iprp_onhitdc";
-
-    std::shared_ptr<resource::TwoDA> onHit;
-    std::shared_ptr<resource::TwoDA> durations;
-    std::shared_ptr<resource::TwoDA> difficultyClasses;
-    std::vector<ItemOnHitProperty> result;
-    ItemOnHitSelectionState selection;
-
-    for (const PropertyEntry &property : _properties) {
-        if (!isPropertyActive(property) ||
-            property.propertyName !=
-                static_cast<uint16_t>(ItemProperty::OnHitProperties) ||
-            property.subtype >
-                static_cast<uint16_t>(_game.isTSL() ? ItemOnHitSubtype::Knockdown :
-                                      ItemOnHitSubtype::InstantDeath)) {
-            continue;
-        }
-
-        if (!onHit) {
-            onHit = getRequiredTwoDA(
-                _services.resource.twoDas,
-                kOnHitTable);
-        }
-        validateTwoDARow(*onHit, kOnHitTable, property.subtype);
-
-        ItemOnHitProperty value;
-        value.subtype = static_cast<ItemOnHitSubtype>(property.subtype);
-        value.savingThrow = getItemOnHitSavingThrow(value.subtype);
-        value.savingThrowType = getItemOnHitSavingThrowType(value.subtype);
-        value.parameter = property.paramValue;
-
-        selection.select(value.subtype);
-        value.durationBranch = usesItemOnHitDurationHandler(value.subtype);
-        const int parameterTable = onHit->getIntOpt(
-            property.subtype, "param1resref").value_or(0);
-        if (parameterTable == 1) {
-            if (!durations) {
-                durations = getRequiredTwoDA(
-                    _services.resource.twoDas, kOnHitDurationTable);
-            }
-            selection.chance = 0;
-            selection.rounds = 0;
-            if (property.paramValue < durations->getRowCount()) {
-                selection.chance = durations->getIntOpt(
-                    property.paramValue, "effectchance").value_or(0);
-                selection.rounds = durations->getIntOpt(
-                    property.paramValue, "durationrounds").value_or(0);
-            }
-        }
-        value.chance = selection.chance;
-        value.duration = selection.rounds * 6.0f;
-
-        if (!difficultyClasses) {
-            difficultyClasses = getRequiredTwoDA(
-                _services.resource.twoDas,
-                kOnHitDifficultyClassTable);
-        }
-        value.difficultyClass = 20;
-        if (property.costValue < difficultyClasses->getRowCount()) {
-            value.difficultyClass = difficultyClasses->getIntOpt(
-                property.costValue,
-                "value").value_or(20);
-        }
-
-        // SavingThrowRoll receives an unsigned-short DC.
-        value.difficultyClass = static_cast<uint16_t>(value.difficultyClass);
-        result.push_back(value);
-    }
-    return result;
-}
-
 } // namespace game
 
-} // namespace reone
-
-namespace reone {
-namespace game {
-bool Item::isPropertyActive(uint32_t upgrades, uint8_t upgradeType) {
-    if (upgradeType == 0xff) {
-        return true;
-    }
-    // Select an upgrade bit using the low five bits of the selector.
-    return (upgrades & (uint32_t {1} << (upgradeType & 31))) != 0;
-}
-} // namespace game
 } // namespace reone

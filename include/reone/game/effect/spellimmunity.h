@@ -23,16 +23,14 @@ namespace reone {
 
 namespace game {
 
-class SpellImmunityEffect : public CopyableEffect<SpellImmunityEffect> {
+class SpellImmunityEffect : public Effect {
 public:
     SpellImmunityEffect(SpellType immunityToSpell) :
-        CopyableEffect(EffectType::SpellImmunity),
+        Effect(EffectType::SpellImmunity),
         _immunityToSpell(immunityToSpell) {
-        setSaveFacingInteger(0, static_cast<int>(immunityToSpell));
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override {
-        return EffectApplicationResult::Retained;
+    void applyTo(Object &object) override {
     }
 
 private:

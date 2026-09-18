@@ -23,10 +23,10 @@ namespace reone {
 
 namespace game {
 
-class DamageIncreaseEffect : public CopyableEffect<DamageIncreaseEffect> {
+class DamageIncreaseEffect : public Effect {
 public:
     DamageIncreaseEffect(int bonus, DamageType damageType) :
-        CopyableEffect(EffectType::DamageIncrease),
+        Effect(EffectType::DamageIncrease),
         _bonus(bonus),
         _damageType(damageType) {
         setSaveFacingInteger(0, bonus);
@@ -34,7 +34,7 @@ public:
         setSaveFacingInteger(2, static_cast<int>(RacialType::All));
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
+    void applyTo(Object &object) override;
 
     int bonus() const { return _bonus; }
     DamageType damageType() const { return _damageType; }

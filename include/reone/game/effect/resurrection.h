@@ -23,15 +23,14 @@ namespace reone {
 
 namespace game {
 
-class ResurrectionEffect : public CopyableEffect<ResurrectionEffect> {
+class ResurrectionEffect : public Effect {
 public:
     ResurrectionEffect(int hpPercent) :
-        CopyableEffect(EffectType::Resurrection),
+        Effect(EffectType::Resurrection),
         _hpPercent(hpPercent) {
-        setSaveFacingInteger(0, hpPercent);
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
+    void applyTo(Object &object) override;
 
 private:
     int _hpPercent;

@@ -92,7 +92,7 @@ std::optional<SavedActionRecord> MoveToLocationAction::saveFacingState() const {
         return std::nullopt;
     }
 
-    // Split the absolute deadline into the day/time pair at the serialization
+    // Split the absolute deadline into the retail pair at the serialization
     // boundary. A zero absolute deadline is rejected above, so an armed forced
     // move never serializes as the unarmed (0, 0) encoding.
     const bool forcedActive = _force && _forcedState.active;

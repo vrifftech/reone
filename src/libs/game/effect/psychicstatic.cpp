@@ -21,9 +21,8 @@ namespace reone {
 
 namespace game {
 
-EffectApplicationResult PsychicStaticEffect::onApply(Object &object, EffectInstance &) {
+void PsychicStaticEffect::applyTo(Object &object) {
     // TODO: implement
-    return EffectApplicationResult::Retained;
 }
 
 } // namespace game

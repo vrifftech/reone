@@ -108,21 +108,6 @@ void EquipItemAction::execute(std::shared_ptr<Action> self, Object &actor, float
     complete();
 }
 
-std::optional<SavedActionRecord> EquipItemAction::saveFacingState() const {
-    const auto slot = equipmentSlotMask(_inventorySlot);
-    if (!_item || !slot) return std::nullopt;
-    // Ordinary equip and unequip actions use IDs 8 and 11.
-    // Unequip parameter 1 is a container ObjectId, not an equipment slot.
-    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
-    result.actionId = 8;
-    result.declaredParameterCount = 3;
-    result.parameters = {
-        {3, SavedObjectReference::fromRuntimeId(_item->id())},
-        {1, static_cast<int32_t>(slot)}, {1, _instant},
-    };
-    return result;
-}
-
 } // namespace game
 
 } // namespace reone

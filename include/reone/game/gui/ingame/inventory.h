@@ -105,7 +105,7 @@ private:
     void configureFilterControls();
     void refreshCredits();
     void refreshStats();
-    void advanceFilter();
+    void advanceK1Filter();
     void setFilter(InventoryFilter filter);
     void updateFilterControls();
     bool itemMatchesFilter(const Item &item) const;

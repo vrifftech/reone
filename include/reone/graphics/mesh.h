@@ -256,7 +256,6 @@ public:
     std::optional<glm::vec2> tryFaceUV2(const Face &face, const glm::vec3 &baryPosition) const;
 
     int vertexCount() const { return _vertices.size(); }
-    const std::vector<Vertex> &vertices() const { return _vertices; }
     const std::vector<Face> &faces() const { return _faces; }
     const AABB &aabb() const { return _aabb; }
 

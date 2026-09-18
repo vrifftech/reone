@@ -188,8 +188,8 @@ struct MinigameObstacleSpec {
     std::string onCreate;
 };
 
-// Minigame mouse-axis bindings. Axis IDs are retained as opaque values;
-// only the flip flags currently affect input.
+// Vanilla mouse axis binding for the minigame. The axis identifiers are opaque
+// engine constants; only the flip flags have a confirmed meaning.
 struct MinigameMouseSpec {
     uint32_t axisX {0};
     uint32_t axisY {0};

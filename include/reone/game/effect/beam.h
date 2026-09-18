@@ -24,14 +24,14 @@ namespace reone {
 
 namespace game {
 
-class BeamEffect : public CopyableEffect<BeamEffect> {
+class BeamEffect : public Effect {
 public:
     BeamEffect(
         int beamVisualEffect,
         std::shared_ptr<Object> effector,
         BodyNode bodyPart,
         bool missEffect) :
-        CopyableEffect(EffectType::Beam),
+        Effect(EffectType::Beam),
         _beamVisualEffect(beamVisualEffect),
         _effector(effector),
         _bodyPart(bodyPart),
@@ -42,7 +42,7 @@ public:
         setSaveFacingObject(0, effector);
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
+    void applyTo(Object &object) override;
     void retireAreaRuntime(
         const std::set<const Object *> &retainedObjects) override {
         auto effector = _effector.resolve();

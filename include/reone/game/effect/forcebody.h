@@ -23,15 +23,14 @@ namespace reone {
 
 namespace game {
 
-class ForceBodyEffect : public CopyableEffect<ForceBodyEffect> {
+class ForceBodyEffect : public Effect {
 public:
     ForceBodyEffect(int level) :
-        CopyableEffect(EffectType::ForceBody),
+        Effect(EffectType::ForceBody),
         _level(level) {
-        setSaveFacingInteger(0, level);
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
+    void applyTo(Object &object) override;
 
 private:
     int _level;

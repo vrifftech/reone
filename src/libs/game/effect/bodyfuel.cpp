@@ -16,24 +16,13 @@
  */
 
 #include "reone/game/effect/bodyfuel.h"
-#include "reone/game/object/creature.h"
 
 namespace reone {
 
 namespace game {
 
-EffectApplicationResult BodyFuelEffect::onApply(Object &object, EffectInstance &) {
-    // Retain the record even on non-creatures; only
-    // the creature's round-end refill flag is conditional on the cast.
-    if (auto *creature = dyn_cast<Creature>(&object)) {
-        creature->setBodyFuel(true);
-    }
-    return EffectApplicationResult::Retained;
-}
-
-EffectRemovalResult BodyFuelEffect::onRemove(Object &object, const EffectInstance &) {
-    if (auto *creature = dyn_cast<Creature>(&object)) creature->setBodyFuel(false);
-    return EffectRemovalResult::Removed;
+void BodyFuelEffect::applyTo(Object &object) {
+    // TODO: implement
 }
 
 } // namespace game

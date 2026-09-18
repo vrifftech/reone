@@ -23,19 +23,16 @@ namespace reone {
 
 namespace game {
 
-class ConcealmentEffect : public CopyableEffect<ConcealmentEffect> {
+class ConcealmentEffect : public Effect {
 public:
     ConcealmentEffect(int percentage) :
-        CopyableEffect(EffectType::Concealment),
+        Effect(EffectType::Concealment),
         _percentage(percentage) {
         setSaveFacingInteger(0, percentage);
         setSaveFacingInteger(1, 0);
     }
 
-    EffectApplicationResult onApply(Object &, EffectInstance &instance) override {
-        const int percentage = instance.integerParameter(0);
-        return percentage >= 1 && percentage <= 100
-            ? EffectApplicationResult::Retained : EffectApplicationResult::Rejected;
+    void applyTo(Object &object) override {
     }
 
 private:

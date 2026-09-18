@@ -75,7 +75,7 @@ void ContainerGUI::configureItemsListBox() {
 
     Control::Text text(protoItem.text());
     // Centre the name on the scaled glyphs; authored top alignment assumed
-    // the font filled the row.
+    // the retail font filled the row.
     text.align = Control::TextAlign::LeftCenter;
 
     protoItem.setText(text);

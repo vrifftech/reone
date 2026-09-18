@@ -23,16 +23,15 @@ namespace reone {
 
 namespace game {
 
-class HitPointChangeWhenDyingEffect : public CopyableEffect<HitPointChangeWhenDyingEffect> {
+class HitPointChangeWhenDyingEffect : public Effect {
 public:
     HitPointChangeWhenDyingEffect(float hitPointChangePerRound) :
-        CopyableEffect(EffectType::HitPointChangeWhenDying),
+        Effect(EffectType::HitPointChangeWhenDying),
         _hitPointChangePerRound(hitPointChangePerRound) {
-        setSaveFacingFloat(0, hitPointChangePerRound);
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &instance) override;
-    EffectRemovalResult onRemove(Object &object, const EffectInstance &instance) override;
+    void applyTo(Object &object) override {
+    }
 
 private:
     float _hitPointChangePerRound;

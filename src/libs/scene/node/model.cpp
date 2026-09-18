@@ -238,16 +238,6 @@ static bool shouldReuseExternalAnimationForAttachment(
            animationIntersectsModel(anim, attachedModel.model().rootNode());
 }
 
-void ModelSceneNode::setBumpedOutShell(Texture *texture, float offset) {
-    _bumpedOutShellTexture = texture;
-    _bumpedOutShellOffset = offset;
-}
-
-void ModelSceneNode::clearBumpedOutShell() {
-    _bumpedOutShellTexture = nullptr;
-    _bumpedOutShellOffset = 0.0f;
-}
-
 void ModelSceneNode::playAnimation(const std::string &name, std::shared_ptr<LipAnimation> lipAnim, AnimationProperties properties) {
     auto anim = _model->getAnimation(name);
     if (anim) {

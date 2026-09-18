@@ -17,9 +17,7 @@
 
 #pragma once
 
-#include <cstdint>
 #include <memory>
-#include <optional>
 
 namespace reone {
 
@@ -29,17 +27,6 @@ class Creature;
 class Game;
 class Item;
 class Object;
-
-constexpr uint32_t equipmentSlotMask(int slot) {
-    return slot >= 0 && slot < 20 ? uint32_t{1} << slot : 0;
-}
-
-constexpr std::optional<int> equipmentSlotFromMask(uint32_t mask) {
-    if (!mask || (mask & (mask - 1)) || mask > (uint32_t{1} << 19)) return std::nullopt;
-    int slot = 0;
-    while ((mask >>= 1) != 0) ++slot;
-    return slot;
-}
 
 enum class EquipmentCandidateAction {
     None,

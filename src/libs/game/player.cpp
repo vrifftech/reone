@@ -127,7 +127,7 @@ bool Player::handleMouseButtonUp(const input::MouseButtonEvent &event) {
 
 void Player::update(float dt) {
     std::shared_ptr<Creature> partyLeader(_party.getLeader());
-    if (!partyLeader || partyLeader->isMovementRestricted() || partyLeader->stateControlsActions()) {
+    if (!partyLeader || partyLeader->isMovementRestricted()) {
         return;
     }
     float facing = 0.0f;

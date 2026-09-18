@@ -100,8 +100,7 @@ void Placeable::deserializeAll(
     if (gff.readShort(_hitPoints, "HP")) {
         _maxHitPoints = _hitPoints;
     }
-    int16_t currentHitPoints = static_cast<int16_t>(_currentHitPoints);
-    if (gff.readShort(currentHitPoints, "CurrentHP")) _currentHitPoints = currentHitPoints;
+    gff.readShort(_currentHitPoints, "CurrentHP");
     gff.readByte(_hardness, "Hardness");
     if (identityContext.isSerializedState() && gff.has("CurrentHP")) {
         _dead = _currentHitPoints <= 0;
@@ -290,20 +289,6 @@ void Placeable::updateTransform() {
     if (_walkmesh) {
         _walkmesh->setLocalTransform(_transform);
     }
-}
-
-void Placeable::applyDamageEffect(
-    int amount,
-    const std::shared_ptr<Object> &damager) {
-
-
-    if (amount == 0) {
-        _game.floatingText().addDamage(*this, 0, 0, getLastDamager());
-        runDamagedScript();
-        return;
-    }
-
-    damage(amount, damager);
 }
 
 } // namespace game

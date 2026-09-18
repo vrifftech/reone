@@ -23,13 +23,15 @@ namespace game {
 
 /**
  * Maximum distance from the party leader to a transition portal at which the
- * destination banner is shown. This is a presentation-tuning value.
+ * destination banner is shown. Mirrors the presentation band that KotOR.js
+ * uses for door transition lines; not a verified original-engine constant.
  */
 constexpr float kMaxTransitionPresentationDistance = 5.0f;
 
 /**
  * Maximum horizontal displacement from the screen centre, in NDC, at which a
- * portal is considered camera-facing. This is a presentation-tuning value.
+ * portal is considered camera-facing. A manual parity-tuning value rather
+ * than a verified original-engine constant.
  */
 constexpr float kTransitionViewHorizontalNdcLimit = 0.6f;
 

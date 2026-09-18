@@ -30,7 +30,7 @@ public:
         uint32_t areaId {kSavedRuntimeInvalidObjectId};
         bool active {false};
         /**
-         * Absolute deadline in world milliseconds. The saved record stores a
+         * Absolute deadline in world milliseconds. The retail record stores a
          * day/time pair; it is composed on restore and split again on save, so
          * the running action never rebuilds a calendar.
          */

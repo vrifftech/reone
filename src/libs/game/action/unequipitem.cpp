@@ -28,39 +28,14 @@ namespace game {
 
 void UnequipItemAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
     auto *creature = dyn_cast<Creature>(&actor);
-    if (!creature || !_item || !_item->isEquipped() || _item->owner() != actor.id()) {
+    if (!creature || !_item->isEquipped() || _item->owner() != actor.id()) {
         complete();
         return;
     }
-    // An unspecified receiver selects the actor/shared repository. An explicit
-    // receiver must be an owned item container, not another creature or an
-    // equipment slot.
-    if (_container && (!_container->isRuntimeLive() ||
-                       _container->owner() != actor.id() || _container == _item)) {
-        complete();
-        return;
-    }
-    std::shared_ptr<Object> receiver = _container;
-    if (!receiver) receiver = _game.party().sharedInventoryReceiver(
+    auto receiver = _game.party().sharedInventoryReceiver(
         _game.getObjectById(actor.id()));
     if (receiver) creature->moveEquippedItemTo(_item, *receiver);
     complete();
-}
-
-std::optional<SavedActionRecord> UnequipItemAction::saveFacingState() const {
-    if (!_item) return std::nullopt;
-    // Ordinary equip and unequip actions use IDs 8 and 11.
-    // Unequip parameter 1 is a container ObjectId, not an equipment slot.
-    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
-    result.actionId = 11;
-    result.declaredParameterCount = 3;
-    result.parameters = {
-        {3, SavedObjectReference::fromRuntimeId(_item->id())},
-        {3, SavedObjectReference::fromRuntimeId(
-                _container ? _container->id() : kSavedRuntimeInvalidObjectId)},
-        {1, _instant},
-    };
-    return result;
 }
 
 } // namespace game

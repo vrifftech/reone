@@ -23,13 +23,13 @@ namespace reone {
 
 namespace game {
 
-class PsychicStaticEffect : public CopyableEffect<PsychicStaticEffect> {
+class PsychicStaticEffect : public Effect {
 public:
     PsychicStaticEffect() :
-        CopyableEffect(EffectType::PsychicStatic) {
+        Effect(EffectType::PsychicStatic) {
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
+    void applyTo(Object &object) override;
 };
 
 } // namespace game

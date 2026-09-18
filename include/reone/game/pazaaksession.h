@@ -144,12 +144,18 @@ public:
         MainDeckFactory mainDeckFactory,
         FirstParticipantSelector firstParticipantSelector = {});
 
-    /// Development-only card pool, with title-gated special-card extensions.
-    static std::vector<PazaakCollectionCard> makeDebugCollection(bool tsl);
-    /// Development-only opponent side deck; does not mutate saved inventory.
-    static pazaak::SideDeck makeDebugOpponentSideDeck(bool tsl);
-    /// Deterministic selection covering the special-card families.
-    static std::vector<size_t> specialCardShowcaseSelection();
+    /// Development-only K1 card pool; it does not read or mutate inventory.
+    static std::vector<PazaakCollectionCard> temporaryK1TestCollection();
+    /// Development-only opponent deck used by the startpazaak console route.
+    static pazaak::SideDeck temporaryK1OpponentSideDeck();
+    /// KotOR II title-default card pool (all 23 card types). Used where the
+    /// clean save does not yet persist owned KotOR II cards; never mutates a save.
+    static std::vector<PazaakCollectionCard> k2DefaultCollection();
+    /// Development-only KotOR II opponent deck (mixes numbered and special cards).
+    static pazaak::SideDeck temporaryK2OpponentSideDeck();
+    /// Development-only deterministic KotOR II showcase selection: indices into
+    /// k2DefaultCollection covering every supported card family.
+    static std::vector<size_t> k2ShowcaseChosenCards();
 
     PazaakFlowScreen screen() const { return _screen; }
     int opponentDeck() const { return _params.opponentDeck; }

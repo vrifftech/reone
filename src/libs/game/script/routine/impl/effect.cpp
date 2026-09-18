@@ -1,7 +1,3 @@
-#include "reone/game/effect/creaturestate.h"
-#include "reone/game/effect/paralyze.h"
-#include "reone/game/effect/sleep.h"
-#include "reone/game/effect/stunned.h"
 /*
  * Copyright (c) 2020-2023 The reone project contributors
  *
@@ -87,6 +83,7 @@
 #include "reone/game/effect/modifyattacks.h"
 #include "reone/game/effect/movementspeeddecrease.h"
 #include "reone/game/effect/movementspeedincrease.h"
+#include "reone/game/effect/paralyze.h"
 #include "reone/game/effect/poison.h"
 #include "reone/game/effect/psychicstatic.h"
 #include "reone/game/effect/regenerate.h"
@@ -96,8 +93,10 @@
 #include "reone/game/effect/seeinvisible.h"
 #include "reone/game/effect/skilldecrease.h"
 #include "reone/game/effect/skillincrease.h"
+#include "reone/game/effect/sleep.h"
 #include "reone/game/effect/spellimmunity.h"
 #include "reone/game/effect/spelllevelabsorption.h"
+#include "reone/game/effect/stunned.h"
 #include "reone/game/effect/temporaryforcepoints.h"
 #include "reone/game/effect/temporaryhitpoints.h"
 #include "reone/game/effect/timestop.h"
@@ -139,39 +138,27 @@ static Variable EffectAssuredHit(const std::vector<Variable> &args, const Routin
 static Variable EffectHeal(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Load
     auto nDamageToHeal = getInt(args, 0);
-    if (nDamageToHeal <= 0)
-        return Variable::ofEffect(ctx.game.newEffect<Effect>(EffectType::Invalid));
+
+    // Transform
 
     // Execute
     auto effect = ctx.game.newEffect<HealEffect>(nDamageToHeal);
     return Variable::ofEffect(std::move(effect));
 }
 
-// The VM constructors accept zero/composite masks, but not negative values or
-// values beyond DAMAGE_TYPE_POISON. These are argument rules, not rules
-// for attack packets or loaded effect records.
-static DamageType getScriptDamageType(int value) {
-    return static_cast<DamageType>(value < 0 || value > 0x2000 ? 8 : value);
-}
-
-static DamagePower getScriptDamagePower(int value) {
-    return static_cast<DamagePower>(value < 0 || value > 6 ? 0 : value);
-}
-
 static Variable EffectDamage(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Load
     auto nDamageAmount = getInt(args, 0);
-    auto nDamageType = getIntOrElse(args, 1, 3);
+    auto nDamageType = getIntOrElse(args, 1, 8);
     auto nDamagePower = getIntOrElse(args, 2, 0);
 
     // Transform
-    if (nDamageAmount < 0 || nDamageAmount > 10000) nDamageAmount = 1;
-    auto damageType = getScriptDamageType(nDamageType);
-    auto damagePower = getScriptDamagePower(nDamagePower);
+    auto damageType = static_cast<DamageType>(nDamageType);
+    auto damagePower = static_cast<DamagePower>(nDamagePower);
 
     // Execute
     auto effect = ctx.game.newEffect<DamageEffect>(
-        nDamageAmount, static_cast<int>(damageType), damagePower);
+        nDamageAmount, damageType, damagePower);
     return Variable::ofEffect(std::move(effect));
 }
 
@@ -195,7 +182,7 @@ static Variable EffectDamageResistance(const std::vector<Variable> &args, const 
     auto nLimit = getIntOrElse(args, 2, 0);
 
     // Transform
-    auto damageType = getScriptDamageType(nDamageType);
+    auto damageType = static_cast<DamageType>(nDamageType);
 
     // Execute
     auto effect = ctx.game.newEffect<DamageResistanceEffect>(damageType, nAmount, nLimit);
@@ -225,7 +212,7 @@ static Variable EffectACIncrease(const std::vector<Variable> &args, const Routin
     // Load
     auto nValue = getInt(args, 0);
     auto nModifyType = getIntOrElse(args, 1, 0);
-    auto nDamageType = getIntOrElse(args, 2, kPhysicalDamageTypeFlags);
+    auto nDamageType = getIntOrElse(args, 2, kAllDamageTypeFlags);
 
     // Transform
     auto modifyType = getACBonus(nModifyType);
@@ -264,12 +251,12 @@ static Variable EffectAttackIncrease(const std::vector<Variable> &args, const Ro
 
 static Variable EffectDamageReduction(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Load
-    auto nAmount = std::max(0, getInt(args, 0));
+    auto nAmount = getInt(args, 0);
     auto nDamagePower = getInt(args, 1);
-    auto nLimit = std::max(0, getIntOrElse(args, 2, 0));
+    auto nLimit = getIntOrElse(args, 2, 0);
 
     // Transform
-    auto damagePower = getScriptDamagePower(nDamagePower);
+    auto damagePower = static_cast<DamagePower>(nDamagePower);
 
     // Execute
     auto effect = ctx.game.newEffect<DamageReductionEffect>(nAmount, damagePower, nLimit);
@@ -366,19 +353,19 @@ static Variable EffectTemporaryForcePoints(const std::vector<Variable> &args, co
 
 static Variable EffectConfused(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Execute
-    auto effect = ctx.game.newEffect<CreatureStateEffect>(CreatureState::Confusion);
+    auto effect = ctx.game.newEffect<ConfusedEffect>();
     return Variable::ofEffect(std::move(effect));
 }
 
 static Variable EffectFrightened(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Execute
-    auto effect = ctx.game.newEffect<CreatureStateEffect>(CreatureState::Fear);
+    auto effect = ctx.game.newEffect<FrightenedEffect>();
     return Variable::ofEffect(std::move(effect));
 }
 
 static Variable EffectChoke(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Execute
-    auto effect = ctx.game.newEffect<CreatureStateEffect>(CreatureState::Choke);
+    auto effect = ctx.game.newEffect<ChokeEffect>();
     return Variable::ofEffect(std::move(effect));
 }
 
@@ -521,7 +508,7 @@ static Variable EffectForcePushTargeted(const std::vector<Variable> &args, const
 
 static Variable EffectHaste(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Execute
-    auto effect = ctx.game.newEffect<HasteSlowEffect>(true);
+    auto effect = ctx.game.newEffect<HasteEffect>();
     return Variable::ofEffect(std::move(effect));
 }
 
@@ -540,10 +527,10 @@ static Variable EffectImmunity(const std::vector<Variable> &args, const RoutineC
 static Variable EffectDamageImmunityIncrease(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Load
     auto nDamageType = getInt(args, 0);
-    auto nPercentImmunity = std::clamp(getInt(args, 1), 0, 100);
+    auto nPercentImmunity = getInt(args, 1);
 
     // Transform
-    auto damageType = getScriptDamageType(nDamageType);
+    auto damageType = static_cast<DamageType>(nDamageType);
 
     // Execute
     auto effect = ctx.game.newEffect<DamageImmunityIncreaseEffect>(damageType, nPercentImmunity);
@@ -553,8 +540,6 @@ static Variable EffectDamageImmunityIncrease(const std::vector<Variable> &args, 
 static Variable EffectTemporaryHitpoints(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Load
     auto nHitPoints = getInt(args, 0);
-    if (nHitPoints <= 0)
-        return Variable::ofEffect(ctx.game.newEffect<Effect>(EffectType::Invalid));
 
     // Transform
 
@@ -611,7 +596,7 @@ static Variable EffectHitPointChangeWhenDying(const std::vector<Variable> &args,
 
 static Variable EffectDroidStun(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Execute
-    auto effect = ctx.game.newEffect<CreatureStateEffect>(CreatureState::DroidStun);
+    auto effect = ctx.game.newEffect<DroidStunEffect>();
     return Variable::ofEffect(std::move(effect));
 }
 
@@ -628,7 +613,7 @@ static Variable EffectForceResisted(const std::vector<Variable> &args, const Rou
     // Transform
 
     // Execute
-    auto effect = ctx.game.newEffect<ForceResistedEffect>(oSource);
+    auto effect = ctx.game.newEffect<ForceResistedEffect>(*oSource);
     return Variable::ofEffect(std::move(effect));
 }
 
@@ -680,10 +665,10 @@ static Variable EffectDamageDecrease(const std::vector<Variable> &args, const Ro
 static Variable EffectDamageImmunityDecrease(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Load
     auto nDamageType = getInt(args, 0);
-    auto nPercentImmunity = std::clamp(getInt(args, 1), -100, 100);
+    auto nPercentImmunity = getInt(args, 1);
 
     // Transform
-    auto damageType = getScriptDamageType(nDamageType);
+    auto damageType = static_cast<DamageType>(nDamageType);
 
     // Execute
     auto effect = ctx.game.newEffect<DamageImmunityDecreaseEffect>(damageType, nPercentImmunity);
@@ -694,7 +679,7 @@ static Variable EffectACDecrease(const std::vector<Variable> &args, const Routin
     // Load
     auto nValue = getInt(args, 0);
     auto nModifyType = getIntOrElse(args, 1, 0);
-    auto nDamageType = getIntOrElse(args, 2, kPhysicalDamageTypeFlags);
+    auto nDamageType = getIntOrElse(args, 2, kAllDamageTypeFlags);
 
     // Transform
     auto modifyType = getACBonus(nModifyType);
@@ -851,7 +836,7 @@ static Variable EffectBlasterDeflectionDecrease(const std::vector<Variable> &arg
 
 static Variable EffectHorrified(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Execute
-    auto effect = ctx.game.newEffect<CreatureStateEffect>(CreatureState::Horrified);
+    auto effect = ctx.game.newEffect<HorrifiedEffect>();
     return Variable::ofEffect(std::move(effect));
 }
 
@@ -908,15 +893,6 @@ static Variable EffectDamageShield(const std::vector<Variable> &args, const Rout
     auto nDamageType = getInt(args, 2);
 
     // Transform
-    if (static_cast<uint32_t>(nDamageAmount) > 10000u) {
-        nDamageAmount = 1;
-    }
-    if (nRandomAmount < 1 || nRandomAmount > 10) {
-        nRandomAmount = 0;
-    }
-    if (static_cast<uint32_t>(nDamageType) > 0x2000u) {
-        nDamageType = static_cast<int>(DamageType::Universal);
-    }
     auto damageType = static_cast<DamageType>(nDamageType);
 
     // Execute
@@ -961,25 +937,25 @@ static Variable EffectLightsaberThrow(const std::vector<Variable> &args, const R
 
 static Variable EffectWhirlWind(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Execute
-    auto effect = ctx.game.newEffect<CreatureStateEffect>(CreatureState::Whirlwind);
+    auto effect = ctx.game.newEffect<WhirlWindEffect>();
     return Variable::ofEffect(std::move(effect));
 }
 
 static Variable EffectCutSceneHorrified(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Execute
-    auto effect = ctx.game.newEffect<CreatureStateEffect>(CreatureState::Horrified, true);
+    auto effect = ctx.game.newEffect<CutsceneHorrifiedEffect>();
     return Variable::ofEffect(std::move(effect));
 }
 
 static Variable EffectCutSceneParalyze(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Execute
-    auto effect = ctx.game.newEffect<ParalyzeEffect>(true);
+    auto effect = ctx.game.newEffect<CutsceneParalyzeEffect>();
     return Variable::ofEffect(std::move(effect));
 }
 
 static Variable EffectCutSceneStunned(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Execute
-    auto effect = ctx.game.newEffect<StunnedEffect>(true);
+    auto effect = ctx.game.newEffect<CutsceneStunnedEffect>();
     return Variable::ofEffect(std::move(effect));
 }
 
@@ -1030,7 +1006,7 @@ static Variable EffectVPRegenModifier(const std::vector<Variable> &args, const R
 
 static Variable EffectCrush(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Execute
-    auto effect = ctx.game.newEffect<CreatureStateEffect>(CreatureState::Crush);
+    auto effect = ctx.game.newEffect<CrushEffect>();
     return Variable::ofEffect(std::move(effect));
 }
 

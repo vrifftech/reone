@@ -16,21 +16,15 @@
  */
 
 #include "reone/game/effect/temporaryhitpoints.h"
-#include "reone/game/object/creature.h"
 
-namespace reone::game {
+namespace reone {
 
-EffectApplicationResult TemporaryHitPointsEffect::onApply(Object &object, EffectInstance &instance) {
-    auto *creature = dyn_cast<Creature>(&object);
-    if (!creature) return EffectApplicationResult::Retained;
-    creature->addTemporaryHitPoints(instance.integerParameter(0), instance.restoring);
-    return EffectApplicationResult::Retained;
+namespace game {
+
+void TemporaryHitPointsEffect::applyTo(Object &object) {
+    // TODO: implement
 }
 
-EffectRemovalResult TemporaryHitPointsEffect::onRemove(Object &object, const EffectInstance &instance) {
-    if (auto *creature = dyn_cast<Creature>(&object))
-        creature->removeTemporaryHitPoints(instance.integerParameter(0));
-    return EffectRemovalResult::Removed;
-}
+} // namespace game
 
-} // namespace reone::game
+} // namespace reone

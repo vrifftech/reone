@@ -31,13 +31,12 @@ namespace game {
 
 MoveToObjectAction::MoveToObjectAction(
     Game &game, ServicesView &services, std::shared_ptr<Object> moveTo,
-    bool run, float range, bool force, float timeout, bool pointPath) :
+    bool run, float range, bool force, float timeout) :
     Action(game, services, ActionType::MoveToObject),
     _moveTo(std::move(moveTo)),
     _run(run),
     _range(range),
     _force(force),
-    _pointPath(pointPath),
     _timeout(timeout) {
     requireRuntimeObject(_moveTo);
     if (_moveTo) {
@@ -47,13 +46,12 @@ MoveToObjectAction::MoveToObjectAction(
 
 MoveToObjectAction::MoveToObjectAction(
     Game &game, ServicesView &services, std::shared_ptr<Object> moveTo,
-    bool run, float range, float timeout, ForcedState forcedState, bool force) :
+    bool run, float range, float timeout, ForcedState forcedState) :
     Action(game, services, ActionType::MoveToObject),
     _moveTo(std::move(moveTo)),
     _run(run),
     _range(range),
-    _force(force),
-    _pointPath(true),
+    _force(true),
     _timeout(timeout),
     _forcedState(std::move(forcedState)) {
     requireRuntimeObject(_moveTo);
@@ -104,16 +102,15 @@ void MoveToObjectAction::execute(std::shared_ptr<Action> self, Object &actor, fl
 }
 
 std::optional<SavedActionRecord> MoveToObjectAction::saveFacingState() const {
-    // ActionId 17 is the ranged move-to-object check. Forced movement
+    // Retail ActionId 17 is the ranged move-to-object check. Forced movement
     // carries additional path/timeout semantics which are not this record.
     if (!_moveTo || !std::isfinite(_range)) {
         return std::nullopt;
     }
 
     SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
-    if (usesPointPath()) {
-        if ((_force && (!std::isfinite(_timeout) || _timeout < 0.0f)) ||
-            (!_force && !_pointPath && _timeout >= 0.0f)) {
+    if (_force || _timeout >= 0.0f) {
+        if (!_force || !std::isfinite(_timeout) || _timeout < 0.0f) {
             return std::nullopt;
         }
         auto destination = _forcedState.active ? _forcedState.destination : _moveTo->position();
@@ -126,23 +123,23 @@ std::optional<SavedActionRecord> MoveToObjectAction::saveFacingState() const {
         if (areaId == kSavedRuntimeInvalidObjectId) {
             return std::nullopt;
         }
-        // Split the absolute deadline into the day/time pair at the
+        // Split the absolute deadline into the retail pair at the
         // serialization boundary.
         const uint64_t millisecondsPerDay = _game.millisecondsPerWorldDay();
-        const uint32_t expiryDay = _force && _forcedState.active
+        const uint32_t expiryDay = _forcedState.active
             ? static_cast<uint32_t>(_forcedState.expiryMilliseconds / millisecondsPerDay)
             : 0;
-        const uint32_t expiryTime = _force && _forcedState.active
+        const uint32_t expiryTime = _forcedState.active
             ? static_cast<uint32_t>(_forcedState.expiryMilliseconds % millisecondsPerDay)
             : 0;
-        int32_t flags = (_run ? 1 : 0) | (_force && !_forcedState.active ? 4 : 0);
+        int32_t flags = (_run ? 1 : 0) | (_forcedState.active ? 0 : 4);
         result.actionId = 1;
         result.declaredParameterCount = 13;
         result.parameters = {
             {2, destination.x}, {2, destination.y}, {2, destination.z},
             {3, SavedObjectReference::fromRuntimeId(areaId)}, {3, SavedObjectReference::fromRuntimeId(_moveTo->id())},
             {1, flags}, {2, _range}, {1, int32_t {0}},
-            {2, _force && !_forcedState.active ? _timeout : 0.0f},
+            {2, _forcedState.active ? 0.0f : _timeout},
             {2, _forcedState.offset.x}, {2, _forcedState.offset.y},
             {1, static_cast<int32_t>(expiryDay)},
             {1, static_cast<int32_t>(expiryTime)},

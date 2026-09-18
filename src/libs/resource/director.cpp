@@ -375,10 +375,34 @@ void ResourceDirector::loadAuxiliaryResources() {
 /**
  * Streamed audio directories.
  *
- * Streamed clips use path-based lookup outside the raw resource list. Active
- * games keep these directories separate; inactive games retain their existing
- * lookup order.
+ * The traced engine reaches these through its path and streaming systems
+ * rather than through ordinary raw lookup, so they are not given a bucket. For
+ * an activated game they leave the Odyssey list entirely, and which of the two
+ * lists a clip is read from becomes the streaming subsystem's decision rather
+ * than a question of source priority. For a game that is not activated they
+ * stay exactly where they have always been.
  */
+void ResourceDirector::loadStreamResources() {
+    if (_gameId == GameID::KotOR) {
+        loadK1StreamResources();
+        return;
+    }
+    // K2 keeps its streamed audio out of the raw lookup order. Its own startup
+    // is not traced here, so this is left exactly as it was.
+    auto musicPath = findFileIgnoreCase(_gamePath, kMusicDirectoryName);
+    if (musicPath) {
+        _auxResources.addFolder(*musicPath);
+    }
+    auto soundsPath = findFileIgnoreCase(_gamePath, kSoundsDirectoryName);
+    if (soundsPath) {
+        _auxResources.addFolder(*soundsPath);
+    }
+    auto voicePath = findFileIgnoreCase(_gamePath, kVoiceDirectoryName);
+    if (voicePath) {
+        _auxResources.addFolder(*voicePath);
+    }
+}
+
 /**
  * K1 streamed audio, as its startup registers it.
  *
@@ -392,42 +416,24 @@ void ResourceDirector::loadAuxiliaryResources() {
  * The sounds directory therefore goes to the auxiliary list, where the audio
  * provider still finds it and no ordinary lookup can.
  */
-void ResourceDirector::loadStreamResources() {
-    if (_gameId == GameID::KotOR) {
-        // Waves first, then music: that is the order startup registers them in,
-        // and within the loose bucket the later one wins.
-        auto wavesPath = findFileIgnoreCase(_gamePath, kWavesDirectoryName);
-        if (wavesPath) {
-            _resources.addFolder(*wavesPath,
-                                 ResourceOwner::Global,
-                                 bucketOf(ResourceSourceBucket::LooseDirectory));
-        }
-        auto musicPath = findFileIgnoreCase(_gamePath, kMusicDirectoryName);
-        if (musicPath) {
-            _resources.addFolder(*musicPath,
-                                 ResourceOwner::Global,
-                                 bucketOf(ResourceSourceBucket::LooseDirectory));
-        }
-        auto soundsPath = findFileIgnoreCase(_gamePath, kSoundsDirectoryName);
-        if (soundsPath) {
-            _auxResources.addFolder(*soundsPath);
-        }
-
-        return;
+void ResourceDirector::loadK1StreamResources() {
+    // Waves first, then music: that is the order startup registers them in,
+    // and within the loose bucket the later one wins.
+    auto wavesPath = findFileIgnoreCase(_gamePath, kWavesDirectoryName);
+    if (wavesPath) {
+        _resources.addFolder(*wavesPath,
+                             ResourceOwner::Global,
+                             bucketOf(ResourceSourceBucket::LooseDirectory));
     }
-
-    // K2 streamed audio uses a separate lookup path; preserve directory order.
     auto musicPath = findFileIgnoreCase(_gamePath, kMusicDirectoryName);
     if (musicPath) {
-        _auxResources.addFolder(*musicPath);
+        _resources.addFolder(*musicPath,
+                             ResourceOwner::Global,
+                             bucketOf(ResourceSourceBucket::LooseDirectory));
     }
     auto soundsPath = findFileIgnoreCase(_gamePath, kSoundsDirectoryName);
     if (soundsPath) {
         _auxResources.addFolder(*soundsPath);
-    }
-    auto voicePath = findFileIgnoreCase(_gamePath, kVoiceDirectoryName);
-    if (voicePath) {
-        _auxResources.addFolder(*voicePath);
     }
 }
 
@@ -575,6 +581,27 @@ void ResourceDirector::loadPlayerSupportResource() {
  * TEMPCLIENT:, ERRORTEX:, SERVERVAULT: and PORTRAITS:, which reone has no
  * consumer for, and HD0:MOVIES, which reone plays by direct path.
  */
+void ResourceDirector::loadK1GlobalResources() {
+    if (auto overridePath = findFileIgnoreCase(_gamePath, kOverrideDirectoryName)) {
+        _resources.addFolder(*overridePath,
+                             ResourceOwner::Global,
+                             bucketOf(ResourceSourceBucket::LooseDirectory));
+    }
+    if (auto keyPath = findFileIgnoreCase(_gamePath, kKeyFilename)) {
+        _resources.addKEY(*keyPath, bucketOf(ResourceSourceBucket::KeyBif));
+    }
+    loadRimsDirectory();
+    loadOverrideTexturesResource();
+    if (auto patchPath = findFileIgnoreCase(_gamePath, kPatchFilename)) {
+        _resources.addERF(*patchPath,
+                          ResourceOwner::Global,
+                          bucketOf(ResourceSourceBucket::EncapsulatedClass1));
+    }
+    loadK1StreamResources();
+    loadGlobalRimResource();
+    loadTexturePackResources();
+    loadPlayerSupportResource();
+}
 
 void ResourceDirector::loadLiveResources() {
     for (std::size_t i = 0; i < _odysseyRoots.livePackages.size(); ++i) {
@@ -636,26 +663,7 @@ void ResourceDirector::loadLiveResources() {
 void ResourceDirector::loadGlobalResources() {
     loadAuxiliaryResources();
     if (_gameId == GameID::KotOR) {
-        if (auto overridePath = findFileIgnoreCase(_gamePath, kOverrideDirectoryName)) {
-            _resources.addFolder(*overridePath,
-                                 ResourceOwner::Global,
-                                 bucketOf(ResourceSourceBucket::LooseDirectory));
-        }
-        if (auto keyPath = findFileIgnoreCase(_gamePath, kKeyFilename)) {
-            _resources.addKEY(*keyPath, bucketOf(ResourceSourceBucket::KeyBif));
-        }
-        loadRimsDirectory();
-        loadOverrideTexturesResource();
-        if (auto patchPath = findFileIgnoreCase(_gamePath, kPatchFilename)) {
-            _resources.addERF(*patchPath,
-                              ResourceOwner::Global,
-                              bucketOf(ResourceSourceBucket::EncapsulatedClass1));
-        }
-        loadStreamResources();
-        loadGlobalRimResource();
-        loadTexturePackResources();
-        loadPlayerSupportResource();
-
+        loadK1GlobalResources();
         loadLiveResources();
         return;
     }

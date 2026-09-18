@@ -60,7 +60,7 @@ int ScriptRunner::run(
     }
 
     // Invocation advances semantic VM state even though this runner works on a
-    // copy. The untouched saved snapshot may no longer be reused by a save.
+    // copy. The untouched retail snapshot may no longer be reused by a save.
     continuation.markAdvanced();
 
     auto ctx = std::make_unique<ExecutionContext>();

@@ -23,16 +23,14 @@ namespace reone {
 
 namespace game {
 
-class TemporaryHitPointsEffect : public CopyableEffect<TemporaryHitPointsEffect> {
+class TemporaryHitPointsEffect : public Effect {
 public:
     TemporaryHitPointsEffect(int hitPoints) :
-        CopyableEffect(EffectType::TemporaryHitpoints),
+        Effect(EffectType::TemporaryHitpoints),
         _hitPoints(hitPoints) {
-        setSaveFacingInteger(0, hitPoints);
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
-    EffectRemovalResult onRemove(Object &object, const EffectInstance &) override;
+    void applyTo(Object &object) override;
 
 private:
     int _hitPoints;

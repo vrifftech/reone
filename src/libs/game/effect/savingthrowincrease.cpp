@@ -16,17 +16,13 @@
  */
 
 #include "reone/game/effect/savingthrowincrease.h"
-#include "reone/game/object/creature.h"
 
 namespace reone {
 
 namespace game {
 
-EffectApplicationResult SavingThrowIncreaseEffect::onApply(Object &object, EffectInstance &) {
-    if (dyn_cast<Creature>(&object) && _value <= 0) {
-        return EffectApplicationResult::Rejected;
-    }
-    return EffectApplicationResult::Retained;
+void SavingThrowIncreaseEffect::applyTo(Object &object) {
+    // TODO: implement
 }
 
 } // namespace game

@@ -59,8 +59,7 @@ public:
     }
 
     void execute(std::shared_ptr<Action> self, Object &actor, float dt) override;
-    bool cancel(std::shared_ptr<Action> self, Object &actor) override;
-    void onQueued(Object &actor) override;
+    void cancel(std::shared_ptr<Action> self, Object &actor) override;
     void admit();
 
     std::optional<SavedActionRecord> saveFacingState() const override;

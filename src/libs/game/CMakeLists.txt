@@ -18,21 +18,6 @@ set(GAME_SOURCE_DIR ${CMAKE_SOURCE_DIR}/src/libs/game)
 
 set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/menupresentation.h
-    ${GAME_SOURCE_DIR}/effectcollection.h
-    ${GAME_SOURCE_DIR}/posthitdata.h
-    ${GAME_SOURCE_DIR}/deathrules.h
-    ${GAME_INCLUDE_DIR}/gui/deathdisplay.h
-    ${GAME_INCLUDE_DIR}/staterules.h
-    ${GAME_INCLUDE_DIR}/shaperules.h
-    ${GAME_INCLUDE_DIR}/poisonstate.h
-    ${GAME_INCLUDE_DIR}/poisondata.h
-    ${GAME_INCLUDE_DIR}/integerarithmetic.h
-    ${GAME_INCLUDE_DIR}/effectfeedback.h
-    ${GAME_INCLUDE_DIR}/effectexpiry.h
-    ${GAME_INCLUDE_DIR}/deathexperience.h
-    ${GAME_INCLUDE_DIR}/temporarydeath.h
-    ${GAME_SOURCE_DIR}/physicalcombatrules.h
-    ${GAME_SOURCE_DIR}/effectimmunityrules.h
     ${GAME_INCLUDE_DIR}/action.h
     ${GAME_INCLUDE_DIR}/action/attackobject.h
     ${GAME_INCLUDE_DIR}/action/barkstring.h
@@ -85,7 +70,6 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/animations.h
     ${GAME_INCLUDE_DIR}/animationutil.h
     ${GAME_INCLUDE_DIR}/attack.h
-    ${GAME_INCLUDE_DIR}/autobalance.h
     ${GAME_INCLUDE_DIR}/camerastyle.h
     ${GAME_INCLUDE_DIR}/camerastyles.h
     ${GAME_INCLUDE_DIR}/castspell.h
@@ -131,7 +115,6 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/effect/cutsceneparalyze.h
     ${GAME_INCLUDE_DIR}/effect/cutscenestunned.h
     ${GAME_INCLUDE_DIR}/effect/damage.h
-    ${GAME_INCLUDE_DIR}/effect/damageabsorption.h
     ${GAME_INCLUDE_DIR}/effect/damagedecrease.h
     ${GAME_INCLUDE_DIR}/effect/damageforcepoints.h
     ${GAME_INCLUDE_DIR}/effect/damageimmunitydecrease.h
@@ -164,7 +147,6 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/effect/frightened.h
     ${GAME_INCLUDE_DIR}/effect/fury.h
     ${GAME_INCLUDE_DIR}/effect/haste.h
-    ${GAME_INCLUDE_DIR}/effect/scriptrules.h
     ${GAME_INCLUDE_DIR}/effect/heal.h
     ${GAME_INCLUDE_DIR}/effect/healforcepoints.h
     ${GAME_INCLUDE_DIR}/effect/hitpointchangewhendying.h
@@ -189,8 +171,8 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/effect/seeinvisible.h
     ${GAME_INCLUDE_DIR}/effect/skilldecrease.h
     ${GAME_INCLUDE_DIR}/effect/skillincrease.h
-    ${GAME_INCLUDE_DIR}/effect/spellimmunity.h
     ${GAME_INCLUDE_DIR}/effect/sleep.h
+    ${GAME_INCLUDE_DIR}/effect/spellimmunity.h
     ${GAME_INCLUDE_DIR}/effect/spelllevelabsorption.h
     ${GAME_INCLUDE_DIR}/effect/stunned.h
     ${GAME_INCLUDE_DIR}/effect/temporaryforcepoints.h
@@ -321,7 +303,6 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/journal.h
     ${GAME_INCLUDE_DIR}/statussummary.h
     ${GAME_INCLUDE_DIR}/location.h
-    ${GAME_INCLUDE_DIR}/mitigationfeedback.h
     ${GAME_INCLUDE_DIR}/messagebus.h
     ${GAME_INCLUDE_DIR}/messagelog.h
     ${GAME_INCLUDE_DIR}/minigame.h
@@ -378,14 +359,11 @@ set(GAME_HEADERS
 
 set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/menupresentation.cpp
-    ${GAME_SOURCE_DIR}/gui/deathdisplay.cpp
-    ${GAME_SOURCE_DIR}/temporarydeath.cpp
     ${GAME_SOURCE_DIR}/action.cpp
     ${GAME_SOURCE_DIR}/action/attackobject.cpp
     ${GAME_SOURCE_DIR}/action/barkstring.cpp
     ${GAME_SOURCE_DIR}/action/castfakespellatlocation.cpp
     ${GAME_SOURCE_DIR}/action/castfakespellatobject.cpp
-    ${GAME_SOURCE_DIR}/action/castspellatlocation.cpp
     ${GAME_SOURCE_DIR}/action/castspellatobject.cpp
     ${GAME_SOURCE_DIR}/action/closedoor.cpp
     ${GAME_SOURCE_DIR}/action/cutsceneattack.cpp
@@ -427,7 +405,6 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/animations.cpp
     ${GAME_SOURCE_DIR}/animationutil.cpp
     ${GAME_SOURCE_DIR}/attack.cpp
-    ${GAME_SOURCE_DIR}/autobalance.cpp
     ${GAME_SOURCE_DIR}/camerastyles.cpp
     ${GAME_SOURCE_DIR}/castspell.cpp
     ${GAME_SOURCE_DIR}/combat.cpp
@@ -445,7 +422,6 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/effect/abilityincrease.cpp
     ${GAME_SOURCE_DIR}/effect/acdecrease.cpp
     ${GAME_SOURCE_DIR}/effect/acincrease.cpp
-    ${GAME_SOURCE_DIR}/effect/assureddeflection.cpp
     ${GAME_SOURCE_DIR}/effect/assuredhit.cpp
     ${GAME_SOURCE_DIR}/effect/attackdecrease.cpp
     ${GAME_SOURCE_DIR}/effect/attackincrease.cpp
@@ -458,9 +434,6 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/effect/cutscenehorrified.cpp
     ${GAME_SOURCE_DIR}/effect/cutsceneparalyze.cpp
     ${GAME_SOURCE_DIR}/effect/cutscenestunned.cpp
-    ${GAME_SOURCE_DIR}/effectfeedback.cpp
-    ${GAME_SOURCE_DIR}/onhit.cpp
-    ${GAME_SOURCE_DIR}/effect/creaturestate.cpp
     ${GAME_SOURCE_DIR}/effect/damage.cpp
     ${GAME_SOURCE_DIR}/effect/damagedecrease.cpp
     ${GAME_SOURCE_DIR}/effect/damageforcepoints.cpp
@@ -482,7 +455,6 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/effect/forceshield.cpp
     ${GAME_SOURCE_DIR}/effect/forcesight.cpp
     ${GAME_SOURCE_DIR}/effect/fury.cpp
-    ${GAME_SOURCE_DIR}/effect/haste.cpp
     ${GAME_SOURCE_DIR}/effect/heal.cpp
     ${GAME_SOURCE_DIR}/effect/healforcepoints.cpp
     ${GAME_SOURCE_DIR}/effect/horrified.cpp
@@ -566,7 +538,6 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/gui/statussummary.cpp
     ${GAME_SOURCE_DIR}/journal.cpp
     ${GAME_SOURCE_DIR}/statussummary.cpp
-    ${GAME_SOURCE_DIR}/mitigationfeedback.cpp
     ${GAME_SOURCE_DIR}/messagebus.cpp
     ${GAME_SOURCE_DIR}/messagelog.cpp
     ${GAME_SOURCE_DIR}/minigame.cpp

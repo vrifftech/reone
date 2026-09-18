@@ -23,27 +23,19 @@ namespace reone {
 
 namespace scene {
 class ModelSceneNode;
-class MeshSceneNode;
-class SceneNode;
 }
-
-namespace audio { class AudioSource; }
-namespace graphics { class Texture; }
 
 namespace game {
 
 class ServicesView;
 struct VisualEffectDesc;
 
-class VisualEffect : public CopyableEffect<VisualEffect> {
+class VisualEffect : public Effect {
 public:
     VisualEffect(int visualEffectId, bool missEffect, ServicesView &services);
-    VisualEffect(const VisualEffect &other);
     ~VisualEffect();
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
-    EffectRemovalResult onRemove(Object &object, const EffectInstance &) override;
-    void onUpdate(Object &object, const EffectInstance &, float dt) override;
+    void applyTo(Object &object) override;
     void retireAreaRuntime(
         const std::set<const Object *> &retainedObjects) override;
     void setLocation(glm::vec3 loc) { _location = loc; }
@@ -57,19 +49,6 @@ private:
     ServicesView &_services;
 
     std::shared_ptr<scene::ModelSceneNode> _node;
-    std::shared_ptr<scene::ModelSceneNode> _attached;
-    std::shared_ptr<scene::ModelSceneNode> _attachedOwner;
-    scene::SceneNode *_hookNode {nullptr};
-    std::weak_ptr<scene::ModelSceneNode> _shellOwner;
-    std::shared_ptr<graphics::Texture> _shellTexture;
-    std::shared_ptr<audio::AudioSource> _durationSound;
-    std::vector<scene::MeshSceneNode *> _beamMeshes;
-    std::shared_ptr<scene::ModelSceneNode> _beamSourceOwner;
-    std::shared_ptr<scene::ModelSceneNode> _beamTargetOwner;
-    bool _beam {false};
-    bool _persistent {false};
-    EffectApplicationResult present(Object &object, EffectInstance &instance);
-    void clearPresentation();
 };
 
 } // namespace game

@@ -43,14 +43,9 @@ void StartConversationAction::admit() {
     }
 }
 
-bool StartConversationAction::cancel(std::shared_ptr<Action> self, Object &actor) {
+void StartConversationAction::cancel(std::shared_ptr<Action> self, Object &actor) {
     _game.globalFade().finishDialog(_fadeDialog);
     _fadeDialog.reset();
-    return true;
-}
-
-void StartConversationAction::onQueued(Object &actor) {
-    admit();
 }
 
 void StartConversationAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
@@ -60,9 +55,21 @@ void StartConversationAction::execute(std::shared_ptr<Action> self, Object &acto
         complete();
         return;
     }
-    // Discard a queued conversation if a dialogue is already running. Starting
-    // it now would replace the current scene; deferring it would cause an
-    // immediate extra greeting when the current dialogue ends.
+    // A queued ActionStartConversation that comes up while a dialogue is
+    // already running is discarded, not honored and not deferred.
+    //
+    // Scripts queue a conversation on a creature as a recovery measure, to be
+    // taken only once whatever is on screen has finished - K2 103PER reply
+    // scripts do this, and reaching one mid-scene must not restart the scene.
+    // Honoring the action would replace the running conversation, which also
+    // robs it of its EndConversation script and of the globals that script
+    // latches, so the replacement can pick the same opening entry and loop
+    // forever. Deferring it until the conversation ends is equally wrong: the
+    // recovery call would then fire the moment the dialogue it was guarding
+    // against completed, and the speaker would immediately re-greet the player.
+    //
+    // Dropping it matches retail, where the action fails outright while the
+    // engine is in dialogue mode.
     if (_game.isConversationActive()) {
         debug("Discarding StartConversation, a conversation is already active",
               LogChannel::Conversation);
@@ -73,9 +80,15 @@ void StartConversationAction::execute(std::shared_ptr<Action> self, Object &acto
 
     auto actorPtr = _game.getObjectById(actor.id());
 
-    // A creature must have a valid conversation partner to approach. Drop the
-    // action if its target is missing or destroyed instead of starting a
-    // partnerless dialogue.
+    // A creature walks up to its conversation partner before talking. If the
+    // target object is invalid - a script can pass an object that was never
+    // created (e.g. GetObjectByTag on a tag with no instance) or one that has
+    // been destroyed - there is nobody to approach, so the action is dropped
+    // rather than starting a partnerless dialog. This mirrors retail/KotOR.js,
+    // where the creature path requires a valid target (it navigates to and
+    // references the target) and the action otherwise fails. It also prevents a
+    // null dereference below and stops an NPC told to converse with a missing
+    // placeholder from starting a stray dialog.
     if (auto creatureActor = dyn_cast<Creature>(actorPtr)) {
         if (!_objectToConverse) {
             cancel(self, actor);

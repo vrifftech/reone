@@ -23,16 +23,17 @@ namespace reone {
 
 namespace game {
 
-class ForceResistanceIncreaseEffect : public CopyableEffect<ForceResistanceIncreaseEffect> {
+class ForceResistanceIncreaseEffect : public Effect {
 public:
     ForceResistanceIncreaseEffect(int value) :
-        CopyableEffect(EffectType::ForceResistanceIncrease) {
-        setSaveFacingInteger(0, value);
+        Effect(EffectType::ForceResistanceIncrease),
+        _value(value) {
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
+    void applyTo(Object &object) override;
 
-    EffectRemovalResult onRemove(Object &object, const EffectInstance &) override;
+private:
+    int _value;
 };
 
 } // namespace game

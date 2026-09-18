@@ -23,16 +23,14 @@ namespace reone {
 
 namespace game {
 
-class ForceDrainEffect : public CopyableEffect<ForceDrainEffect> {
+class ForceDrainEffect : public Effect {
 public:
     ForceDrainEffect(int damage) :
-        CopyableEffect(EffectType::ForceDrain),
+        Effect(EffectType::ForceDrain),
         _damage(damage) {
-        setSaveFacingInteger(0, damage);
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override {
-        return EffectApplicationResult::Retained;
+    void applyTo(Object &object) override {
     }
 
 private:

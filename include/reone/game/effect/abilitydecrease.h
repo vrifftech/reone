@@ -23,17 +23,17 @@ namespace reone {
 
 namespace game {
 
-class AbilityDecreaseEffect : public CopyableEffect<AbilityDecreaseEffect> {
+class AbilityDecreaseEffect : public Effect {
 public:
     AbilityDecreaseEffect(Ability ability, int modifyBy) :
-        CopyableEffect(EffectType::AbilityDecrease),
+        Effect(EffectType::AbilityDecrease),
         _ability(ability),
         _modifyBy(modifyBy) {
         setSaveFacingInteger(0, static_cast<int>(ability));
         setSaveFacingInteger(1, modifyBy);
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
+    void applyTo(Object &object) override;
 
     Ability ability() const { return _ability; }
     int amount() const { return _modifyBy; }

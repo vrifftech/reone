@@ -23,25 +23,13 @@ namespace reone {
 
 namespace game {
 
-class ForcePushStateEffect : public CopyableEffect<ForcePushStateEffect> {
-public:
-    ForcePushStateEffect() : CopyableEffect(EffectType::ForcePushed) { setSaveFacingInteger(0, 9); }
-    EffectInstance saveFacingInstance() const override;
-    EffectApplicationResult onApply(Object &, EffectInstance &) override;
-    void onUpdate(Object &, const EffectInstance &, float) override;
-    EffectRemovalResult onRemove(Object &, const EffectInstance &) override;
-};
-
-bool applyForcePushMovement(Object &, const glm::vec3 &centre, bool ignoreDirectLine,
-                            EffectInstance &owner);
-
-class ForcePushedEffect : public CopyableEffect<ForcePushedEffect> {
+class ForcePushedEffect : public Effect {
 public:
     ForcePushedEffect() :
-        CopyableEffect(EffectType::ForcePushed) {
+        Effect(EffectType::ForcePushed) {
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
+    void applyTo(Object &object) override;
 };
 
 } // namespace game

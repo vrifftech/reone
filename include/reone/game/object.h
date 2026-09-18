@@ -26,8 +26,6 @@
 #include "reone/system/timer.h"
 
 #include "action.h"
-#include "actionqueue.h"
-#include "castspell.h"
 #include "action/playanimation.h"
 #include "effect.h"
 #include "runtimeref.h"
@@ -46,14 +44,12 @@ namespace game {
 struct ServicesView;
 
 class Action;
-class Area;
 class Game;
 class Item;
 class ModuleSnapshotBuilder;
 class Room;
 
 class Object : public scene::IUser, boost::noncopyable {
-    friend class Area;
 public:
     enum class RuntimeState {
         Constructing,
@@ -76,10 +72,7 @@ public:
     virtual void damage(
         int amount,
         const std::shared_ptr<Object> &damager);
-    virtual void applyDamageEffect(
-        int amount,
-        const std::shared_ptr<Object> &damager);
-    void heal(int amount);
+    void heal(int amount) { damage(-amount, nullptr); }
 
     void face(const Object &other);
     void face(const glm::vec3 &point);
@@ -92,12 +85,6 @@ public:
 
     bool isMinOneHP() const { return _minOneHP; }
     bool isDead() const { return _dead; }
-    bool isDestroyable() const { return _destroyable; }
-    bool isRaiseable() const { return _raiseable; }
-    bool isSelectableWhenDead() const { return _selectableWhenDead; }
-    void setRaiseable(bool value) { _raiseable = value; }
-    void setDestroyability(bool destroyable, bool raiseable, bool selectableWhenDead);
-
     bool isCommandable() const { return _commandable; }
     bool isInConversation() const { return _isInConversation; }
 
@@ -112,11 +99,7 @@ public:
     float getFacing() const { return glm::eulerAngles(_orientation).z; }
 
     uint32_t id() const { return _id; }
-    virtual std::string getOnSpellCastAt() const { return {}; }
-    void setFeedbackText(std::string text, float duration);
-    const std::string &feedbackText() const { return _feedbackText; }
     Game &game() const { return _game; }
-    ServicesView &services() const { return _services; }
     bool isRuntimeLive() const { return _runtimeState == RuntimeState::Live; }
     bool isPresentationOnly() const {
         return _runtimeState == RuntimeState::Presentation;
@@ -128,12 +111,6 @@ public:
     const std::string &name() const { return _name; }
     const std::string &conversation() const { return _conversation; }
     bool plotFlag() const { return _plot; }
-    SpellType spellCast() const { return _spellCast; }
-    void setSpellCast(SpellType spell) { _spellCast = spell; }
-    uint32_t effectSpellId() const { return _effectSpellId; }
-    void setEffectSpellId(uint32_t spellId) { _effectSpellId = spellId; }
-    const SpellCastContext &spellCastContext() const { return _spellCastContext; }
-    void setSpellCastContext(SpellCastContext context) { _spellCastContext = context; }
 
     Room *room() const { return _room; }
     const glm::vec3 &position() const { return _position; }
@@ -187,19 +164,13 @@ public:
 
     void clearAllEffects();
     void removeEffect(const std::shared_ptr<Effect> &effect);
-    void queueScriptEffectRemoval(ScriptEffectRemovalMatch match, const EffectInstance &value);
-    bool applyEffect(const std::shared_ptr<Effect> &effect, DurationType durationType, float duration = 0.0f);
-    bool applyEffect(EffectInstance effect);
+    void applyEffect(const std::shared_ptr<Effect> &effect, DurationType durationType, float duration = 0.0f);
     bool restoreEffect(EffectInstance effect);
-    bool isClearingEffects() const { return _clearingEffects; }
     size_t removeEffectsById(EffectId id);
-    bool removeEffectApplication(uint64_t applicationOrder);
-    EffectPackageApplicationResult applyEffectPackage(const std::vector<EffectInstance> &members);
 
     const std::deque<EffectInstance> &effects() const { return _effects; }
     /** Find the canonical applied record for an exact executable payload. */
     EffectInstance *findEffectInstance(const Effect &effect);
-    EffectInstance *findEffectApplication(uint64_t applicationOrder);
     std::vector<EffectInstance> saveEffectSnapshot() const;
     bool hasEffect(EffectType type) const;
     std::shared_ptr<Effect> getFirstEffect();
@@ -232,14 +203,11 @@ public:
     int maxHitPoints() const { return _maxHitPoints; }
 
     // Current runtime hit points.
-    virtual int currentHitPoints() const { return static_cast<int16_t>(_currentHitPoints); }
-    int currentHitPointsWithoutTemporary() const { return static_cast<int16_t>(_currentHitPoints); }
+    int currentHitPoints() const { return _currentHitPoints; }
 
     void setMinOneHP(bool minOneHP) { _minOneHP = minOneHP; }
     virtual void setMaxHitPoints(int maxHitPoints) { _maxHitPoints = maxHitPoints; }
-    virtual void setCurrentHitPoints(int hitPoints) {
-        _currentHitPoints = _minOneHP && hitPoints <= 0 ? 1 : hitPoints;
-    }
+    virtual void setCurrentHitPoints(int hitPoints) { _currentHitPoints = hitPoints; }
 
     // END Hit Points
 
@@ -247,27 +215,16 @@ public:
 
     virtual void clearAllActions(bool force = false);
 
-    void clearCommandActions();
-    void discardHostileActionGroups();
-    void addAction(std::shared_ptr<Action> action,
-                   uint16_t group = OrdinaryActionQueue::kNewGroup);
-    void addActionOnTop(std::shared_ptr<Action> action,
-                        uint16_t group = OrdinaryActionQueue::kNewGroup);
-    bool addActionBefore(const Action &parent, std::shared_ptr<Action> action);
-    bool hasOrdinaryActionsPending() const { return !_actions.nodes.empty(); }
-    uint32_t currentSerializedActionId() const {
-        return _actions.nodes.empty() ? 0xffff : _actions.nodes.front()->actionId;
-    }
+    void addAction(std::shared_ptr<Action> action);
+    void addActionOnTop(std::shared_ptr<Action> action);
     void delayAction(std::shared_ptr<Action> action, float seconds);
 
     bool hasUserActionsPending(const Action *excluded = nullptr) const;
 
     std::shared_ptr<Action> getCurrentAction() const;
 
-    const OrdinaryActionQueue &actions() const { return _actions; }
-    uint16_t allocateActionGroup(uint16_t request) { return _actions.allocateGroup(request); }
+    const std::deque<std::shared_ptr<Action>> &actions() const { return _actions; }
     std::vector<SavedActionRecord> saveActionSnapshot() const;
-    void requeueActionNode(const OrdinaryActionQueue::Node &node);
 
     /** Drop live execution and object bindings after their Area was captured. */
     void retireAreaRuntimeState(
@@ -280,16 +237,9 @@ public:
     uint32_t getLastHostileActor() const;
 
     void setLastHostileActor(uint32_t actor);
-    int forceAlwaysUpdate() const { return _forceAlwaysUpdate; }
-    void setForceAlwaysUpdate(int value) { _forceAlwaysUpdate = value; }
 
     uint32_t getLastDamager() const;
     void setLastDamager(const std::shared_ptr<Object> &damager);
-    int getLastDamageAmountByType(int damageTypeFlag) const;
-    int getTotalDamageDealt() const;
-    void setLastDamageAmounts(const std::array<int, 15> &amounts) {
-        _lastDamageAmounts = amounts;
-    }
 
     // END Combat
 
@@ -308,7 +258,6 @@ public:
     const std::vector<EffectInstance> &savedEffects() const { return _savedEffects; }
     const SavedActionQueue &savedActionQueue() const { return _savedActionQueue; }
     bool hasPublishedSavedRuntimeState() const { return _savedRuntimePublished; }
-    bool isRestoringSavedRuntime() const { return _savedRuntimeParsed && !_savedRuntimePublished; }
 
     void captureSaveRecord(
         const resource::Gff &gff,
@@ -391,35 +340,22 @@ protected:
     bool _interruptable {false};
     int16_t _hitPoints {0};
     int16_t _maxHitPoints {0};
-    int32_t _currentHitPoints {0}; // Writes use 32 bits; getters and GFF read a signed word.
+    int16_t _currentHitPoints {0};
     glm::vec3 _position {0.0f};
     glm::quat _orientation {1.0f, 0.0f, 0.0f, 0.0f};
     std::vector<std::shared_ptr<Item>> _items; // FIXME: deserialize
     // END Serializable
 
     std::string _name;
-    SpellType _spellCast {SpellType::All};
-    SpellCastContext _spellCastContext;
-    uint32_t _effectSpellId {0xffffffffu}; // Only while running a spell-impact script.
     bool _dead {false};
-    bool _destroyable {true};
-    bool _raiseable {false};
-    bool _selectableWhenDead {false};
     bool _isInConversation {false};
     glm::mat4 _transform {1.0f};
     bool _visible {true};
-    // Non-owning; Area detachment/destruction clears this before releasing ownership.
-    Area *_spatialArea {nullptr};
     Room *_room {nullptr};
     std::deque<EffectInstance> _effects;
-    uint64_t _nextEffectApplicationOrder {1};
-    bool _clearingEffects {false};
-    std::vector<uint64_t> _removingEffectApplications;
     bool _open {false};
     bool _stunt {false};
     std::string _activeAnimName;
-    std::string _feedbackText;
-    float _feedbackTextRemaining {0.0f};
 
     std::shared_ptr<scene::SceneNode> _sceneNode;
 
@@ -428,28 +364,28 @@ protected:
 
     // Actions
 
-    OrdinaryActionQueue _actions;
+    std::deque<std::shared_ptr<Action>> _actions;
     std::vector<DelayedAction> _delayed;
-    std::weak_ptr<ActionQueueNode> _executingActionNode;
+    std::weak_ptr<Action> _executingAction;
 
-    void addOpaqueAction(SavedActionRecord record);
+    struct LoadedSaveActionSlot {
+        SavedActionRecord original;
+        std::weak_ptr<Action> runtimeAction;
+        bool unsupportedPending {false};
+    };
+    std::vector<LoadedSaveActionSlot> _loadedSaveActionSlots;
 
     // END Actions
 
     RuntimeObjectRef<Object> _lastHostileActor;
     RuntimeObjectRef<Object> _lastDamager;
-    std::array<int, 15> _lastDamageAmounts;
     std::optional<uint32_t> _savedLastDamagerId;
 
     // Local variables
     std::map<std::string, uint32_t> _savedReferenceIds;
     std::map<std::string, RuntimeObjectRef<Object>> _savedReferences;
     std::vector<EffectInstance> _savedEffects;
-    int _forceAlwaysUpdate {0};
     SavedActionQueue _savedActionQueue;
-    std::vector<SavedScheduledAction> _savedScheduledActions;
-    std::vector<bool> _savedScheduledReferencesBound;
-    float _savedScheduledTime {0.0f};
     SerializedIdentityContext _savedRuntimeIdentityContext;
     std::vector<bool> _savedEffectReferencesBound;
     std::vector<bool> _savedActionReferencesBound;
@@ -463,8 +399,18 @@ protected:
 
     // END Local variables
 
-    Object(uint32_t id, ObjectType type, std::string sceneName,
-           Game &game, ServicesView &services);
+    Object(
+        uint32_t id,
+        ObjectType type,
+        std::string sceneName,
+        Game &game,
+        ServicesView &services) :
+        _id(id),
+        _type(type),
+        _sceneName(std::move(sceneName)),
+        _game(game),
+        _services(services) {
+    }
 
     virtual void updateTransform();
     virtual bool canExecuteActions() const { return true; }
@@ -488,10 +434,8 @@ protected:
 
     // Effects
 
-    bool admitEffect(EffectInstance effect);
     void updateEffects(float dt);
     virtual void onEffectsCleared() {}
-    virtual void onEffectsRestored() {}
 
     int applyDamageToHitPoints(int amount, int currentHitPoints);
 

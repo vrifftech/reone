@@ -40,8 +40,9 @@ void Party::setPersistedState(PersistedState state) {
 }
 
 void Party::loadPersistedState(PersistedState state) {
-    // Loading the party table clears transient object bindings before applying
-    // persisted fields. Active module references are bound separately.
+    // Retail LoadTableInfo clears every transient object binding before it
+    // publishes the persisted PartyTable fields. A new session must rebuild
+    // active and inactive runtime representations explicitly.
     for (const auto &[_, puppet] : _puppetBindings) {
         if (puppet) puppet->setPuppet(false);
     }
@@ -235,7 +236,7 @@ bool Party::isRosterSelectable(const RosterIdentity &identity) const {
 bool Party::setRosterSelectable(
     const RosterIdentity &identity,
     bool selectable) {
-    // The game ignores SetNPCSelectability for invalid or unavailable slots.
+    // Retail ignores SetNPCSelectability for invalid or unavailable slots.
     if (!isRosterAvailable(identity)) return false;
     bool &current = identity.kind == RosterKind::Npc
                         ? _persistedState.npcSelectable[identity.slot]
@@ -516,8 +517,6 @@ void Party::switchLeader() {
         return;
     }
 
-    saveLeaderAttackTarget();
-
     Member tmp(_members[0]);
     _members.erase(_members.begin());
     _members.push_back(tmp);
@@ -525,16 +524,9 @@ void Party::switchLeader() {
     onLeaderChanged();
 }
 
-void Party::saveLeaderAttackTarget() {
-    auto &member = _members.front();
-    member.lastTarget = member.creature ? member.creature->getAttackTarget() : nullptr;
-}
-
 void Party::onLeaderChanged() {
     auto entry = static_cast<resource::SoundSetEntry>(static_cast<int>(resource::SoundSetEntry::Select1) + randomInt(0, 2));
     _members[0].creature->playSound(entry, false);
-    auto lastTarget = _members[0].lastTarget.resolve();
-    _game.setLastTarget(lastTarget ? lastTarget->id() : script::kObjectInvalid);
 
     for (auto &member : _members) {
         member.creature->clearAllActions();
@@ -614,7 +606,7 @@ bool Party::removePuppet(int puppet) {
     if (found == _persistedState.puppetIds.end()) return false;
     if (auto creature = rosterCreature({RosterKind::Puppet, puppet})) {
         try {
-            // RemovePuppet snapshots the live representation before
+            // Retail RemovePuppet snapshots the live representation before
             // KillPUPObject invalidates its transient object binding.
             _game.saveRosterState({RosterKind::Puppet, puppet}, *creature);
         } catch (const std::exception &e) {
@@ -729,8 +721,6 @@ void Party::setPartyLeaderByIndex(int index) {
     if (index < 1 || index >= _members.size())
         return;
 
-    saveLeaderAttackTarget();
-
     Member tmp(_members[0]);
     _members[0] = _members[index];
     _members[index] = tmp;
@@ -751,7 +741,7 @@ void Party::setControlledMember(int npc, const std::shared_ptr<Creature> &creatu
         return;
     }
     if (npc != kNpcPlayer && isMember(npc)) {
-        // The game removes an incoming companion from the two-member array
+        // Retail removes an incoming companion from the two-member array
         // before it becomes the controlled player, including its active
         // assigned-puppet runtime representation.
         removeMember(npc);
@@ -779,8 +769,6 @@ void Party::setControlledMember(int npc, const std::shared_ptr<Creature> &creatu
     _members.insert(_members.begin(), std::move(member));
 
     _player = creature;
-    // A control transfer creates a new member entry, not a leader rotation.
-    _game.setLastTarget(script::kObjectInvalid);
     _persistedState.controlledNpc = npc;
 }
 
@@ -796,7 +784,7 @@ bool Party::removeMember(int npc) {
         const int puppet = creature ? creature->assignedPuppet() : -1;
         if (creature) {
             try {
-                // RemoveMember saves the current bound NPC before its
+                // Retail RemoveMember saves the current bound NPC before its
                 // runtime membership changes. Reone retains the binding, but
                 // keeping the detached snapshot current preserves the same
                 // explicit PartyTable repository semantics.
@@ -828,7 +816,7 @@ bool Party::removeMemberToBase(int npc) {
         return true;
     }
 
-    // RemoveMember returns early when the active member table is
+    // Retail RemoveMember returns early when the active member table is
     // empty. RemoveNPCFromPartyToBase still proceeds to KillNPCObject, so the
     // caller deliberately keeps that final retirement separate.
     if (_members.empty()) {

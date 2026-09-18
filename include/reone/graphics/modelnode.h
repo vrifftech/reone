@@ -96,7 +96,6 @@ public:
         std::shared_ptr<Danglymesh> danglymesh;
         std::shared_ptr<AABBTree> aabbTree;
         bool saber {false};
-        bool beaming {false};
 
         // END Specialization
     };

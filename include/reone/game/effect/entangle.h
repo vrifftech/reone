@@ -23,14 +23,13 @@ namespace reone {
 
 namespace game {
 
-class EntangleEffect : public CopyableEffect<EntangleEffect> {
+class EntangleEffect : public Effect {
 public:
     EntangleEffect() :
-        CopyableEffect(EffectType::Entangle) {
+        Effect(EffectType::Entangle) {
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
-    EffectRemovalResult onRemove(Object &object, const EffectInstance &) override;
+    void applyTo(Object &object) override;
 };
 
 } // namespace game

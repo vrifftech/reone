@@ -24,15 +24,25 @@ namespace reone {
 
 namespace game {
 
-EffectApplicationResult InvisibilityEffect::onApply(
+bool InvisibilityEffect::onApply(
     Object &object,
-    EffectInstance &) {
+    const EffectInstance &) {
 
-    return EffectApplicationResult::Retained;
+    auto *creature = dyn_cast<Creature>(&object);
+    if (!creature) {
+        return false;
+    }
+    creature->refreshVisibilityPerception();
+    return true;
 }
 
-EffectRemovalResult InvisibilityEffect::onRemove(Object &, const EffectInstance &) {
-    return EffectRemovalResult::Removed;
+void InvisibilityEffect::onRemove(
+    Object &object,
+    const EffectInstance &) {
+
+    if (auto *creature = dyn_cast<Creature>(&object)) {
+        creature->refreshVisibilityPerception();
+    }
 }
 
 } // namespace game

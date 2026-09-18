@@ -23,17 +23,17 @@ namespace reone {
 
 namespace game {
 
-class InvisibilityEffect : public CopyableEffect<InvisibilityEffect> {
+class InvisibilityEffect : public Effect {
 public:
     InvisibilityEffect(InvisibilityType type) :
-        CopyableEffect(EffectType::Invisibility),
+        Effect(EffectType::Invisibility),
         _type(type) {
         setSaveFacingInteger(0, static_cast<int>(type));
         setSaveFacingInteger(1, static_cast<int>(RacialType::All));
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &instance) override;
-    EffectRemovalResult onRemove(Object &object, const EffectInstance &instance) override;
+    bool onApply(Object &object, const EffectInstance &instance) override;
+    void onRemove(Object &object, const EffectInstance &instance) override;
 
 private:
     InvisibilityType _type;

@@ -23,13 +23,13 @@ namespace reone {
 
 namespace game {
 
-class ForceSightEffect : public CopyableEffect<ForceSightEffect> {
+class ForceSightEffect : public Effect {
 public:
     ForceSightEffect() :
-        CopyableEffect(EffectType::ForceSight) {
+        Effect(EffectType::ForceSight) {
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
+    void applyTo(Object &object) override;
 };
 
 } // namespace game

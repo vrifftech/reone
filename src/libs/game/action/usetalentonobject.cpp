@@ -38,22 +38,8 @@ void UseTalentOnObjectAction::dispatchToAction() {
         if (!spell) {
             return;
         }
-        std::optional<std::shared_ptr<Item>> item;
-        std::optional<size_t> property;
-        std::optional<int> casterLevel;
-        if (_chosenTalent->item() != script::kObjectInvalid) {
-            auto source = _game.getObjectById<Item>(_chosenTalent->item());
-            if (!source) return;
-            item = std::move(source);
-            if (_chosenTalent->itemPropertyIndex() >= 0)
-                property = static_cast<size_t>(_chosenTalent->itemPropertyIndex());
-            if (_chosenTalent->casterLevel() != 0xff)
-                casterLevel = _chosenTalent->casterLevel();
-        }
         _action = _game.newAction<CastSpellAtObjectAction>(
-            std::move(spell), _target, item, /*cheat=*/false,
-            _chosenTalent->metaType(), /*domainLevel=*/0,
-            ProjectilePathType::Default, /*instantSpell=*/false, property, casterLevel);
+            std::move(spell), _target, /*item=*/std::nullopt, /*cheat=*/false);
         break;
     }
     default:
@@ -62,34 +48,22 @@ void UseTalentOnObjectAction::dispatchToAction() {
 }
 
 void UseTalentOnObjectAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
-    if (isCompleted() || isCancelled()) return;
     if (!_action) {
         complete();
         return;
     }
 
-    _action->execute(self, actor, dt);
-    if (_action->locked()) lock();
+    _action->execute(_action, actor, dt);
 
     if (_action->isCompleted()) {
         complete();
     }
 }
 
-bool UseTalentOnObjectAction::cancel(std::shared_ptr<Action>, Object &actor) {
-    if (_action) {
-        if (!_action->cancel(_action, actor)) return false;
-        _action->markCancelled();
-        _action->complete();
-    }
-    complete();
-    return true;
-}
-
 std::optional<SavedActionRecord> UseTalentOnObjectAction::saveFacingState() const {
     // ActionUseTalentOnObject is a runtime dispatcher. Physical feats already
-    // have the canonical ActionId 12 representation; spell actions carry
-    // their versioned continuation in ActionId 15. Unsupported talents stay opaque.
+    // have the canonical retail ActionId 12 representation on the dispatched
+    // action; spells and unsupported talents continue to fail closed.
     return _action ? _action->saveFacingState() : std::nullopt;
 }
 

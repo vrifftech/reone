@@ -550,10 +550,10 @@ void validateExpectedInput(const SaveSlotPackageInput &input) {
     auto factionCount = factions->getList("FactionList").size();
     std::set<std::pair<uint32_t, uint32_t>> pairs;
     for (const auto &entry : factions->getList("RepList")) {
-        auto source = entry->getUint("FactionID1", UINT32_MAX);
-        auto target = entry->getUint("FactionID2", UINT32_MAX);
-        if (source >= factionCount || target == 0 || target >= factionCount ||
-            !pairs.emplace(source, target).second) {
+        auto target = entry->getUint("FactionID1", UINT32_MAX);
+        auto source = entry->getUint("FactionID2", UINT32_MAX);
+        if (target >= factionCount || source == 0 || source >= factionCount ||
+            !pairs.emplace(target, source).second) {
             throw std::invalid_argument("FAC contains an invalid reputation reference");
         }
     }

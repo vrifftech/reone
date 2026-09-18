@@ -170,9 +170,7 @@ std::shared_ptr<Effect> getEffect(const std::vector<Variable> &args, int index) 
     throwIfUnexpectedType(VariableType::Effect, args[index].type);
     auto effect = std::static_pointer_cast<Effect>(args[index].engineType);
     throwIfInvalidEffect(effect);
-    // StackPopEngineStructure yields a value: transformations must not mutate
-    // the caller's effect, including direct routine invocations outside the VM.
-    return effect->cloneEffect();
+    return effect;
 }
 
 std::shared_ptr<Event> getEvent(const std::vector<Variable> &args, int index) {

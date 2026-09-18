@@ -16,26 +16,13 @@
  */
 
 #include "reone/game/effect/movementspeedincrease.h"
-#include "reone/game/object/creature.h"
-#include "reone/game/effect/rules.h"
 
 namespace reone {
 
 namespace game {
 
-EffectApplicationResult MovementSpeedIncreaseEffect::onApply(Object &object, EffectInstance &instance) {
-    auto *creature = dyn_cast<Creature>(&object);
-    if (creature) {
-        instance.setIntegerParameter(0, normalizeMovementSpeedIncrease(instance.integerParameter(0)));
-        creature->multiplyMovementRate(getMovementSpeedMultiplier(true, instance.integerParameter(0)));
-    }
-    return EffectApplicationResult::Retained;
-}
-
-EffectRemovalResult MovementSpeedIncreaseEffect::onRemove(Object &object, const EffectInstance &instance) {
-    if (auto *creature = dyn_cast<Creature>(&object)) creature->recomputeMovementRate(instance.id);
-
-    return EffectRemovalResult::Removed;
+void MovementSpeedIncreaseEffect::applyTo(Object &object) {
+    // TODO: implement
 }
 
 } // namespace game

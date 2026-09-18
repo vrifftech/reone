@@ -23,25 +23,14 @@ namespace reone {
 
 namespace game {
 
-// Internal type 69. It is not a script EffectType ordinal.
-class VisionEffect : public CopyableEffect<VisionEffect> {
-public:
-    explicit VisionEffect(int vision) : CopyableEffect(EffectType::Invalid) {
-        setSaveFacingInteger(0, vision);
-    }
-
-    EffectInstance saveFacingInstance() const override;
-    EffectApplicationResult onApply(Object &, EffectInstance &) override;
-};
-
-class UltravisionEffect : public CopyableEffect<UltravisionEffect> {
+class UltravisionEffect : public Effect {
 public:
     UltravisionEffect() :
-        CopyableEffect(EffectType::Ultravision) {
+        Effect(EffectType::Ultravision) {
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &instance) override;
-    EffectRemovalResult onRemove(Object &object, const EffectInstance &instance) override;
+    bool onApply(Object &object, const EffectInstance &instance) override;
+    void onRemove(Object &object, const EffectInstance &instance) override;
 };
 
 } // namespace game

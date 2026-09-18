@@ -23,19 +23,16 @@ namespace reone {
 
 namespace game {
 
-class DeathEffect : public CopyableEffect<DeathEffect> {
+class DeathEffect : public Effect {
 public:
     DeathEffect(bool spectacularDeath, bool displayFeedback, bool noFadeAway) :
-        CopyableEffect(EffectType::Death),
+        Effect(EffectType::Death),
         _spectacularDeath(spectacularDeath),
         _displayFeedback(displayFeedback),
         _noFadeAway(noFadeAway) {
-        setSaveFacingInteger(0, spectacularDeath);
-        setSaveFacingInteger(1, displayFeedback);
-        setSaveFacingInteger(2, noFadeAway);
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
+    void applyTo(Object &object) override;
 
 private:
     bool _spectacularDeath;

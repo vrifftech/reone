@@ -640,7 +640,7 @@ static bool hasUpgradeHostMetadata(const Item &item) {
         return false;
     }
     return std::any_of(item.properties().begin(), item.properties().end(), [](const Item::PropertyEntry &property) {
-        return property.upgradeType != 0xff;
+        return property.upgradeType != 0;
     });
 }
 

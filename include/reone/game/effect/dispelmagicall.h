@@ -23,15 +23,14 @@ namespace reone {
 
 namespace game {
 
-class DispelMagicAllEffect : public CopyableEffect<DispelMagicAllEffect> {
+class DispelMagicAllEffect : public Effect {
 public:
     DispelMagicAllEffect(int casterLevel) :
-        CopyableEffect(EffectType::DispelMagicAll),
+        Effect(EffectType::DispelMagicAll),
         _casterLevel(casterLevel) {
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override {
-        return EffectApplicationResult::Retained;
+    void applyTo(Object &object) override {
     }
 
 private:

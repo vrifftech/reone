@@ -29,72 +29,53 @@
 
 #include "attackanimations.h"
 
-
 namespace reone {
 
 namespace game {
 
-namespace {
+// Attack animation variants are numbered from 1 - a0 is not an authored
+// animation. Cinematic attacks consume the whole 1-5 roll, while non-cinematic
+// attacks keep to the a1/a2 subset this selector has always intended to use.
+// Some K2 families author further variants; selecting those is a separate
+// change.
+static constexpr int kNonCinematicVariants = 2;
 
-constexpr int kNonCinematicVariantCount = 2;
-
-int nonCinematicVariant(int variant) {
-    return 1 + std::max(0, variant - 1) % kNonCinematicVariantCount;
+static int nonCinematicVariant(int variant) {
+    return 1 + std::max(0, variant - 1) % kNonCinematicVariants;
 }
 
-std::string attackAnimation(
-    char prefix,
-    CreatureWieldType wield,
-    int variant) {
-
-    return str(boost::format("%c%da%d") %
-               prefix %
-               static_cast<int>(wield) %
-               variant);
-}
-
-} // namespace
-
-std::string getMeleeAttackAnim(
-    CreatureWieldType attackerWield,
-    CreatureWieldType targetWield,
-    int variant,
-    bool duel) {
-
+std::string getMeleeAttackAnim(CreatureWieldType attackerWield,
+                               CreatureWieldType targetWield,
+                               int variant, bool duel) {
+    // Cinematic attack variants.
     if (duel && isMeleeWieldType(targetWield)) {
-        return attackAnimation('c', attackerWield, variant);
+        return str(boost::format("c%da%d") % static_cast<int>(attackerWield) % variant);
     }
 
     variant = nonCinematicVariant(variant);
-    return attackAnimation(
-        targetWield != CreatureWieldType::None ? 'm' : 'g',
-        attackerWield,
-        variant);
-}
 
-std::string getUnarmedAttackAnim(
-    CreatureWieldType attackerWield,
-    CreatureWieldType targetWield,
-    int variant,
-    bool duel) {
-
-    if (attackerWield == CreatureWieldType::HandToHandComplex &&
-        duel &&
-        targetWield == attackerWield) {
-        return attackAnimation('c', attackerWield, variant);
+    if (targetWield != CreatureWieldType::None) {
+        return str(boost::format("m%da%d") % static_cast<int>(attackerWield) % variant);
     }
 
-    return attackAnimation(
-        'g',
-        CreatureWieldType::HandToHand,
-        nonCinematicVariant(variant));
+    return str(boost::format("g%da%d") % static_cast<int>(attackerWield) % variant);
+}
+
+std::string getUnarmedAttackAnim(CreatureWieldType attackerWield, CreatureWieldType targetWield, int variant, bool duel) {
+    if (attackerWield == CreatureWieldType::HandToHandComplex) {
+        if (duel && targetWield == attackerWield) {
+            return str(boost::format("c%da%d") % static_cast<int>(attackerWield) % variant);
+        }
+    }
+
+    // Fallback to a basic unarmed animation.
+    variant = nonCinematicVariant(variant);
+    return str(boost::format("g8a%d") % variant);
 }
 
 std::string getStunBatonAttackAnim(int variant) {
-    return attackAnimation(
-        'g',
-        CreatureWieldType::StunBaton,
-        nonCinematicVariant(variant));
+    variant = nonCinematicVariant(variant);
+    return str(boost::format("g1a%d") % variant);
 }
 
 static std::vector<std::string> attack(
@@ -103,7 +84,6 @@ static std::vector<std::string> attack(
     Object &target,
     const IAnimations &anims,
     AttackBuffer &attacks) {
-
     attacks.addPhysicalAttacks(attacker, target);
 
     scene::AnimationProperties animProp =
@@ -114,40 +94,53 @@ static std::vector<std::string> attack(
         targetWield = targetCreature->getWieldType();
     }
 
-    CreatureWieldType attackerWield = attacker.getWieldType();
-    bool melee = !isRangedWieldType(attackerWield);
-    size_t animationCount = melee ? attacks.attackCount() : 1;
-    std::vector<std::string> attackAnimations;
-    attackAnimations.reserve(animationCount);
+    int variant = randomInt(1, 5);
 
-    for (size_t index = 0; index < animationCount; ++index) {
-        std::string attackAnim;
-        if (isRangedWieldType(attackerWield)) {
-            attackAnim = getRangedAttackAnim(attacker, /*kind=*/1);
-        } else {
-            attackAnim = selectPhysicalMeleeAttackAnimation(
-                attacker,
-                target,
-                attackerWield);
-        }
-        attackAnimations.push_back(std::move(attackAnim));
+    CreatureWieldType attackerWield = attacker.getWieldType();
+
+    std::string attackAnim;
+    switch (attackerWield) {
+    case CreatureWieldType::None: {
+        assert(0 && "Monster attacks are not supported");
+        break;
+    }
+    case CreatureWieldType::SingleSword:
+    case CreatureWieldType::DoubleBladedSword:
+    case CreatureWieldType::DualSwords: {
+        attackAnim = getMeleeAttackAnim(attackerWield, targetWield, variant, round.duel);
+        break;
+    }
+    case CreatureWieldType::BlasterPistol:
+    case CreatureWieldType::DualPistols:
+    case CreatureWieldType::BlasterRifle:
+    case CreatureWieldType::HeavyWeapon: {
+        attackAnim = getRangedAttackAnim(attacker, /*kind=*/1);
+        break;
+    }
+    case CreatureWieldType::HandToHand:
+    case CreatureWieldType::HandToHandComplex: {
+        attackAnim = getUnarmedAttackAnim(attackerWield, targetWield, variant, round.duel);
+        break;
+    }
+    case CreatureWieldType::StunBaton:
+        attackAnim = getStunBatonAttackAnim(variant);
+        break;
     }
 
-    const std::string &primaryAttackAnimation = attackAnimations.front();
-    attacker.playAnimation(primaryAttackAnimation, animProp);
+    attacker.playAnimation(attackAnim, animProp);
 
     if (round.duel) {
         auto &opponent = cast<Creature>(target);
         opponent.face(attacker);
 
-        std::string resultAnim = anims.getAttackResult(
-            primaryAttackAnimation,
-            targetWield,
-            attacks.result());
+        std::string resultAnim = anims.getAttackResult(attackAnim, targetWield, attacks.result());
         opponent.playAnimation(resultAnim, animProp);
     }
 
-    return attackAnimations;
+    size_t animationCount = isRangedWieldType(attackerWield)
+                                ? 1
+                                : attacks.attackCount();
+    return std::vector<std::string>(animationCount, attackAnim);
 }
 
 /**
@@ -162,7 +155,7 @@ void AttackObjectAction::addProjectiles(const Creature &creature) {
         return;
     }
 
-    addProjectilesFromSpec(_projectiles, *spec, &_attacks);
+    addProjectilesFromSpec(_projectiles, *spec);
 }
 
 void AttackObjectAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
@@ -184,16 +177,13 @@ void AttackObjectAction::execute(std::shared_ptr<Action> self, Object &actor, fl
         return;
     }
 
-    if (_game.combat().isActionPaused(*self)) return;
-
-    if (!navigateToAttackTarget(attacker, *target, dt, _reachedTarget, &_game, self.get())) {
+    if (!navigateToAttackTarget(attacker, *target, dt, _reachedTarget)) {
         return;
     }
 
     attacker.face(*target);
 
     const CombatRound &round = _game.combat().addAction(self, actor);
-    if (round.suspends(*self)) return;
     AttackSchedule::State state = _schedule.update(round, *self, dt);
 
     // Gameplay updates
@@ -274,24 +264,10 @@ void AttackObjectAction::execute(std::shared_ptr<Action> self, Object &actor, fl
     }
 }
 
-void AttackObjectAction::onQueued(Object &actor) {
-    if (!originalSavedAction()) {
-        if (auto target = _target.resolve()) {
-            if (auto creature = dyn_cast<Creature>(target)) {
-                cast<Creature>(actor).recordQueuedAttack(*creature);
-            }
-        }
-    }
-}
-
-bool AttackObjectAction::cancel(std::shared_ptr<Action> self, Object &actor) {
+void AttackObjectAction::cancel(std::shared_ptr<Action> self, Object &actor) {
     Creature &attacker = cast<Creature>(actor);
-    _game.combat().transferEquipment(static_cast<Creature &>(actor));
     _attacks.discardPendingMelee();
-    _attacks.clearHistory();
-    attacker.clearCurrentAttackTarget();
     finish(attacker);
-    return true;
 }
 
 std::optional<SavedActionRecord> AttackObjectAction::saveFacingState() const {
@@ -300,13 +276,14 @@ std::optional<SavedActionRecord> AttackObjectAction::saveFacingState() const {
         return std::nullopt;
     }
 
-    // K1 and K2 both save the high-level physical-attack command as ActionId 12. The versioned ReonePhysical extension preserves the pending
-    // resolution and schedule without changing those ten parameters.
+    // K1 and K2 both save the high-level physical-attack command as retail
+    // ActionId 12. Combat-round resolution, navigation, animations and
+    // projectiles live outside this queue record and restart after load.
     SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
     result.actionId = 12;
     result.declaredParameterCount = 10;
     result.parameters = {
-        {1, int32_t {_cutsceneAttack ? 1 : 0}},
+        {1, int32_t {0}},
         {3, SavedObjectReference::fromRuntimeId(target->id())},
         {1, int32_t {1}},
         {1, int32_t {10009}},
@@ -317,18 +294,7 @@ std::optional<SavedActionRecord> AttackObjectAction::saveFacingState() const {
         {1, int32_t {4}},
         {1, int32_t {0}},
     };
-    SavedPhysicalAction progress;
-    _attacks.saveContinuation(progress, _game);
-    _schedule.saveContinuation(*progress.state);
-    progress.state->fields().push_back(resource::Gff::Field::newByte("Reached", _reachedTarget));
-    result.physical = std::move(progress);
     return result;
-}
-
-void AttackObjectAction::restorePhysicalState(const SavedPhysicalAction &state) {
-    if (!state.valid()) return;
-    _attacks.restoreContinuation(state); _schedule.restoreContinuation(*state.state);
-    _reachedTarget = state.state->getBool("Reached");
 }
 
 void AttackObjectAction::finish(Creature &attacker) {

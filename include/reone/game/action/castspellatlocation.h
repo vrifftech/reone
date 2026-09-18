@@ -18,47 +18,46 @@
 #pragma once
 
 #include "../action.h"
-#include "../castspell.h"
 #include "../location.h"
 
 namespace reone {
 
 namespace game {
 
-class Spell;
 class CastSpellAtLocationAction : public Action {
 public:
-    CastSpellAtLocationAction(Game &game, ServicesView &services,
-        std::shared_ptr<Spell> spell, std::shared_ptr<Location> targetLocation,
-        int metaMagic, bool cheat, ProjectilePathType projectilePathType, bool instantSpell);
-    static bool classof(Action *from) { return from->type() == ActionType::CastSpellAtLocation; }
-    void execute(std::shared_ptr<Action> self, Object &actor, float dt) override;
-    bool cancel(std::shared_ptr<Action> self, Object &actor) override;
-    std::optional<SavedActionRecord> saveFacingState() const override;
-    void restoreCastState(const SavedCastAction &state);
-    bool suppressesEndRoundScript() const override { return _instantSpell || _cutsceneAttack; }
-    bool holdsCombatRound() const override { return _started && _schedule.holdsRound() && !isCompleted() && !isCancelled(); }
-    const std::shared_ptr<Spell> &spell() const { return _spell; }
+    CastSpellAtLocationAction(Game &game,
+                              ServicesView &services,
+                              SpellType spell,
+                              std::shared_ptr<Location> targetLocation,
+                              int metaMagic,
+                              bool cheat,
+                              ProjectilePathType projectilePathType,
+                              bool instantSpell) :
+        Action(game, services, ActionType::CastSpellAtLocation),
+        _spell(spell),
+        _targetLocation(std::move(targetLocation)),
+        _metaMagic(metaMagic),
+        _cheat(cheat),
+        _projectilePathType(projectilePathType),
+        _instantSpell(instantSpell) {
+    }
+
+    static bool classof(Action *from) {
+        return from->type() == ActionType::CastSpellAtLocation;
+    }
+
+    void execute(std::shared_ptr<Action> self, Object &actor, float dt) override {
+        complete();
+    }
+
 private:
-    void finish(Object &caster);
-    bool commit(Object &actor);
-    void release(Object &actor);
-    std::shared_ptr<Spell> _spell;
+    SpellType _spell;
     std::shared_ptr<Location> _targetLocation;
-    SpellSchedule _schedule;
-    uint64_t _presentationId {0};
-    float _projectileTime {0.0f};
-    bool _restorePresentation {false};
-    bool _itemConsumed {false};
-    SpellCastContext _castContext;
-    bool _ownsMovementRestriction {false};
+    int _metaMagic;
     bool _cheat;
     ProjectilePathType _projectilePathType;
     bool _instantSpell;
-    bool _started {false};
-    bool _commitAttempted {false};
-    bool _committed {false};
-    bool _dispatched {false};
 };
 
 } // namespace game

@@ -18,27 +18,24 @@
 #pragma once
 
 #include "../effect.h"
-#include "../integerarithmetic.h"
 
 namespace reone {
 
 namespace game {
 
-class RegenerateEffect : public CopyableEffect<RegenerateEffect> {
+class RegenerateEffect : public Effect {
 public:
     RegenerateEffect(int amount, float intervalSeconds) :
-        RegenerateEffect(amount, truncateToInteger32(intervalSeconds * 1000.0f), 0) {
+        Effect(EffectType::Regenerate),
+        _amount(amount),
+        _intervalSeconds(intervalSeconds) {
     }
 
-    RegenerateEffect(int amount, int intervalMilliseconds, int resourceSelector) :
-        CopyableEffect(EffectType::Regenerate) {
-        setSaveFacingInteger(0, amount);
-        setSaveFacingInteger(1, intervalMilliseconds);
-        setSaveFacingInteger(4, resourceSelector);
-    }
+    void applyTo(Object &object) override;
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &instance) override;
-    void onUpdate(Object &object, const EffectInstance &instance, float dt) override;
+private:
+    int _amount;
+    float _intervalSeconds;
 };
 
 } // namespace game

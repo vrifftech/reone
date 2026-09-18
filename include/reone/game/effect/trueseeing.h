@@ -23,14 +23,14 @@ namespace reone {
 
 namespace game {
 
-class TrueSeeingEffect : public CopyableEffect<TrueSeeingEffect> {
+class TrueSeeingEffect : public Effect {
 public:
     TrueSeeingEffect() :
-        CopyableEffect(EffectType::TrueSeeing) {
+        Effect(EffectType::TrueSeeing) {
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &instance) override;
-    EffectRemovalResult onRemove(Object &object, const EffectInstance &instance) override;
+    bool onApply(Object &object, const EffectInstance &instance) override;
+    void onRemove(Object &object, const EffectInstance &instance) override;
 };
 
 } // namespace game

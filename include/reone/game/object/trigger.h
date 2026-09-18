@@ -54,9 +54,6 @@ public:
     }
 
     void loadFromBlueprint(const std::string &resRef);
-    Faction faction() const { return _faction; }
-    void setFaction(Faction faction) { _faction = faction; }
-
     void deserialize(
         const resource::Gff &gff,
         const SerializedIdentityContext &identityContext);

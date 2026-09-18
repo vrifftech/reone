@@ -16,20 +16,13 @@
  */
 
 #include "reone/game/effect/savingthrowdecrease.h"
-#include "reone/game/object/creature.h"
 
 namespace reone {
 
 namespace game {
 
-EffectApplicationResult SavingThrowDecreaseEffect::onApply(Object &object, EffectInstance &instance) {
-    auto *creature = dyn_cast<Creature>(&object);
-    if (!creature) return EffectApplicationResult::Retained;
-    auto creator = instance.boundCreator();
-    return (instance.integerParameter(0) > 0 && !creature->plotFlag() &&
-           !creature->hasEffectImmunity(ImmunityType::SavingThrowDecrease,
-                                      dyn_cast<Creature>(creator.get()))) ? EffectApplicationResult::Retained
-        : EffectApplicationResult::Rejected;
+void SavingThrowDecreaseEffect::applyTo(Object &object) {
+    // TODO: implement
 }
 
 } // namespace game

@@ -15,27 +15,14 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include "reone/game/object.h"
-#include "reone/game/game.h"
-#include "reone/game/effect/visual.h"
 #include "reone/game/effect/forcefizzle.h"
 
 namespace reone {
 
 namespace game {
 
-EffectApplicationResult ForceFizzleEffect::onApply(Object &object, EffectInstance &instance) {
-    // These markers are fresh operations, not children of the incoming group.
-    auto visual = std::make_shared<VisualEffect>(4036, false, object.services());
-    auto child = visual->saveFacingInstance();
-    child.effect = visual;
-    child.subType = 0;
-    child.creatorId = object.id();
-    child.creator = object.game().getObjectById(object.id());
-    child.setDuration(DurationType::Instant, 0.0f);
-    child.restoring = instance.restoring;
-    object.applyEffect(std::move(child));
-    return EffectApplicationResult::Applied;
+void ForceFizzleEffect::applyTo(Object &object) {
+    // TODO: implement
 }
 
 } // namespace game

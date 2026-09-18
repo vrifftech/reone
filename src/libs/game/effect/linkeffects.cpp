@@ -16,26 +16,13 @@
  */
 
 #include "reone/game/effect/linkeffects.h"
-#include "reone/game/object.h"
 
 namespace reone {
 
 namespace game {
 
-void LinkEffectsEffect::setSubType(uint16_t category) {
-    Effect::setSubType(category);
-    if (_childEffect) _childEffect->setSubType(category);
-    if (_parentEffect) _parentEffect->setSubType(category);
-}
-
-EffectApplicationResult LinkEffectsEffect::onApply(Object &object, EffectInstance &instance) {
-    // These are the first and second VM arguments. Keep the call order;
-    // admission is nontransactional and never rolls back an earlier member.
-    std::vector<EffectInstance> members;
-    if (_childEffect) members.push_back(instance.linkedChild(_childEffect));
-    if (_parentEffect) members.push_back(instance.linkedChild(_parentEffect));
-    object.applyEffectPackage(members);
-    return EffectApplicationResult::Applied;
+void LinkEffectsEffect::applyTo(Object &object) {
+    // TODO: implement
 }
 
 void LinkEffectsEffect::retireAreaRuntime(

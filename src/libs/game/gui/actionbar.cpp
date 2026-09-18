@@ -119,7 +119,7 @@ void ActionBar::handleMouseButtonDown(ActionSlot &slot) {
     }
 
     std::shared_ptr<Creature> leader = _game.party().getLeader();
-    if (!leader || leader->stateControlsActions()) {
+    if (!leader) {
         return;
     }
 

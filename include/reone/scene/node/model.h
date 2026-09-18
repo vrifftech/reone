@@ -131,13 +131,6 @@ public:
     void setDrawDistance(float distance) { _drawDistance = distance; }
     void setMainTexture(graphics::Texture *texture);
     void setEnvironmentMap(graphics::Texture *texture);
-    void setBumpedOutShell(
-        graphics::Texture *texture,
-        float offset);
-    void clearBumpedOutShell();
-    bool hasBumpedOutShell() const { return _bumpedOutShellTexture != nullptr; }
-    graphics::Texture *bumpedOutShellTexture() const { return _bumpedOutShellTexture; }
-    float bumpedOutShellOffset() const { return _bumpedOutShellOffset; }
     void setPickable(bool pickable) { _pickable = pickable; }
     void setAnimationEventListener(IAnimationEventListener &listener) { _animEventListener = &listener; }
 
@@ -215,8 +208,6 @@ private:
     // Flags
 
     bool _pickable {false};
-    graphics::Texture *_bumpedOutShellTexture {nullptr};
-    float _bumpedOutShellOffset {0.0f};
 
     // END Flags
 

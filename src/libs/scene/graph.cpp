@@ -309,7 +309,6 @@ void SceneGraph::updateSounds() {
 void SceneGraph::refresh() {
     _opaqueMeshes.clear();
     _transparentMeshes.clear();
-    _shellMeshes.clear();
     _shadowMeshes.clear();
     _lights.clear();
     _emitters.clear();
@@ -341,17 +340,13 @@ void SceneGraph::refreshFromNode(SceneNode &node) {
     case SceneNodeType::Mesh: {
         // For model nodes, determine whether they should be rendered and cast shadows
         auto &modelNode = static_cast<MeshSceneNode &>(node);
-        bool shouldRender = modelNode.shouldRender();
-        if (shouldRender) {
+        if (modelNode.shouldRender()) {
             // Sort model nodes into transparent and opaque
             if (modelNode.isTransparent()) {
                 _transparentMeshes.push_back(&modelNode);
             } else {
                 _opaqueMeshes.push_back(&modelNode);
             }
-        }
-        if (shouldRender && modelNode.model().hasBumpedOutShell()) {
-            _shellMeshes.push_back(&modelNode);
         }
         if (modelNode.shouldCastShadows()) {
             _shadowMeshes.push_back(&modelNode);
@@ -618,17 +613,6 @@ void SceneGraph::renderTransparent(IRenderPass &pass) {
     // Draw transparent leafs (incl. meshes)
     for (auto &[node, leafs] : _transparentLeafs) {
         node->renderLeafs(pass, leafs);
-    }
-    for (MeshSceneNode *mesh : _shellMeshes) {
-        ModelSceneNode &model = mesh->model();
-        graphics::Texture *texture = model.bumpedOutShellTexture();
-        if (!texture) {
-            continue;
-        }
-        mesh->renderBumpedOutShell(
-            pass,
-            *texture,
-            model.bumpedOutShellOffset());
     }
 }
 

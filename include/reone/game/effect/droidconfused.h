@@ -23,14 +23,13 @@ namespace reone {
 
 namespace game {
 
-class DroidConfusedEffect : public CopyableEffect<DroidConfusedEffect> {
+class DroidConfusedEffect : public Effect {
 public:
     DroidConfusedEffect() :
-        CopyableEffect(EffectType::DroidConfused) {
+        Effect(EffectType::DroidConfused) {
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override {
-        return EffectApplicationResult::Retained;
+    void applyTo(Object &object) override {
     }
 };
 

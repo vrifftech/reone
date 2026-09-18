@@ -23,15 +23,14 @@ namespace reone {
 
 namespace game {
 
-class VPRegenModifierEffect : public CopyableEffect<VPRegenModifierEffect> {
+class VPRegenModifierEffect : public Effect {
 public:
     VPRegenModifierEffect(int percent) :
-        CopyableEffect(EffectType::VPRegenModifier),
+        Effect(EffectType::VPRegenModifier),
         _percent(percent) {
-        setSaveFacingInteger(0, percent);
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
+    void applyTo(Object &object) override;
 
 private:
     int _percent;

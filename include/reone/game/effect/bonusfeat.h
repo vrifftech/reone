@@ -24,14 +24,14 @@ namespace reone {
 namespace game {
 
 /** Runtime-only feat grant; permanent feat storage remains untouched. */
-class BonusFeatEffect : public CopyableEffect<BonusFeatEffect> {
+class BonusFeatEffect : public Effect {
 public:
     explicit BonusFeatEffect(FeatType feat) :
-        CopyableEffect(EffectType::BonusFeat) {
+        Effect(EffectType::BonusFeat) {
         setSaveFacingInteger(0, static_cast<int>(feat));
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
+    void applyTo(Object &) override {}
 };
 
 } // namespace game

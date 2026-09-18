@@ -126,9 +126,7 @@ public:
         const SerializedIdentityContext &identityContext);
     void bindSavedEventQueue();
     void publishSavedEventQueue();
-    void restoreProjectilePresentations();
     void dispatchDueSavedEvents();
-    void cancelObjectDestruction(const Object &object);
 
 private:
     friend class ModuleSnapshotBuilder;
@@ -142,8 +140,6 @@ private:
     bool _isSaveGame {false};
     std::vector<std::shared_ptr<Creature>> _limboCreatures;
     SavedEventQueue _savedEventQueue;
-    std::vector<SavedProjectile> _savedProjectiles;
-    bool _projectilesAwaitingRestore {false};
     std::vector<bool> _savedEventLive;
     std::vector<bool> _savedEventReferencesBound;
 
@@ -161,7 +157,6 @@ private:
 
     std::vector<PublishedSavedEvent> _publishedSavedEvents;
     bool _savedEventsPublished {false};
-    bool _dispatchingSavedEvents {false};
 
     void onCreatureClick(const std::shared_ptr<Creature> &creature);
     void onDoorClick(const std::shared_ptr<Door> &door);
@@ -180,7 +175,6 @@ private:
         bool restoreSavedWorld = false);
     void loadPlayer();
     void loadLimboCreatures(const resource::Gff &ifo);
-    void publishSavedEvent(size_t index);
     void deliverSavedEvent(PublishedSavedEvent &event);
 
     // END Loading

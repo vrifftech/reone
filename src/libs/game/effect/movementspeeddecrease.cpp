@@ -16,30 +16,13 @@
  */
 
 #include "reone/game/effect/movementspeeddecrease.h"
-#include "reone/game/object/creature.h"
-#include "reone/game/effect/rules.h"
 
 namespace reone {
 
 namespace game {
 
-EffectApplicationResult MovementSpeedDecreaseEffect::onApply(Object &object, EffectInstance &instance) {
-    auto *creature = dyn_cast<Creature>(&object);
-    if (creature) {
-        auto creator = instance.boundCreator();
-        if (creature->hasEffectImmunity(ImmunityType::MovementSpeedDecrease,
-                                        dyn_cast<Creature>(creator.get())) ||
-             instance.integerParameter(0) > 99 || creature->plotFlag())
-            return EffectApplicationResult::Rejected;
-        creature->multiplyMovementRate(getMovementSpeedMultiplier(false, instance.integerParameter(0)));
-    }
-    return EffectApplicationResult::Retained;
-}
-
-EffectRemovalResult MovementSpeedDecreaseEffect::onRemove(Object &object, const EffectInstance &instance) {
-    if (auto *creature = dyn_cast<Creature>(&object)) creature->recomputeMovementRate(instance.id);
-
-    return EffectRemovalResult::Removed;
+void MovementSpeedDecreaseEffect::applyTo(Object &object) {
+    // TODO: implement
 }
 
 } // namespace game

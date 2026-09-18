@@ -16,21 +16,15 @@
  */
 
 #include "reone/game/effect/temporaryforcepoints.h"
-#include "reone/game/object/creature.h"
 
-namespace reone::game {
+namespace reone {
 
-EffectApplicationResult TemporaryForcePointsEffect::onApply(Object &object, EffectInstance &instance) {
-    auto *creature = dyn_cast<Creature>(&object);
-    if (!creature) return EffectApplicationResult::Retained;
-    creature->addTemporaryForcePoints(instance.integerParameter(0), instance.restoring);
-    return EffectApplicationResult::Retained;
+namespace game {
+
+void TemporaryForcePointsEffect::applyTo(Object &object) {
+    // TODO: implement
 }
 
-EffectRemovalResult TemporaryForcePointsEffect::onRemove(Object &object, const EffectInstance &instance) {
-    if (auto *creature = dyn_cast<Creature>(&object))
-        creature->removeTemporaryForcePoints(instance.integerParameter(0));
-    return EffectRemovalResult::Removed;
-}
+} // namespace game
 
-} // namespace reone::game
+} // namespace reone

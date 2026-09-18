@@ -16,29 +16,15 @@
  */
 
 #include "reone/game/effect/lightsaberthrow.h"
-#include "reone/game/di/services.h"
-#include "reone/game/game.h"
-#include "reone/game/object/creature.h"
-#include "reone/game/projectiles.h"
-#include "reone/scene/node/model.h"
 
-namespace reone::game {
-EffectApplicationResult LightsaberThrowEffect::onApply(Object &object, EffectInstance &record) {
-    auto *creature = dyn_cast<Creature>(&object);
-    if (!creature) return EffectApplicationResult::Retained;
-    if (!object.game().isTSL() ||
-        (!creature->attributes().hasSpell(static_cast<SpellType>(162)) &&
-         !creature->attributes().hasSpell(static_cast<SpellType>(163)))) {
-        creature->setThrowParryBlocked(true);
-    }
-    if (!record.restoring) {
-        object.services().game.projectiles.launchLightsaberThrow(*creature, record, object.game(), object.services());
-    }
-    return EffectApplicationResult::Retained;
+namespace reone {
+
+namespace game {
+
+void LightsaberThrowEffect::applyTo(Object &object) {
+    // TODO: implement
 }
 
-EffectRemovalResult LightsaberThrowEffect::onRemove(Object &object, const EffectInstance &) {
-    if (auto *creature = dyn_cast<Creature>(&object)) creature->setThrowParryBlocked(false);
-    return EffectRemovalResult::Removed;
-}
-} // namespace reone::game
+} // namespace game
+
+} // namespace reone

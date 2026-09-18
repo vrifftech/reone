@@ -75,7 +75,6 @@ private:
     std::vector<Anim> _anims;
     AttackResultMap _attackResults;
     std::map<std::string, std::vector<int>> _meleeImpactTimes;
-    bool _combatAnimationsLoaded {false};
 };
 
 } // namespace game

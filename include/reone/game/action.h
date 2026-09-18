@@ -46,26 +46,10 @@ public:
     virtual void execute(std::shared_ptr<Action> self, Object &actor, float dt);
 
     /**
-     * Perform cancellation cleanup while the node is still linked. Command
-     * clearing erases the node only if this returns true; forced teardown uses
-     * its own policy.
+     * Cancel the action. This function is called only once when either
+     * ClearAllActions is called, or the the actor it belongs to is dead.
      */
-    virtual bool cancel(std::shared_ptr<Action> self, Object &actor) { return true; }
-
-    /** Ordinary queue insertion, distinct from combat-round registration. */
-    virtual void onQueued(Object &actor) {}
-    /** Retire attack-record state without forcing a surviving ordinary action away. */
-    virtual void retireCombatRound() {}
-    // Wrappers keep their queue identity while exposing the executing command.
-    virtual Action &combatAction() { return *this; }
-    virtual const Action &combatAction() const { return *this; }
-    virtual bool holdsCombatRound() const { return false; }
-    virtual bool suppressesEndRoundScript() const { return _cutsceneAttack; }
-    bool isCutsceneAttack() const { return _cutsceneAttack; }
-    void setCutsceneAttack(bool value) { _cutsceneAttack = value; }
-
-    bool isClearable() const { return _clearable; }
-    void setClearable(bool value) { _clearable = value; }
+    virtual void cancel(std::shared_ptr<Action> self, Object &actor) {}
 
     /**
      * Actions must call complete() once they are done. Completed actions are
@@ -86,8 +70,6 @@ public:
     void lock() { _locked = true; }
 
     ActionType type() const { return _type; }
-    /** Ordinary action ID, distinct from the engine/UI action enum. */
-    virtual uint32_t serializedActionId() const;
 
     bool isUserAction() const { return _userAction; }
     bool isCompleted() const { return _completed; }
@@ -96,10 +78,7 @@ public:
     void setUserAction(bool val) { _userAction = val; }
     void markCancelled() { _cancelled = true; }
 
-    bool isScheduledCommand() const { return _scheduledCommand; }
-    void setScheduledCommand(bool value) { _scheduledCommand = value; }
     void attachSavedAction(SavedActionRecord record) {
-        _scheduledCommand = record.scheduled;
         _savedAction = std::move(record);
     }
     const std::optional<SavedActionRecord> &originalSavedAction() const {
@@ -128,9 +107,6 @@ protected:
     bool _completed {false};
     bool _cancelled {false};
     bool _locked {false};
-    bool _clearable {true};
-    bool _cutsceneAttack {false};
-    bool _scheduledCommand {false};
     std::optional<SavedActionRecord> _savedAction;
     std::vector<RuntimeObjectRef<Object>> _runtimeDependencies;
 

@@ -23,19 +23,16 @@ namespace reone {
 
 namespace game {
 
-class DamageResistanceEffect : public CopyableEffect<DamageResistanceEffect> {
+class DamageResistanceEffect : public Effect {
 public:
-    DamageResistanceEffect(
-        DamageType damageType, int amount, int limit,
-        int secondaryDamageFlags = 0) :
-        CopyableEffect(EffectType::DamageResistance) {
+    DamageResistanceEffect(DamageType damageType, int amount, int limit) :
+        Effect(EffectType::DamageResistance) {
         setSaveFacingInteger(0, static_cast<int>(damageType));
         setSaveFacingInteger(1, amount);
         setSaveFacingInteger(2, limit);
-        setSaveFacingInteger(3, secondaryDamageFlags);
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
+    void applyTo(Object &object) override;
 };
 
 } // namespace game

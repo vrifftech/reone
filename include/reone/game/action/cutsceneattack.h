@@ -39,7 +39,7 @@ public:
     }
 
     void execute(std::shared_ptr<Action> self, Object &actor, float dt) override;
-    bool cancel(std::shared_ptr<Action> self, Object &actor) override;
+    void cancel(std::shared_ptr<Action> self, Object &actor) override;
     const std::shared_ptr<Object> &target() const { return _target; }
 
 private:

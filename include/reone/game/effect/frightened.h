@@ -23,14 +23,13 @@ namespace reone {
 
 namespace game {
 
-class FrightenedEffect : public CopyableEffect<FrightenedEffect> {
+class FrightenedEffect : public Effect {
 public:
     FrightenedEffect() :
-        CopyableEffect(EffectType::Frightened) {
+        Effect(EffectType::Frightened) {
     }
 
-    EffectApplicationResult onApply(Object &object, EffectInstance &) override {
-        return EffectApplicationResult::Retained;
+    void applyTo(Object &object) override {
     }
 };
 

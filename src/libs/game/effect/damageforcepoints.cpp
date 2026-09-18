@@ -16,18 +16,13 @@
  */
 
 #include "reone/game/effect/damageforcepoints.h"
-#include "reone/game/object/creature.h"
 
 namespace reone {
 
 namespace game {
 
-EffectApplicationResult DamageForcePointsEffect::onApply(Object &object, EffectInstance &instance) {
-    if (instance.restoring) return EffectApplicationResult::Applied;
-    auto *creature = dyn_cast<Creature>(&object);
-    if (!creature) return EffectApplicationResult::Rejected;
-    creature->damageForcePoints(instance.integerParameter(0));
-    return EffectApplicationResult::Applied;
+void DamageForcePointsEffect::applyTo(Object &object) {
+    // TODO: implement
 }
 
 } // namespace game

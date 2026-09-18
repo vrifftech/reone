@@ -44,8 +44,7 @@ public:
         _resRef = guiResRef("confirm");
     }
 
-    void show(const std::string &message, std::shared_ptr<graphics::Texture> icon = nullptr,
-              std::function<void()> onConfirm = {});
+    void show(const std::string &message, std::shared_ptr<graphics::Texture> icon = nullptr);
     void showConfirm(
         const std::string &message,
         std::function<void()> onConfirm,

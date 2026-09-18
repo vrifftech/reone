@@ -62,8 +62,6 @@ public:
         return from->type() == ObjectType::Encounter;
     }
 
-    Faction faction() const { return _faction; }
-
     void deserialize(
         const resource::Gff &gff,
         const SerializedIdentityContext &identityContext);

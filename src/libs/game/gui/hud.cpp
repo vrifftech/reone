@@ -15,9 +15,6 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include "reone/scene/render/pass/retro.h"
-#include "reone/scene/render/pass/pbr.h"
-#include "reone/game/effectstack.h"
 #include "reone/game/gui/hud.h"
 
 #include "reone/audio/mixer.h"
@@ -53,51 +50,12 @@ namespace reone {
 
 namespace game {
 
-static void renderEffectStack(
-    Label &label,
-    const Control::Extent &viewportExtent,
-    int count,
-    bool leader,
-    bool good,
-    float textScalar,
-    const glm::ivec2 &screenSize,
-    const glm::ivec2 &controlOffset,
-    scene::IRenderPass &pass,
-    graphics::IContext &context) {
-
-    auto topOffsets = effectStackTopOffsets(
-        label.extent().top, viewportExtent.top, viewportExtent.height,
-        count,
-        leader,
-        good, textScalar);
-    if (topOffsets.empty()) {
-        return;
-    }
-
-    glm::ivec4 scissorBounds(
-        controlOffset.x + viewportExtent.left,
-        screenSize.y - (controlOffset.y + viewportExtent.top + viewportExtent.height),
-        viewportExtent.width,
-        viewportExtent.height);
-
-    bool wasVisible = label.isVisible();
-    label.setVisible(true);
-    context.withScissorTestNoClear(scissorBounds, [&]() {
-        for (int top : topOffsets) {
-            glm::ivec2 offset = controlOffset;
-            offset.y += top - label.extent().top;
-            label.render(screenSize, offset, pass);
-        }
-    });
-    label.setVisible(wasVisible);
-}
-
 static std::string g_attackIcon("i_attack");
 
 /** Authored-canvas gap between the minimap frame and the TSL bark bubble. */
 static constexpr int kBarkBubbleMapGap = 8;
 
-static void tintHUDMenuButton(const std::shared_ptr<Button> &button, const glm::vec3 &baseColor) {
+static void tintK2HUDMenuButton(const std::shared_ptr<Button> &button, const glm::vec3 &baseColor) {
     if (!button) {
         return;
     }
@@ -225,14 +183,14 @@ void HUD::onGUILoaded() {
 
     if (_game.isTSL()) {
         _controls.BTN_SWAPWEAPONS->setVisible(false);
-        tintHUDMenuButton(_controls.BTN_EQU, _baseColor);
-        tintHUDMenuButton(_controls.BTN_INV, _baseColor);
-        tintHUDMenuButton(_controls.BTN_CHAR, _baseColor);
-        tintHUDMenuButton(_controls.BTN_ABI, _baseColor);
-        tintHUDMenuButton(_controls.BTN_MSG, _baseColor);
-        tintHUDMenuButton(_controls.BTN_JOU, _baseColor);
-        tintHUDMenuButton(_controls.BTN_MAP, _baseColor);
-        tintHUDMenuButton(_controls.BTN_OPT, _baseColor);
+        tintK2HUDMenuButton(_controls.BTN_EQU, _baseColor);
+        tintK2HUDMenuButton(_controls.BTN_INV, _baseColor);
+        tintK2HUDMenuButton(_controls.BTN_CHAR, _baseColor);
+        tintK2HUDMenuButton(_controls.BTN_ABI, _baseColor);
+        tintK2HUDMenuButton(_controls.BTN_MSG, _baseColor);
+        tintK2HUDMenuButton(_controls.BTN_JOU, _baseColor);
+        tintK2HUDMenuButton(_controls.BTN_MAP, _baseColor);
+        tintK2HUDMenuButton(_controls.BTN_OPT, _baseColor);
         // The bar backings are colour masks like the rest of the TSL HUD.
         for (auto &bar : {_controls.PB_VIT1, _controls.PB_VIT2, _controls.PB_VIT3,
                           _controls.PB_FORCE1, _controls.PB_FORCE2, _controls.PB_FORCE3}) {
@@ -273,13 +231,10 @@ void HUD::onGUILoaded() {
         _game.openInGameMenu(InGameMenuTab::Options);
     });
     _controls.BTN_CLEARALL->setOnClick([this]() {
-        const auto leader = _game.party().getLeader();
-        if (leader && !leader->stateControlsActions()) leader->clearAllActions();
+        _game.party().getLeader()->clearAllActions();
     });
     _controls.BTN_CLEARONE->setOnClick([this]() {
-        const auto leader = _game.party().getLeader();
-        if (!leader || leader->stateControlsActions()) return;
-        for (auto &action : leader->actions()) {
+        for (auto &action : _game.party().getLeader()->actions()) {
             if (action->type() == ActionType::AttackObject) {
                 action->complete();
                 break;
@@ -427,7 +382,7 @@ void HUD::update(float dt) {
                 ? std::clamp(100 * member->currentHitPoints() / maxHitPoints, 0, 100)
                 : 0);
 
-            int forcePoints = member->maxForcePoints();
+            int forcePoints = member->forcePoints();
             forceBars[i]->setVisible(forcePoints > 0);
             forceBars[i]->setValue(forcePoints > 0
                 ? std::clamp(100 * member->currentForce() / forcePoints, 0, 100)
@@ -444,7 +399,7 @@ void HUD::update(float dt) {
         }
     }
 
-    if (party.getLeader()->clientCombatMode()) {
+    if (party.getLeader()->isInCombat()) {
         toggleCombat(true);
         refreshActionQueueItems();
     } else {
@@ -556,7 +511,6 @@ std::optional<TransitionPortal> HUD::currentTransitionCandidate() const {
 void HUD::render() {
     _gui->render();
 
-    renderEffectStacks();
     renderMinimap();
 
 
@@ -653,81 +607,6 @@ void HUD::refreshActionQueueItems() const {
             item.setBorderFill("");
         }
     }
-}
-
-void HUD::renderEffectStacks() {
-
-    Party &party = _game.party();
-    std::array<Label *, 3> backLabels {
-        _controls.LBL_BACK1.get(),
-        _controls.LBL_BACK2.get(),
-        _controls.LBL_BACK3.get()};
-    std::array<Label *, 3> positiveLabels {
-        _controls.LBL_CMBTEFCTINC1.get(),
-        _controls.LBL_CMBTEFCTINC2.get(),
-        _controls.LBL_CMBTEFCTINC3.get()};
-    std::array<Label *, 3> negativeLabels {
-        _controls.LBL_CMBTEFCTRED1.get(),
-        _controls.LBL_CMBTEFCTRED2.get(),
-        _controls.LBL_CMBTEFCTRED3.get()};
-
-    auto &options = _game.options().graphics;
-    glm::ivec2 screenSize(options.width, options.height);
-    const glm::ivec2 &controlOffset = _gui->controlOffset();
-
-    _services.graphics.context.withBlendMode(BlendMode::Normal, [&]() {
-        scene::RetroRenderPass retroPass(
-            options,
-            _services.graphics.context,
-            _services.graphics.shaderRegistry,
-            _services.graphics.statistic,
-            _services.graphics.meshRegistry,
-            _services.graphics.textureRegistry,
-            _services.graphics.uniforms);
-        scene::PBRRenderPass pbrPass(
-            options,
-            _services.graphics.context,
-            _services.graphics.shaderRegistry,
-            _services.graphics.statistic,
-            _services.graphics.meshRegistry,
-            _services.graphics.pbrTextures,
-            _services.graphics.textureRegistry,
-            _services.graphics.uniforms);
-        scene::IRenderPass &pass = options.pbr
-                                      ? static_cast<scene::IRenderPass &>(pbrPass)
-                                      : static_cast<scene::IRenderPass &>(retroPass);
-
-        for (int memberIndex = 0; memberIndex < 3; ++memberIndex) {
-            auto member = party.getMember(memberIndex);
-            if (!member) {
-                continue;
-            }
-
-            auto counts = member->effectStackCounts();
-            renderEffectStack(
-                *positiveLabels[memberIndex],
-                backLabels[memberIndex]->extent(),
-                counts.positive,
-                memberIndex == 0,
-                true,
-                effectStackTextScalar(_game.isTSL(), screenSize.x),
-                screenSize,
-                controlOffset,
-                pass,
-                _services.graphics.context);
-            renderEffectStack(
-                *negativeLabels[memberIndex],
-                backLabels[memberIndex]->extent(),
-                counts.negative,
-                memberIndex == 0,
-                false,
-                effectStackTextScalar(_game.isTSL(), screenSize.x),
-                screenSize,
-                controlOffset,
-                pass,
-                _services.graphics.context);
-        }
-    });
 }
 
 } // namespace game

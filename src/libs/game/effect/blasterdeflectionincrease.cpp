@@ -21,9 +21,8 @@ namespace reone {
 
 namespace game {
 
-EffectApplicationResult BlasterDeflectionIncreaseEffect::onApply(Object &object, EffectInstance &) {
+void BlasterDeflectionIncreaseEffect::applyTo(Object &object) {
     // TODO: implement
-    return EffectApplicationResult::Retained;
 }
 
 } // namespace game
