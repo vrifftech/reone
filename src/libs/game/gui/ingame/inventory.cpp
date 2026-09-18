@@ -63,7 +63,7 @@ static bool isInventoryListedEquipmentSlot(int slot) {
     }
 }
 
-static void tintK2PanelFill(const std::shared_ptr<ListBox> &listBox, const glm::vec3 &baseColor) {
+static void tintPanelFill(const std::shared_ptr<ListBox> &listBox, const glm::vec3 &baseColor) {
     if (!listBox) {
         return;
     }
@@ -201,7 +201,7 @@ static bool isUtility(const Item &item, const BaseItemFilterInfo &baseItem) {
     return false;
 }
 
-static InventoryFilter nextK1Filter(InventoryFilter filter) {
+static InventoryFilter nextFilter(InventoryFilter filter) {
     switch (filter) {
     case InventoryFilter::All:
         return InventoryFilter::Quest;
@@ -218,7 +218,7 @@ static InventoryFilter nextK1Filter(InventoryFilter filter) {
     }
 }
 
-static std::string k1FilterTitle(InventoryFilter filter) {
+static std::string filterTitle(InventoryFilter filter) {
     switch (filter) {
     case InventoryFilter::Quest:
         return std::string(kK1InventoryTitlePrefix) + "Quest Items";
@@ -235,8 +235,8 @@ static std::string k1FilterTitle(InventoryFilter filter) {
     }
 }
 
-static std::string k1NextFilterAction(InventoryFilter filter) {
-    switch (nextK1Filter(filter)) {
+static std::string nextFilterAction(InventoryFilter filter) {
+    switch (nextFilter(filter)) {
     case InventoryFilter::Quest:
         return "Show Quest Items";
     case InventoryFilter::Equippable:
@@ -272,13 +272,13 @@ void InventoryMenu::onGUILoaded() {
     configureItemsListBox();
     configureFilterControls();
     if (_game.isTSL()) {
-        fillK2SectionStrip(_controls.LBL_BAR1, _controls.LBL_BAR2);
+        fillSectionStrip(_controls.LBL_BAR1, _controls.LBL_BAR2);
         enableBorderFillTint(_controls.LBL_BAR1);
         enableBorderFillTint(_controls.LBL_BAR2);
         enableBorderFillTint(_controls.LBL_BAR6);
-        useK2ShellTitle(_controls.LBL_INV);
-        enableK2ButtonBodyFill(_controls.BTN_USEITEM);
-        enableK2ButtonBodyFill(_controls.BTN_EXIT);
+        useShellTitle(_controls.LBL_INV);
+        enableButtonBodyFill(_controls.BTN_USEITEM);
+        enableButtonBodyFill(_controls.BTN_EXIT);
     }
     if (_controls.LB_DESCRIPTION) {
         _controls.LB_DESCRIPTION->setProtoMatchContent(true);
@@ -300,8 +300,8 @@ void InventoryMenu::configureItemsListBox() {
     }
 
     if (_game.isTSL()) {
-        tintK2PanelFill(_controls.LB_ITEMS, _baseColor);
-        tintK2PanelFill(_controls.LB_DESCRIPTION, _baseColor);
+        tintPanelFill(_controls.LB_ITEMS, _baseColor);
+        tintPanelFill(_controls.LB_DESCRIPTION, _baseColor);
     }
 
     _controls.LB_ITEMS->setSelectionMode(ListBox::SelectionMode::OnClick);
@@ -319,7 +319,7 @@ void InventoryMenu::configureItemsListBox() {
 
     if (auto protoItem = _controls.LB_ITEMS->protoItemOrNull()) {
         if (_game.isTSL()) {
-            enableK2ButtonBodyFill(*protoItem);
+            enableButtonBodyFill(*protoItem);
             protoItem->setBorderFill("uibit_fill_2wt");
             protoItem->setHilightFill("uibit_fill_2wt");
             protoItem->setTintBorderFill(true);
@@ -370,7 +370,7 @@ void InventoryMenu::configureFilterControls() {
     } else if (_controls.BTN_QUESTITEMS) {
         _controls.BTN_QUESTITEMS->setDisabled(false);
         _controls.BTN_QUESTITEMS->setOnClick([this]() {
-            advanceK1Filter();
+            advanceFilter();
         });
     }
 
@@ -442,8 +442,8 @@ void InventoryMenu::refreshStats() {
     }
 }
 
-void InventoryMenu::advanceK1Filter() {
-    setFilter(nextK1Filter(_filter));
+void InventoryMenu::advanceFilter() {
+    setFilter(nextFilter(_filter));
 }
 
 void InventoryMenu::setFilter(InventoryFilter filter) {
@@ -458,21 +458,21 @@ void InventoryMenu::setFilter(InventoryFilter filter) {
 
 void InventoryMenu::updateFilterControls() {
     if (_game.isTSL()) {
-        updateK2FilterButton(_controls.BTN_ALL, _filter == InventoryFilter::All);
-        updateK2FilterButton(_controls.BTN_DATAPADS, _filter == InventoryFilter::Datapad);
-        updateK2FilterButton(_controls.BTN_WEAPONS, _filter == InventoryFilter::Weapon);
-        updateK2FilterButton(_controls.BTN_ARMOR, _filter == InventoryFilter::Armor);
-        updateK2FilterButton(_controls.BTN_USEABLE, _filter == InventoryFilter::Useable);
-        updateK2FilterButton(_controls.BTN_QUESTS, _filter == InventoryFilter::Quest);
-        updateK2FilterButton(_controls.BTN_MISC, _filter == InventoryFilter::Misc);
+        updateFilterButton(_controls.BTN_ALL, _filter == InventoryFilter::All);
+        updateFilterButton(_controls.BTN_DATAPADS, _filter == InventoryFilter::Datapad);
+        updateFilterButton(_controls.BTN_WEAPONS, _filter == InventoryFilter::Weapon);
+        updateFilterButton(_controls.BTN_ARMOR, _filter == InventoryFilter::Armor);
+        updateFilterButton(_controls.BTN_USEABLE, _filter == InventoryFilter::Useable);
+        updateFilterButton(_controls.BTN_QUESTS, _filter == InventoryFilter::Quest);
+        updateFilterButton(_controls.BTN_MISC, _filter == InventoryFilter::Misc);
         return;
     }
 
     if (_controls.LBL_INV) {
-        _controls.LBL_INV->setTextMessage(k1FilterTitle(_filter));
+        _controls.LBL_INV->setTextMessage(filterTitle(_filter));
     }
     if (_controls.BTN_QUESTITEMS) {
-        _controls.BTN_QUESTITEMS->setTextMessage(k1NextFilterAction(_filter));
+        _controls.BTN_QUESTITEMS->setTextMessage(nextFilterAction(_filter));
         _controls.BTN_QUESTITEMS->setDisabled(false);
     }
 }

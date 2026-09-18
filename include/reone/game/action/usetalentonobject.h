@@ -42,9 +42,20 @@ public:
 
     void dispatchToAction();
     void execute(std::shared_ptr<Action> self, Object &actor, float dt) override;
+    bool cancel(std::shared_ptr<Action> self, Object &actor) override;
     std::optional<SavedActionRecord> saveFacingState() const override;
 
     const std::shared_ptr<Action> &subAction() const { return _action; }
+    Action &combatAction() override { return _action ? _action->combatAction() : *this; }
+    const Action &combatAction() const override {
+        if (!_action) {
+            return *this;
+        }
+        const Action &action = *_action;
+        return action.combatAction();
+    }
+    bool holdsCombatRound() const override { return _action && _action->holdsCombatRound(); }
+    void retireCombatRound() override { if (_action) _action->retireCombatRound(); }
 
 private:
     std::shared_ptr<Talent> _chosenTalent;

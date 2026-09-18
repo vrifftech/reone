@@ -30,7 +30,16 @@ struct ExecutionContext;
 class EngineType;
 class ScriptObject;
 
+bool equalEffectValues(const std::shared_ptr<EngineType> &left,
+                       const std::shared_ptr<EngineType> &right);
+
 struct Variable {
+    Variable() = default;
+    Variable(const Variable &other);
+    Variable(Variable &&) noexcept = default;
+    Variable &operator=(const Variable &other);
+    Variable &operator=(Variable &&) noexcept = default;
+
     VariableType type {VariableType::Void};
     std::string strValue;
     glm::vec3 vecValue {0.0f};
@@ -50,7 +59,9 @@ struct Variable {
         return type == other.type &&
                strValue == other.strValue &&
                vecValue == other.vecValue &&
-               engineType == other.engineType &&
+               (type == VariableType::Effect
+                    ? equalEffectValues(engineType, other.engineType)
+                    : engineType == other.engineType) &&
                context == other.context &&
                intValue == other.intValue;
     }
@@ -117,6 +128,13 @@ enum class ArgKind {
     ScriptParam4,
     ScriptParam5,
     ScriptStringParam,
+    SpellTargetObject,
+    LastSpellCaster,
+    LastSpell,
+    LastSpellHarmful,
+    SpellCasterLevel,
+    SpellMetaMagic,
+    SpellForcePointCost,
 };
 
 struct Argument {

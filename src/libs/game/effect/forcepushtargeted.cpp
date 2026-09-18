@@ -15,14 +15,19 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include "reone/game/effect/forcepushed.h"
 #include "reone/game/effect/forcepushtargeted.h"
 
 namespace reone {
 
 namespace game {
 
-void ForcePushTargetedEffect::applyTo(Object &object) {
-    // TODO: implement
+EffectApplicationResult ForcePushTargetedEffect::onApply(Object &object, EffectInstance &record) {
+    if (record.boundCreator()) {
+        const glm::vec3 centre(record.floatParameters[0], record.floatParameters[1], record.floatParameters[2]);
+        applyForcePushMovement(object, centre, record.integerParameter(1) != 0, record);
+    }
+    return EffectApplicationResult::Retained;
 }
 
 } // namespace game

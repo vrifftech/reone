@@ -17,25 +17,16 @@
 
 #include "reone/game/effect/stunned.h"
 
-#include "reone/game/object/creature.h"
-
 namespace reone {
 
 namespace game {
 
-void StunnedEffect::applyTo(Object &object) {
-    if (auto *creature = dyn_cast<Creature>(&object)) {
-        creature->setMovementType(Creature::MovementType::None);
-    }
+StunnedEffect::StunnedEffect(bool bypassPackageInspection) :
+    CreatureStateEffect(CreatureState::Stun, bypassPackageInspection) {
 }
 
-void StunnedEffect::onRemove(Object &object, const EffectInstance &) {
-    if (auto *creature = dyn_cast<Creature>(&object)) {
-        if (creature->hasEffect(EffectType::Stunned)) {
-            return;
-        }
-        creature->resumeStateDrivenAnimation();
-    }
+std::shared_ptr<script::EngineType> StunnedEffect::cloneForScript() const {
+    return std::make_shared<StunnedEffect>(*this);
 }
 
 } // namespace game

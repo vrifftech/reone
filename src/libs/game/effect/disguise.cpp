@@ -16,13 +16,42 @@
  */
 
 #include "reone/game/effect/disguise.h"
+#include "reone/game/object/creature.h"
 
 namespace reone {
 
 namespace game {
 
-void DisguiseEffect::applyTo(Object &object) {
-    // TODO: implement
+EffectApplicationResult DisguiseEffect::onApply(Object &object, EffectInstance &instance) {
+    auto *creature = dyn_cast<Creature>(&object);
+    if (!creature || (!instance.restoring && creature->isDead()))
+        return EffectApplicationResult::Rejected;
+    for (const auto &record : object.effects()) {
+        if (record.serializedType != 62 || record.id == instance.id) continue;
+        const EffectId previousId = record.id;
+        if (auto *previous = object.findEffectApplication(record.applicationOrder))
+            previous->setIntegerParameter(1, 1);
+        object.removeEffectsById(previousId);
+        break;
+    }
+    creature->applyDisguiseAppearance(instance.integerParameter(0));
+    return EffectApplicationResult::Retained;
+}
+
+EffectRemovalResult DisguiseEffect::onRemove(Object &object, const EffectInstance &instance) {
+    auto *creature = dyn_cast<Creature>(&object);
+    if (!creature || (creature->isDead() && !creature->isPC() && object.isDestroyable()))
+        return EffectRemovalResult::Removed;
+    if (instance.integerParameter(1) == 0) {
+        if (auto *record = object.findEffectApplication(instance.applicationOrder)) {
+            record->setIntegerParameter(1, 1);
+            record->subType = (record->subType & ~uint16_t(7)) |
+                static_cast<uint16_t>(DurationType::Temporary);
+            record->duration = 0.0f;
+        }
+    }
+    creature->removeDisguiseAppearance();
+    return EffectRemovalResult::Removed;
 }
 
 } // namespace game

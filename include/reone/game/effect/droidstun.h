@@ -23,13 +23,13 @@ namespace reone {
 
 namespace game {
 
-class DroidStunEffect : public Effect {
+class DroidStunEffect : public CopyableEffect<DroidStunEffect> {
 public:
     DroidStunEffect() :
-        Effect(EffectType::DroidStun) {
+        CopyableEffect(EffectType::DroidStun) {
     }
 
-    void applyTo(Object &object) override;
+    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
 };
 
 } // namespace game

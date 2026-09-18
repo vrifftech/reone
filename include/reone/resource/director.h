@@ -263,13 +263,11 @@ private:
     void loadGlobalResources();
     void loadAuxiliaryResources();
     void loadStreamResources();
-    void loadK1StreamResources();
     void loadRimsDirectory();
     void loadGlobalRimResource();
     void loadOverrideTexturesResource();
     void loadTexturePackResources();
     void loadPlayerSupportResource();
-    void loadK1GlobalResources();
     void loadLiveResources();
     std::unique_ptr<SaveSessionState> buildSaveSession(std::string_view name);
     std::unique_ptr<SaveSessionState> buildSaveSession(const SaveSlotDescriptor &slot);

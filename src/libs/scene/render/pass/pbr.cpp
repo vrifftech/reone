@@ -143,6 +143,9 @@ int PBRRenderPass::materialFeatureMask(const Material &material) const {
     if (material.affectedByFog) {
         mask |= UniformsFeatureFlags::fog;
     }
+    if (material.shellOffset != 0.0f) {
+        mask |= UniformsFeatureFlags::shell;
+    }
     return mask;
 }
 
@@ -261,6 +264,20 @@ void PBRRenderPass::drawParticles(Texture &texture,
     }
 }
 
+void PBRRenderPass::drawProjectedBeam(Mesh &mesh,
+                                      const glm::mat4 &transform,
+                                      const glm::mat4 &transformInv,
+                                      const glm::vec4 &color) {
+    _context.useProgram(_shaderRegistry.get(ShaderProgramId::oitProjectedBeam));
+    _uniforms.setLocals([&transform, &transformInv, &color](auto &locals) {
+        locals.reset();
+        locals.model = transform;
+        locals.modelInv = transformInv;
+        locals.color = color;
+    });
+    mesh.draw(_statistic);
+}
+
 void PBRRenderPass::drawGrass(float radius,
                               float quadSize,
                               Texture &texture,
@@ -298,6 +315,7 @@ void PBRRenderPass::applyMaterialToLocals(const Material &material,
     locals.ambientColor = glm::vec4 {material.ambientColor, 0.0f};
     locals.diffuseColor = glm::vec4 {material.diffuseColor, 0.0f};
     locals.selfIllumColor = glm::vec4(material.selfIllumColor, 1.0f);
+    locals.shellOffset = material.shellOffset;
     if (material.textures.count(TextureUnits::mainTex) > 0) {
         const auto &mainTex = material.textures.at(TextureUnits::mainTex).get();
         if (mainTex.features().waterAlpha != -1.0f) {

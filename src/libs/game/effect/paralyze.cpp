@@ -21,8 +21,12 @@ namespace reone {
 
 namespace game {
 
-void ParalyzeEffect::applyTo(Object &object) {
-    // TODO: implement
+ParalyzeEffect::ParalyzeEffect(bool bypassPackageInspection) :
+    CreatureStateEffect(CreatureState::Paralysis, bypassPackageInspection) {
+}
+
+std::shared_ptr<script::EngineType> ParalyzeEffect::cloneForScript() const {
+    return std::make_shared<ParalyzeEffect>(*this);
 }
 
 } // namespace game

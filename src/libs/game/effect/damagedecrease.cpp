@@ -16,13 +16,18 @@
  */
 
 #include "reone/game/effect/damagedecrease.h"
+#include "reone/game/object/creature.h"
 
 namespace reone {
 
 namespace game {
 
-void DamageDecreaseEffect::applyTo(Object &object) {
-    // TODO: implement
+EffectApplicationResult DamageDecreaseEffect::onApply(Object &object, EffectInstance &instance) {
+    auto *creature = dyn_cast<Creature>(&object);
+    const auto creator = instance.boundCreator();
+    if (creature && creature->hasEffectImmunity(ImmunityType::DamageDecrease, dyn_cast<Creature>(creator.get())))
+        return EffectApplicationResult::Rejected;
+    return EffectApplicationResult::Retained;
 }
 
 } // namespace game

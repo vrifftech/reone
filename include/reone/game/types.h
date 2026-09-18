@@ -111,7 +111,8 @@ enum class AttackResultType {
     AttackResisted = 5,
     AttackFailed = 6,
     Parried = 8,
-    Deflected = 9
+    Deflected = 9,
+    ShieldHit = 10
 };
 
 enum class CameraStyleType {
@@ -247,7 +248,13 @@ enum class EffectType {
     VPRegenModifier = 0x11f,
     Crush = 0x120,
     ForceSight = 0x121,
-    FactionModifier = 0x122
+    FactionModifier = 0x122,
+
+    // KOTOR 2 effect identities retained for ordering and future consumers.
+    PureGoodPowers = 0x124,
+    PureEvilPowers = 0x125,
+    DestroyShields = 0x126,
+    Assassinate = 0x127
 };
 
 enum class ObjectType {
@@ -425,6 +432,7 @@ enum class ClassType {
 
 enum class Faction {
     Invalid = -1,
+    Player = 0,
     Hostile1 = 1,
     Friendly1 = 2,
     Hostile2 = 3,
@@ -522,7 +530,8 @@ enum class FeatType {
     WeaponSpecializationLightsaber = 50,
     WeaponSpecializationMeleeWeapons = 51,
     WeaponSpecializationSimpleWeapons = 52,
-    WhirlwindAttack = 53,
+    MasterFlurry = 53,
+    WhirlwindAttack = MasterFlurry,
     GuardStance = 54,
     JediDefense = 55,
     UncannyDodge1 = 56,
@@ -564,6 +573,7 @@ enum class FeatType {
     ProficiencyAll = 93,
     BattleMeditation = 94,
     WookieEndurance = 95,
+    ForceImmunityFear = 98,
     ForceImmunityStun = 99,
     ForceImmunityParalysis = 100,
     Dueling = 113,
@@ -779,6 +789,17 @@ enum class SpellType {
     BeastTrick = 182,
     BeastConfusion = 184,
     DroidTrick = 201,
+    FormSaberIShiiCho = 258,
+    FormSaberIIMakashi = 259,
+    FormSaberIIISoresu = 260,
+    FormSaberIVAtaru = 261,
+    FormSaberVShien = 262,
+    FormSaberVINiman = 263,
+    FormSaberVIIJuyo = 264,
+    FormForceIChannel = 265,
+    FormForceIIPotency = 266,
+    FormForceIIIAffinity = 267,
+    FormForceIVMastery = 268,
     DroidConfusion = 269,
     BreathControl = 270,
     WookieeRageI = 271,
@@ -786,6 +807,32 @@ enum class SpellType {
     WookieeRageIII = 273
 
     // END TSL
+};
+
+enum class CombatForm : uint32_t {
+    None = 0,
+    SaberIShiiCho = static_cast<uint32_t>(SpellType::FormSaberIShiiCho),
+    SaberIIMakashi = static_cast<uint32_t>(SpellType::FormSaberIIMakashi),
+    SaberIIISoresu = static_cast<uint32_t>(SpellType::FormSaberIIISoresu),
+    SaberIVAtaru = static_cast<uint32_t>(SpellType::FormSaberIVAtaru),
+    SaberVShien = static_cast<uint32_t>(SpellType::FormSaberVShien),
+    SaberVINiman = static_cast<uint32_t>(SpellType::FormSaberVINiman),
+    SaberVIIJuyo = static_cast<uint32_t>(SpellType::FormSaberVIIJuyo),
+    ForceIChannel = static_cast<uint32_t>(SpellType::FormForceIChannel),
+    ForceIIPotency = static_cast<uint32_t>(SpellType::FormForceIIPotency),
+    ForceIIIAffinity = static_cast<uint32_t>(SpellType::FormForceIIIAffinity),
+    ForceIVMastery = static_cast<uint32_t>(SpellType::FormForceIVMastery)
+};
+
+constexpr bool isSaberForm(CombatForm form) {
+    return form >= CombatForm::SaberIShiiCho &&
+           form <= CombatForm::SaberVIIJuyo;
+}
+
+enum class CombatStance : int8_t {
+    None = -1,
+    TotalDefense = 0,
+    Meditative = 1
 };
 
 enum class CreatureType {
@@ -932,6 +979,7 @@ enum class ActionType {
     BarkString = 0x1023,
     SwitchWeapons = 0x1024,
     PutDownItem = 0x1025,
+    CombatDispatch = 0x1026,
 
     CutsceneAttack = 0x5000,
 
@@ -953,7 +1001,12 @@ enum class ProjectilePathType {
     Homing = 1,
     Ballistic = 2,
     HighBallistic = 3,
-    Accelerating = 4
+    Accelerating = 5,
+    Spiral = 6,
+    Linked = 7,
+    Bounce = 8,
+    Burst = 9,
+    Grenade = 11
 };
 
 enum class SubSkill {
@@ -969,6 +1022,10 @@ enum class TalentType {
     Skill = 2,
     Invalid = 3
 };
+
+enum class SavingThrow { None = 0, Fortitude = 1, Reflex = 2, Will = 3 };
+
+enum class SavingThrowResult { Failed = 0, Saved = 1, Immune = 2 };
 
 enum class SavingThrowType {
     All = 0,
@@ -1158,7 +1215,8 @@ enum class ItemProperty {
     LimitUseByPc = 62,
     DampenSound = 63,
     Doorcutting = 64,
-    Doorsabering = 65
+    Doorsabering = 65,
+    MaxDexterityBonus = 68
 
     // END TSL
 };
@@ -1169,7 +1227,7 @@ enum class PersistentZone {
 };
 
 enum class ImmunityType {
-    None = 0,
+    All = 0,
     MindSpells = 1,
     Poison = 2,
     Disease = 3,

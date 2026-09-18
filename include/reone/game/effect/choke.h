@@ -23,13 +23,13 @@ namespace reone {
 
 namespace game {
 
-class ChokeEffect : public Effect {
+class ChokeEffect : public CopyableEffect<ChokeEffect> {
 public:
     ChokeEffect() :
-        Effect(EffectType::Choke) {
+        CopyableEffect(EffectType::Choke) {
     }
 
-    void applyTo(Object &object) override;
+    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
 };
 
 } // namespace game

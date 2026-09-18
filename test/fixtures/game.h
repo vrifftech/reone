@@ -23,6 +23,7 @@
 #include "reone/system/exception/notimplemented.h"
 
 #include "reone/game/animations.h"
+#include "reone/game/autobalance.h"
 #include "reone/game/camerastyles.h"
 #include "reone/game/d20/classes.h"
 #include "reone/game/d20/feats.h"
@@ -75,6 +76,24 @@ class Trigger;
 struct SerializedIdentityContext;
 struct SaveOrchestrationSeams;
 struct SaveResult;
+
+class StubAutoBalance : public IAutoBalance, boost::noncopyable {
+public:
+    const AutoBalanceRow &get(int) const override {
+        return _row;
+    }
+
+private:
+    AutoBalanceRow _row {
+        1.0f,
+        1.0f,
+        1.0f,
+        1.0f,
+        1.0f,
+        0,
+        1.0f,
+    };
+};
 
 class MockCameraStyles : public ICameraStyles, boost::noncopyable {
 public:
@@ -174,6 +193,11 @@ public:
 class MockProjectiles : public IProjectiles, boost::noncopyable {
 public:
     MOCK_METHOD(void, clear, (), (override));
+    MOCK_METHOD(void, launchLightsaberThrow,
+                (Creature &, const EffectInstance &, Game &, ServicesView &),
+                (override));
+    MOCK_METHOD(void, update, (float, Game &, ServicesView &), (override));
+    MOCK_METHOD(void, retireAreaRuntime, (), (override));
     MOCK_METHOD(ProjectileSpec *, get, (ProjectileAttackType attack, CreatureWieldType wield, int appearance), (override));
 };
 
@@ -346,6 +370,7 @@ public:
     static bool hasSaveLoadTransientState(const SaveLoad &saveLoad);
 
     void init() {
+        _autoBalance = std::make_unique<StubAutoBalance>();
         _cameraStyles = std::make_unique<MockCameraStyles>();
         _classes = std::make_unique<MockClasses>();
         _difficultyOptions = std::make_unique<StubDifficultyOptions>();
@@ -362,6 +387,7 @@ public:
         _visualEffects = std::make_unique<MockVisualEffects>();
 
         _services = std::make_unique<GameServices>(
+            *_autoBalance,
             *_cameraStyles,
             *_classes,
             *_difficultyOptions,
@@ -387,6 +413,7 @@ public:
     MockPortraits &portraits() { return *_portraits; }
 
 private:
+    std::unique_ptr<StubAutoBalance> _autoBalance;
     std::unique_ptr<MockCameraStyles> _cameraStyles;
     std::unique_ptr<MockClasses> _classes;
     std::unique_ptr<StubDifficultyOptions> _difficultyOptions;

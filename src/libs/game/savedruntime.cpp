@@ -12,13 +12,21 @@
 #include <set>
 
 #include "reone/game/action/attackobject.h"
+#include "reone/game/action/equipitem.h"
+#include "reone/game/equipmentrules.h"
+#include "reone/game/action/unequipitem.h"
 #include "reone/game/action/usefeat.h"
 #include "reone/game/action/followleader.h"
 #include "reone/game/action/wait.h"
 #include "reone/game/action/playanimation.h"
+#include "reone/game/action/castspellatobject.h"
+#include "reone/game/action/castspellatlocation.h"
+#include "reone/game/d20/spells.h"
+#include <cmath>
 #include "reone/game/action/movetolocation.h"
 #include "reone/game/action/movetoobject.h"
 #include "reone/game/action/startconversation.h"
+#include "reone/game/combat.h"
 #include "reone/game/game.h"
 #include "reone/game/location.h"
 #include "reone/game/object/area.h"
@@ -45,6 +53,7 @@ Overloaded(Visitors...) -> Overloaded<Visitors...>;
 struct SavedPhysicalAttack {
     SavedObjectReference target;
     FeatType feat {FeatType::Invalid};
+    bool cutscene {false};
 };
 
 std::optional<SavedPhysicalAttack> decodePhysicalAttack(
@@ -85,7 +94,7 @@ std::optional<SavedPhysicalAttack> decodePhysicalAttack(
         return std::nullopt;
     }
     return SavedPhysicalAttack {
-        std::get<SavedObjectReference>(record.parameters[1].payload), feat};
+        std::get<SavedObjectReference>(record.parameters[1].payload), feat, parameter(0) != 0};
 }
 
 SavedField savedFieldFromGff(const resource::Gff::Field &field) {
@@ -215,6 +224,9 @@ SavedSpellImpact savedSpellImpactFromGff(
         gff.getFloat("TargetPosY"),
         gff.getFloat("TargetPosZ"));
     result.finalForceCost = gff.getInt("FinalForceCost");
+    result.casterLevel = gff.getInt("ReoneCastLevel", -1);
+    result.metaMagic = gff.getInt("ReoneMetaMagic", 0);
+    result.targetFacing = gff.getFloat("ReoneFacing", 0.0f);
     return result;
 }
 
@@ -236,6 +248,36 @@ SavedCombatAttack savedCombatAttackFromGff(
     const SerializedIdentityContext &identityContext) {
     SavedCombatAttack result;
     result.data = SavedStruct::fromGff(gff);
+    auto &fields = *result.fields;
+    // LoadData defaults scalar fields to zero, unlike ClearAttackData.
+    fields.group = static_cast<uint8_t>(gff.getUint("AttackGroup", 0));
+    fields.animationLength = static_cast<uint16_t>(gff.getUint("AnimationLength", 0));
+    fields.missedBy = gff.getUint("MissedBy", 0);
+    fields.result = static_cast<uint8_t>(gff.getUint("AttackResult", 0));
+    fields.reactionDelay = static_cast<uint16_t>(gff.getUint("ReaxnDelay", 0));
+    fields.reactionAnimation = static_cast<uint16_t>(gff.getUint("ReaxnAnimation", 0));
+    fields.reactionAnimationLength = static_cast<uint16_t>(gff.getUint("ReaxnAnimLength", 0));
+    fields.concealment = static_cast<uint8_t>(gff.getUint("Concealment", 0));
+    fields.ranged = gff.getInt("RangedAttack", 0);
+    fields.sneakAttack = gff.getInt("SneakAttack", 0);
+    fields.weaponAttackType = static_cast<uint8_t>(gff.getUint("WeaponAttackType", 0));
+    fields.rangedTarget = {gff.getFloat("RangedTargetX"),
+                           gff.getFloat("RangedTargetY"),
+                           gff.getFloat("RangedTargetZ")};
+    const auto &damage = gff.getList("DamageList");
+    // storage has 15 entries. Bound malformed oversized lists rather
+    // than reproducing the out-of-bounds write.
+    for (size_t i = 0; i < std::min(damage.size(), fields.damage.size()); ++i) {
+        if (damage[i]) fields.damage[i] = static_cast<int16_t>(damage[i]->getInt("DamageValue", 0));
+    }
+    fields.killingBlow = static_cast<uint8_t>(gff.getUint("KillingBlow", 0));
+    fields.coupDeGrace = static_cast<uint8_t>(gff.getUint("CoupDeGrace", 0));
+    fields.criticalThreat = static_cast<uint8_t>(gff.getUint("CriticalThreat", 0));
+    fields.deflected = static_cast<uint8_t>(gff.getUint("AttackDeflected", 0));
+    fields.attackDebugText = gff.getString("AttackDebugText");
+    fields.damageDebugText = gff.getString("DamageDebugText");
+    result.history->type = static_cast<uint16_t>(gff.getUint("AttackType", 0));
+    result.history->mode = static_cast<uint8_t>(gff.getUint("AttackMode", 0));
     result.reactionObject = SavedObjectReference::fromSerializedId(
         gff.getUint("ReactObject"), identityContext);
     result.ammoItem = SavedObjectReference::fromSerializedId(
@@ -264,7 +306,7 @@ SavedTalentValue savedTalentFromGff(
     result.multiClass = static_cast<uint8_t>(gff.getUint("MultiClass"));
     result.item = SavedObjectReference::fromSerializedId(
         gff.getUint("Item"), identityContext);
-    // Retail passes "ItemPropertyIndex" to a 16-byte GFF label API; the
+    // The game passes "ItemPropertyIndex" to a 16-byte GFF label API; the
     // on-wire label is therefore truncated to this value.
     result.itemPropertyIndex = gff.getInt("ItemPropertyInde");
     result.casterLevel = static_cast<uint8_t>(gff.getUint("CasterLevel"));
@@ -545,28 +587,314 @@ bool SavedActionParameter::bindObjectReferences(const Game &game) {
     return true;
 }
 
+
+namespace {
+using GffState = resource::Gff;
+using StateField = resource::Gff::Field;
+std::shared_ptr<GffState> scalarState(const std::vector<int> &values) {
+    std::vector<std::shared_ptr<GffState>> fields;
+    for (int value : values) fields.push_back(GffState::Builder().type(0).field(StateField::newInt("Value", value)).build());
+    return GffState::Builder().type(0).field(StateField::newList("Values", std::move(fields))).build();
+}
+int stateValue(const resource::Gff &g, size_t index, int fallback = 0) {
+    const auto &v = g.getList("Values");
+    return index < v.size() ? v[index]->getInt("Value", fallback) : fallback;
+}
+}
+
+std::shared_ptr<resource::Gff> SavedWeaponImpact::toGff() const {
+    std::vector<std::shared_ptr<GffState>> apps, messages;
+    for (const auto &a : applications) {
+        const auto &e = a.effectOutcome;
+        auto g = scalarState({static_cast<int>(a.subtype), a.parameter, a.emitEffectOutcome,
+            e.present, e.saveType, e.effectType, e.saveMode, e.saveRoll, e.modifierTotal,
+            e.baseSave, e.finalTotal, e.difficultyClass, e.outcome});
+        g->fields().push_back(StateField::newFloat("Duration", a.duration));
+        apps.push_back(std::move(g));
+    }
+    for (const auto &entry : feedback) {
+        if (const auto *a = std::get_if<AbilityDrainFeedback>(&entry))
+            messages.push_back(scalarState({0, static_cast<int>(a->ability), a->amount, a->durationSeconds}));
+        else if (const auto *v = std::get_if<SavingThrowFeedback>(&entry))
+            messages.push_back(scalarState({1, static_cast<int>(v->savingThrow), v->base, v->modifier, v->roll, v->difficultyClass}));
+    }
+    return GffState::Builder().type(0x6666).field(StateField::newDword("ReoneWeaponHit", 1))
+        .field(StateField::newDword("Source", source.id)).field(StateField::newStruct("Damage", damage.toGff()))
+        .field(StateField::newList("Applications", std::move(apps)))
+        .field(StateField::newList("Feedback", std::move(messages))).build();
+}
+SavedWeaponImpact SavedWeaponImpact::fromGff(const resource::Gff &g, const SerializedIdentityContext &ids) {
+    SavedWeaponImpact result;
+    result.source = SavedObjectReference::fromSerializedId(g.getUint("Source", kSavedRuntimeInvalidObjectId), ids);
+    if (auto d = g.findStruct("Damage")) result.damage = EffectInstance::fromGff(*d, ids);
+    for (const auto &v : g.getList("Applications")) {
+        ItemOnHitApplication a;
+        a.subtype = static_cast<ItemOnHitSubtype>(stateValue(*v, 0)); a.parameter = stateValue(*v, 1);
+        a.emitEffectOutcome = stateValue(*v, 2) != 0; a.duration = v->getFloat("Duration");
+        auto &e = a.effectOutcome;
+        e.present = stateValue(*v, 3) != 0; e.saveType = stateValue(*v, 4); e.effectType = stateValue(*v, 5);
+        e.saveMode = stateValue(*v, 6); e.saveRoll = stateValue(*v, 7); e.modifierTotal = stateValue(*v, 8);
+        e.baseSave = stateValue(*v, 9); e.finalTotal = stateValue(*v, 10);
+        e.difficultyClass = stateValue(*v, 11); e.outcome = stateValue(*v, 12, -1);
+        result.applications.push_back(std::move(a));
+    }
+    for (const auto &v : g.getList("Feedback")) {
+        if (stateValue(*v, 0) == 0) result.feedback.push_back(AbilityDrainFeedback {
+            static_cast<Ability>(stateValue(*v, 1)), stateValue(*v, 2), stateValue(*v, 3)});
+        else result.feedback.push_back(SavingThrowFeedback {static_cast<SavingThrow>(stateValue(*v, 1)),
+            stateValue(*v, 2), stateValue(*v, 3), stateValue(*v, 4), stateValue(*v, 5)});
+    }
+    return result;
+}
+
+std::shared_ptr<resource::Gff> SavedPhysicalAction::toGff() const {
+    std::vector<std::shared_ptr<GffState>> refs, effects, records;
+    for (const auto &ref : sources) refs.push_back(GffState::Builder().type(0)
+        .field(StateField::newDword("Object", ref.id)).build());
+    for (const auto &effect : secondaryEffects) effects.push_back(effect.toGff());
+    for (const auto &history : histories) {
+        auto g = GffState::Builder().type(0x2222).build(); history.writeFields(*g); records.push_back(std::move(g));
+    }
+    return GffState::Builder().type(0).field(StateField::newDword("Version", 1))
+        .field(StateField::newStruct("State", state)).field(StateField::newList("Sources", std::move(refs)))
+        .field(StateField::newList("Effects", std::move(effects))).field(StateField::newList("History", std::move(records))).build();
+}
+SavedPhysicalAction SavedPhysicalAction::fromGff(const resource::Gff &g, const SerializedIdentityContext &ids) {
+    SavedPhysicalAction result;
+    if (g.getUint("Version") != 1) return result;
+    result.state = g.findStruct("State");
+    for (const auto &v : g.getList("Sources")) result.sources.push_back(SavedObjectReference::fromSerializedId(
+        v->getUint("Object", kSavedRuntimeInvalidObjectId), ids));
+    for (const auto &v : g.getList("Effects")) result.secondaryEffects.push_back(EffectInstance::fromGff(*v, ids));
+    for (const auto &v : g.getList("History")) result.histories.push_back(savedCombatAttackFromGff(*v, ids));
+    return result;
+}
+bool SavedPhysicalAction::valid() const {
+    if (!state || state->getInt("Phase", -1) < 0 || state->getInt("Phase") > 5) return false;
+    const auto size = state->getList("Attacks").size();
+    return sources.size() == size * 2 && histories.size() == size && secondaryEffects.size() == size &&
+        std::isfinite(state->getFloat("Time")) && state->getFloat("Time") >= 0.0f;
+}
+
+bool SavedCastAction::valid() const {
+    return spellId >= 0 && phase >= 0 && phase <= 7 && (path <= 3 || (path >= 5 && path <= 9) || path == 11) &&
+        std::isfinite(elapsed) && elapsed >= 0.0f &&
+        std::isfinite(conjureTime) && conjureTime >= 0.0f &&
+        std::isfinite(castTime) && castTime >= 0.0f &&
+        std::isfinite(catchTime) && catchTime >= 0.0f &&
+        std::isfinite(projectileTime) && projectileTime >= 0.0f &&
+        (!(flags & Released) || (flags & Committed)) &&
+        (!(flags & Committed) || (flags & CommitAttempted)) &&
+        (!(flags & ItemCast) || itemProperty >= 0);
+}
+
+SavedCastAction SavedCastAction::fromGff(const resource::Gff &g, const SerializedIdentityContext &ids) {
+    SavedCastAction s;
+    if (g.getUint("Version") != 1) return s;
+    s.spellId = g.getInt("Spell", -1);
+    s.target = SavedObjectReference::fromSerializedId(g.getUint("Target", kSavedRuntimeInvalidObjectId), ids);
+    s.item = SavedObjectReference::fromSerializedId(g.getUint("Item", kSavedRuntimeInvalidObjectId), ids);
+    s.position = g.getVector("Position"); s.facing = g.getFloat("Facing");
+    s.itemProperty = g.getInt("Property", -1); s.itemCasterLevel = g.getInt("ItemLevel", -1);
+    s.casterLevel = g.getInt("CasterLevel"); s.forceCost = g.getInt("ForceCost");
+    s.phase = g.getInt("Phase"); s.elapsed = g.getFloat("Elapsed");
+    s.conjureTime = g.getFloat("ConjureTime"); s.castTime = g.getFloat("CastTime"); s.catchTime = g.getFloat("CatchTime");
+    s.projectileTime = g.getFloat("FlightTime"); s.presentationId = g.getUint64("Presentation");
+    s.flags = g.getUint("Flags"); s.path = static_cast<uint8_t>(g.getUint("Path"));
+    return s;
+}
+
+std::shared_ptr<resource::Gff> SavedCastAction::toGff() const {
+    using G = resource::Gff;
+    return G::Builder().type(0)
+        .field(G::Field::newDword("Version", 1)).field(G::Field::newInt("Spell", spellId))
+        .field(G::Field::newDword("Target", target.id)).field(G::Field::newDword("Item", item.id))
+        .field(G::Field::newVector("Position", position)).field(G::Field::newFloat("Facing", facing))
+        .field(G::Field::newInt("Property", itemProperty)).field(G::Field::newInt("ItemLevel", itemCasterLevel))
+        .field(G::Field::newInt("CasterLevel", casterLevel)).field(G::Field::newInt("ForceCost", forceCost))
+        .field(G::Field::newInt("Phase", phase)).field(G::Field::newFloat("Elapsed", elapsed))
+        .field(G::Field::newFloat("ConjureTime", conjureTime)).field(G::Field::newFloat("CastTime", castTime)).field(G::Field::newFloat("CatchTime", catchTime))
+        .field(G::Field::newFloat("FlightTime", projectileTime)).field(G::Field::newDword64("Presentation", presentationId))
+        .field(G::Field::newDword("Flags", flags)).field(G::Field::newByte("Path", path)).build();
+}
+
+SavedRoundClock SavedRoundClock::fromGff(const resource::Gff &g, const SerializedIdentityContext &ids) {
+    SavedRoundClock s;
+    s.id = g.getUint64("Id"); s.slot = g.getInt("Slot"); s.state = g.getInt("State");
+    s.elapsed = g.getFloat("Elapsed"); s.duration = g.getFloat("Duration", 3.0f);
+    s.pauseRemaining = g.getFloat("PauseRemaining");
+    s.pauseOwner = SavedObjectReference::fromSerializedId(g.getUint("PauseOwner", kSavedRuntimeInvalidObjectId), ids);
+    s.master = SavedObjectReference::fromSerializedId(g.getUint("Master", kSavedRuntimeInvalidObjectId), ids);
+    s.engaged = SavedObjectReference::fromSerializedId(g.getUint("Engaged", kSavedRuntimeInvalidObjectId), ids);
+    return s;
+}
+std::shared_ptr<resource::Gff> SavedRoundClock::toGff() const {
+    using G = resource::Gff;
+    return G::Builder().type(0).field(G::Field::newDword64("Id", id))
+        .field(G::Field::newInt("Slot", slot)).field(G::Field::newInt("State", state))
+        .field(G::Field::newFloat("Elapsed", elapsed)).field(G::Field::newFloat("Duration", duration))
+        .field(G::Field::newFloat("PauseRemaining", pauseRemaining))
+        .field(G::Field::newDword("PauseOwner", pauseOwner.id))
+        .field(G::Field::newDword("Master", master.id)).field(G::Field::newDword("Engaged", engaged.id)).build();
+}
+
+SavedProjectile SavedProjectile::fromGff(const resource::Gff &g, const SerializedIdentityContext &ids) {
+    SavedProjectile p;
+    auto ref = [&](const resource::Gff &r, const char *key) {
+        return SavedObjectReference::fromSerializedId(r.getUint(key, kSavedRuntimeInvalidObjectId), ids);
+    };
+    p.id = g.getUint64("Id"); p.kind = g.getInt("Kind");
+    p.caster = ref(g, "Caster"); p.weapon = ref(g, "Weapon");
+    p.spellId = g.getInt("Spell", -1); p.path = g.getInt("Path"); p.model = g.getString("Model");
+    p.leg = g.getInt("Leg"); p.released = g.getBool("Released");
+    p.initialized = g.getBool("Initialized"); p.clockwise = g.getBool("Clockwise");
+    p.elapsed = g.getFloat("Elapsed"); p.position = g.getVector("Position");
+    p.velocity = g.getVector("Velocity"); p.orientation = g.getOrientation("Orientation");
+    p.acceleration = g.getVector("Acceleration"); p.parryBlocked = g.getBool("ParryBlocked");
+    p.activationDelay = g.getFloat("ActivationDelay"); p.travelRate = g.getFloat("TravelRate");
+    p.sourceHook = g.getString("SourceHook"); p.orientationMode = g.getInt("OrientMode");
+    p.targetHook = g.getString("TargetHook", "impact");
+    p.combatResult = g.getInt("CombatResult"); p.soundVariant = g.getInt("SoundVariant");
+    for (const auto &v : g.getList("Legs")) p.legs.push_back({ref(*v, "Source"), ref(*v, "Target"),
+        v->getVector("Origin"), v->getVector("Destination"), v->getFloat("Duration"), v->getBool("Reacted"),
+        v->getInt("Motion", 1), v->getVector("TargetOffset"), v->getString("TargetHook"),
+        v->getBool("OwnTargetHook"), v->getFloat("StopRadius")});
+    return p;
+}
+std::shared_ptr<resource::Gff> SavedProjectile::toGff() const {
+    using G = resource::Gff;
+    std::vector<std::shared_ptr<G>> entries;
+    for (const auto &l : legs) entries.push_back(G::Builder().type(0)
+        .field(G::Field::newDword("Source", l.source.id)).field(G::Field::newDword("Target", l.target.id))
+        .field(G::Field::newVector("Origin", l.origin)).field(G::Field::newVector("Destination", l.destination))
+        .field(G::Field::newFloat("Duration", l.duration)).field(G::Field::newByte("Reacted", l.reacted))
+        .field(G::Field::newInt("Motion", l.motion)).field(G::Field::newVector("TargetOffset", l.targetOffset))
+        .field(G::Field::newCExoString("TargetHook", l.targetHook))
+        .field(G::Field::newByte("OwnTargetHook", l.ownsTargetHook))
+        .field(G::Field::newFloat("StopRadius", l.stopRadius)).build());
+    return G::Builder().type(0).field(G::Field::newDword("Version", kind == 2 ? 3 : 2))
+        .field(G::Field::newDword64("Id", id)).field(G::Field::newInt("Kind", kind))
+        .field(G::Field::newDword("Caster", caster.id)).field(G::Field::newDword("Weapon", weapon.id))
+        .field(G::Field::newInt("Spell", spellId)).field(G::Field::newInt("Path", path))
+        .field(G::Field::newResRef("Model", model)).field(G::Field::newInt("Leg", leg))
+        .field(G::Field::newByte("Released", released)).field(G::Field::newByte("Initialized", initialized))
+        .field(G::Field::newByte("Clockwise", clockwise)).field(G::Field::newFloat("Elapsed", elapsed))
+        .field(G::Field::newVector("Position", position)).field(G::Field::newVector("Velocity", velocity))
+         .field(G::Field::newVector("Acceleration", acceleration))
+        .field(G::Field::newByte("ParryBlocked", parryBlocked))
+        .field(G::Field::newFloat("ActivationDelay", activationDelay))
+        .field(G::Field::newFloat("TravelRate", travelRate))
+        .field(G::Field::newCExoString("SourceHook", sourceHook))
+        .field(G::Field::newCExoString("TargetHook", targetHook))
+        .field(G::Field::newInt("CombatResult", combatResult))
+        .field(G::Field::newInt("SoundVariant", soundVariant))
+        .field(G::Field::newInt("OrientMode", orientationMode))
+        .field(G::Field::newOrientation("Orientation", orientation)).field(G::Field::newList("Legs", std::move(entries))).build();
+}
+bool SavedProjectile::bindObjectReferences(const Game &game) {
+    const bool live = game.bindSavedObjectReference(caster);
+    game.bindSavedObjectReference(weapon);
+    for (auto &l : legs) { game.bindSavedObjectReference(l.source); game.bindSavedObjectReference(l.target); }
+    return live;
+}
+
+SavedScheduledAction SavedScheduledAction::fromGff(
+    const resource::Gff &gff, const SerializedIdentityContext &ids) {
+    SavedScheduledAction record;
+    record.timer = gff.getInt("ActionTimer");
+    record.animation = static_cast<uint16_t>(gff.getUint("Animation"));
+    record.animationTime = gff.getInt("AnimationTime");
+    record.numAttacks = gff.getInt("NumAttacks");
+    record.type = static_cast<uint8_t>(gff.getUint("ActionType"));
+    record.target = SavedObjectReference::fromSerializedId(gff.getUint("Target", kSavedRuntimeInvalidObjectId), ids);
+    record.retargettable = static_cast<uint8_t>(gff.getUint("Retargettable"));
+    record.inventorySlot = gff.getUint("InventorySlot");
+    record.repository = SavedObjectReference::fromSerializedId(gff.getUint("TargetRepository", kSavedRuntimeInvalidObjectId), ids);
+    record.applied = gff.getInt("ReoneApplied") != 0;
+    record.remainingPause = gff.getFloat("ReonePause");
+    if (auto command = gff.findStruct("ReoneCommand")) {
+        record.command = SavedActionRecord::fromGff(*command, ids);
+    } else if (record.type == 13 && (record.numAttacks == 0 || record.numAttacks == 1)) {
+        SavedActionRecord command;
+        command.actionId = record.numAttacks == 0 ? 68 : 69;
+        if (record.numAttacks == 0) command.parameters.push_back({3, record.target});
+        command.declaredParameterCount = static_cast<uint16_t>(command.parameters.size());
+        record.command = std::move(command);
+    } else if (record.type == 14) {
+        SavedActionRecord command;
+        command.actionId = 71;
+        record.command = std::move(command);
+    } else if (record.isEquipment()) {
+        SavedActionRecord command;
+        command.actionId = record.type == 6 ? 8 : 11;
+        command.declaredParameterCount = 3;
+        command.parameters.push_back({3, record.target});
+        if (record.type == 6) command.parameters.push_back({1, static_cast<int32_t>(record.inventorySlot)});
+        else command.parameters.push_back({3, record.repository});
+        command.parameters.push_back({1, int32_t {0}});
+        record.command = std::move(command);
+    }
+    record.unsupportedFields = collectUnsupportedFields(gff,
+        {"ActionTimer", "Animation", "AnimationTime", "NumAttacks", "ActionType",
+         "Target", "Retargettable", "InventorySlot", "TargetRepository",
+         "ReoneCommand", "ReoneApplied", "ReonePause"});
+    return record;
+}
+
+bool SavedScheduledAction::bindObjectReferences(const Game &game) {
+    const bool targetBound = game.bindSavedObjectReference(target);
+    const bool repositoryBound = game.bindSavedObjectReference(repository);
+    const bool commandBound = !command || command->bindObjectReferences(game);
+    return targetBound && repositoryBound && commandBound;
+}
+
 SavedActionRecord SavedActionRecord::fromGff(
     const resource::Gff &gff,
     const SerializedIdentityContext &identityContext) {
     SavedActionRecord result;
     result.actionId = gff.getUint("ActionId");
+    result.scheduled = gff.getBool("ReoneScheduled");
     result.groupActionId = static_cast<uint16_t>(gff.getUint("GroupActionId"));
     result.declaredParameterCount = static_cast<uint16_t>(gff.getUint("NumParams"));
     for (const auto &parameter : gff.getList("Paramaters")) {
         result.parameters.push_back(SavedActionParameter::fromGff(
             *parameter, identityContext));
     }
+    if (auto value = gff.findStruct("ReoneCast")) result.cast = SavedCastAction::fromGff(*value, identityContext);
+    if (auto value = gff.findStruct("ReoneRound")) result.round = SavedRoundClock::fromGff(*value, identityContext);
+    if (auto value = gff.findStruct("ReonePhysical")) result.physical = SavedPhysicalAction::fromGff(*value, identityContext);
     result.unsupportedFields = collectUnsupportedFields(
         gff,
-        {"ActionId", "GroupActionId", "NumParams", "Paramaters"});
+        {"ActionId", "GroupActionId", "NumParams", "Paramaters", "ReoneCast", "ReoneRound", "ReonePhysical", "ReoneScheduled"});
     return result;
 }
 
 SavedExecutionSupport SavedActionRecord::executionSupport() const {
+    if (actionId == 15 && cast) return cast->valid()
+        ? SavedExecutionSupport::Executable : SavedExecutionSupport::RepresentableButUnsupported;
+    if ((actionId == 8 || actionId == 11) &&
+        declaredParameterCount == 3 && parameters.size() == 3 &&
+        parameters[0].type == static_cast<uint32_t>(SavedActionParameterType::Object) &&
+        std::holds_alternative<SavedObjectReference>(parameters[0].payload) &&
+        parameters[2].type == static_cast<uint32_t>(SavedActionParameterType::Integer) &&
+        std::holds_alternative<int32_t>(parameters[2].payload)) {
+        const bool validSecond = actionId == 8
+            ? parameters[1].type == static_cast<uint32_t>(SavedActionParameterType::Integer) &&
+              std::holds_alternative<int32_t>(parameters[1].payload) &&
+              equipmentSlotFromMask(static_cast<uint32_t>(std::get<int32_t>(parameters[1].payload))).has_value()
+            : parameters[1].type == static_cast<uint32_t>(SavedActionParameterType::Object) &&
+              std::holds_alternative<SavedObjectReference>(parameters[1].payload);
+        return validSecond ? SavedExecutionSupport::Executable
+                           : SavedExecutionSupport::RepresentableButUnsupported;
+    }
+    if (actionId == 63 && declaredParameterCount == 1 && parameters.size() == 1 &&
+        parameters[0].type == 1 && std::holds_alternative<int32_t>(parameters[0].payload))
+        return SavedExecutionSupport::Executable;
     if (actionId == 61 && declaredParameterCount == 0 && parameters.empty()) {
         return SavedExecutionSupport::Executable;
     }
     if (actionId == 12) {
+        if (physical && !physical->valid()) return SavedExecutionSupport::RepresentableButUnsupported;
         return decodePhysicalAttack(*this)
                    ? SavedExecutionSupport::Executable
                    : SavedExecutionSupport::RepresentableButUnsupported;
@@ -626,8 +954,55 @@ SavedExecutionSupport SavedActionRecord::executionSupport() const {
 
 std::shared_ptr<Action> SavedActionRecord::toRuntimeAction(
     Game &game, const SavedScriptSituationImporter *importer) const {
+    if (actionId == 15 && cast && cast->valid()) {
+        auto spell = game.getSpell(static_cast<SpellType>(cast->spellId));
+        if (!spell) return nullptr;
+        if (cast->flags & SavedCastAction::LocationTarget) {
+            auto action = game.newAction<CastSpellAtLocationAction>(spell,
+                std::make_shared<Location>(cast->position, cast->facing), 0,
+                (cast->flags & SavedCastAction::Cheat) != 0,
+                static_cast<ProjectilePathType>(cast->path), (cast->flags & SavedCastAction::Instant) != 0);
+            action->restoreCastState(*cast); action->attachSavedAction(*this); return action;
+        }
+        auto target = cast->target.boundObject();
+        if (!target) return nullptr;
+        std::optional<std::shared_ptr<Item>> item;
+        if (cast->flags & SavedCastAction::ItemCast) {
+            item = std::dynamic_pointer_cast<Item>(cast->item.boundObject());
+            if (!*item && !(cast->flags & SavedCastAction::Released)) return nullptr;
+        }
+        auto action = game.newAction<CastSpellAtObjectAction>(spell, target, item,
+            (cast->flags & SavedCastAction::Cheat) != 0, 0, 0,
+            static_cast<ProjectilePathType>(cast->path), (cast->flags & SavedCastAction::Instant) != 0,
+            cast->itemProperty >= 0 ? std::optional<size_t>(cast->itemProperty) : std::nullopt,
+            cast->itemCasterLevel >= 0 ? std::optional<int>(cast->itemCasterLevel) : std::nullopt);
+        action->restoreCastState(*cast); action->attachSavedAction(*this); return action;
+    }
     if (executionSupport() != SavedExecutionSupport::Executable) {
         return nullptr;
+    }
+    if (actionId == 63) {
+        auto action = game.newAction<CombatDispatchAction>(std::get<int32_t>(parameters[0].payload));
+        action->attachSavedAction(*this);
+        return action;
+    }
+    if (actionId == 8 || actionId == 11) {
+        auto item = std::dynamic_pointer_cast<Item>(
+            std::get<SavedObjectReference>(parameters[0].payload).boundObject());
+        if (!item) return nullptr;
+        const int32_t flags = std::get<int32_t>(parameters[2].payload);
+        std::shared_ptr<Action> action;
+        if (actionId == 8) {
+            action = game.newAction<EquipItemAction>(
+                item, *equipmentSlotFromMask(static_cast<uint32_t>(std::get<int32_t>(parameters[1].payload))), flags);
+        } else {
+            const auto &reference = std::get<SavedObjectReference>(parameters[1].payload);
+            auto container = std::dynamic_pointer_cast<Item>(reference.boundObject());
+            if (!reference.isInvalid() && !container) return nullptr;
+            action = game.newAction<UnequipItemAction>(item, flags, std::move(container));
+        }
+        action->attachSavedAction(*this);
+        return action;
     }
     if (actionId == 61) {
         auto action = game.newAction<FollowLeaderAction>();
@@ -654,6 +1029,11 @@ std::shared_ptr<Action> SavedActionRecord::toRuntimeAction(
         } else {
             action = game.newAction<UseFeatAction>(
                 decoded->feat, std::move(target));
+        }
+        action->setCutsceneAttack(decoded->cutscene);
+        if (physical) {
+            if (auto *attack = dyn_cast<AttackObjectAction>(action.get())) attack->restorePhysicalState(*physical);
+            else if (auto *feat = dyn_cast<UseFeatAction>(action.get())) feat->restorePhysicalState(*physical);
         }
         action->attachSavedAction(*this);
         return action;
@@ -706,7 +1086,8 @@ std::shared_ptr<Action> SavedActionRecord::toRuntimeAction(
             decoded->expiryTime;
         auto action = game.newAction<MoveToObjectAction>(
             std::move(target), decoded->run, decoded->range,
-            decoded->forcedPending ? decoded->timeout : 0.0f, state);
+            decoded->forcedPending ? decoded->timeout : 0.0f, state,
+            decoded->forcedPending || decoded->forcedActive);
         action->attachSavedAction(*this);
         return action;
     }
@@ -764,9 +1145,28 @@ std::shared_ptr<Action> SavedActionRecord::toRuntimeAction(
 
 bool SavedActionRecord::bindObjectReferences(const Game &game) {
     bool allBound = true;
+    if (cast) {
+        if (!(cast->flags & SavedCastAction::LocationTarget))
+            allBound = game.bindSavedObjectReference(cast->target) && allBound;
+        if (cast->flags & SavedCastAction::ItemCast) {
+            bool itemBound = game.bindSavedObjectReference(cast->item);
+            if (!(cast->flags & SavedCastAction::Released)) allBound = itemBound && allBound;
+        }
+    }
+    if (round) {
+        game.bindSavedObjectReference(round->pauseOwner); game.bindSavedObjectReference(round->master);
+        game.bindSavedObjectReference(round->engaged);
+    }
+    if (physical) {
+        for (auto &source : physical->sources) if (!source.isInvalid()) game.bindSavedObjectReference(source);
+        for (auto &effect : physical->secondaryEffects) if (effect.serializedType) game.bindEffectCreator(effect);
+        for (auto &history : physical->histories) {
+            game.bindSavedObjectReference(history.reactionObject); game.bindSavedObjectReference(history.ammoItem);
+        }
+    }
     for (size_t index = 0; index < parameters.size(); ++index) {
         auto &parameter = parameters[index];
-        // ActionId 6 reuses the retail type-3 storage slot for an animation
+        // ActionId 6 reuses the serialized type-3 storage slot for an animation
         // identifier rather than an object identity.
         if (actionId == 6 && index == 0) continue;
         allBound = parameter.bindObjectReferences(game) && allBound;
@@ -784,6 +1184,58 @@ SavedActionQueue SavedActionQueue::fromGff(
             *action, identityContext));
     }
     return result;
+}
+
+void SavedCombatAttack::writeFields(resource::Gff &record) const {
+    using Field = resource::Gff::Field;
+    auto put = [](resource::Gff &owner, Field field) {
+        auto &destination = owner.fields();
+        auto found = std::find_if(destination.begin(), destination.end(),
+            [&](const auto &existing) { return existing.label == field.label; });
+        if (found == destination.end()) destination.push_back(std::move(field));
+        else *found = std::move(field);
+    };
+    const AttackEventFields cleared;
+    const auto &value = fields ? *fields : cleared;
+    const AttackHistory emptyHistory;
+    const auto &header = history ? *history : emptyHistory;
+    put(record, Field::newByte("AttackGroup", value.group));
+    put(record, Field::newWord("AnimationLength", value.animationLength));
+    put(record, Field::newDword("MissedBy", value.missedBy));
+    put(record, Field::newByte("AttackResult", value.result));
+    put(record, Field::newDword("ReactObject", reactionObject.id));
+    put(record, Field::newWord("ReaxnDelay", value.reactionDelay));
+    put(record, Field::newWord("ReaxnAnimation", value.reactionAnimation));
+    put(record, Field::newWord("ReaxnAnimLength", value.reactionAnimationLength));
+    put(record, Field::newByte("Concealment", value.concealment));
+    put(record, Field::newWord("AttackType", header.type));
+    put(record, Field::newByte("AttackMode", header.mode));
+    put(record, Field::newInt("RangedAttack", value.ranged));
+    put(record, Field::newInt("SneakAttack", value.sneakAttack));
+    put(record, Field::newByte("WeaponAttackType", value.weaponAttackType));
+    put(record, Field::newFloat("RangedTargetX", value.rangedTarget[0]));
+    put(record, Field::newFloat("RangedTargetY", value.rangedTarget[1]));
+    put(record, Field::newFloat("RangedTargetZ", value.rangedTarget[2]));
+    std::vector<std::shared_ptr<resource::Gff>> damage;
+    const auto &previous = record.getList("DamageList");
+    damage.reserve(value.damage.size());
+    for (size_t i = 0; i < value.damage.size(); ++i) {
+        // Preserve unknown child fields without mutating a shared input shadow.
+        auto entry = i < previous.size() && previous[i]
+            ? std::make_shared<resource::Gff>(0xdaee, previous[i]->fields())
+            : std::make_shared<resource::Gff>(0xdaee, std::vector<Field> {});
+        entry->setType(0xdaee);
+        put(*entry, Field::newShort("DamageValue", static_cast<int16_t>(value.damage[i])));
+        damage.push_back(std::move(entry));
+    }
+    put(record, Field::newList("DamageList", std::move(damage)));
+    put(record, Field::newByte("KillingBlow", value.killingBlow));
+    put(record, Field::newByte("CoupDeGrace", value.coupDeGrace));
+    put(record, Field::newByte("CriticalThreat", value.criticalThreat));
+    put(record, Field::newByte("AttackDeflected", value.deflected));
+    put(record, Field::newDword("AmmoItem", ammoItem.id));
+    put(record, Field::newCExoString("AttackDebugText", value.attackDebugText));
+    put(record, Field::newCExoString("DamageDebugText", value.damageDebugText));
 }
 
 SavedEventRecord SavedEventRecord::fromGff(
@@ -820,7 +1272,10 @@ SavedEventRecord SavedEventRecord::fromGff(
         break;
     case SavedEventType::SpellImpact:
     case SavedEventType::ItemOnHitSpellImpact:
-        result.payload = savedSpellImpactFromGff(*data, identityContext);
+        if (result.eventId == static_cast<uint32_t>(SavedEventType::ItemOnHitSpellImpact) &&
+            data->getUint("ReoneWeaponHit") == 1)
+            result.payload = SavedWeaponImpact::fromGff(*data, identityContext);
+        else result.payload = savedSpellImpactFromGff(*data, identityContext);
         break;
     case SavedEventType::PlayAnimation:
     case SavedEventType::ControllerRumble:
@@ -855,8 +1310,28 @@ SavedEventRecord SavedEventRecord::fromGff(
 }
 
 SavedExecutionSupport SavedEventRecord::executionSupport() const {
+    if (eventId == static_cast<uint32_t>(SavedEventType::ItemOnHitSpellImpact) &&
+        std::holds_alternative<SavedWeaponImpact>(payload)) return SavedExecutionSupport::Executable;
+    if ((eventId == static_cast<uint32_t>(SavedEventType::SpellImpact) ||
+         eventId == static_cast<uint32_t>(SavedEventType::ItemOnHitSpellImpact)) &&
+        std::holds_alternative<SavedSpellImpact>(payload)) return SavedExecutionSupport::Executable;
+    if (eventId == static_cast<uint32_t>(SavedEventType::BroadcastSafeProjectile)) {
+        const auto *attack = std::get_if<SavedCombatAttack>(&payload);
+        if (attack && attack->fields && attack->fields->result >= 1 && attack->fields->result <= 10)
+            return SavedExecutionSupport::Executable;
+        return SavedExecutionSupport::RepresentableButUnsupported;
+    }
+    if (eventId == static_cast<uint32_t>(SavedEventType::OnMeleeAttacked) &&
+        (std::holds_alternative<SavedCombatAttack>(payload) ||
+         std::holds_alternative<std::monostate>(payload))) return SavedExecutionSupport::Executable;
+    if (eventId == static_cast<uint32_t>(SavedEventType::SignalEvent)) {
+        const auto *event = std::get_if<SavedScriptEvent>(&payload);
+        if (event && (event->type == 2 || event->type == 11)) return SavedExecutionSupport::Executable;
+    }
+    if (eventId == static_cast<uint32_t>(SavedEventType::DestroyObject) &&
+        std::holds_alternative<std::monostate>(payload)) return SavedExecutionSupport::Executable;
     if (eventId == static_cast<uint32_t>(SavedEventType::ForcedAction)) {
-        return SavedExecutionSupport::RetailDiscards;
+        return SavedExecutionSupport::Discarded;
     }
     if (eventId == static_cast<uint32_t>(SavedEventType::Timed) &&
         std::holds_alternative<SerializedScriptSituation>(payload)) {
@@ -884,6 +1359,9 @@ bool SavedEventRecord::bindObjectReferences(const Game &game) {
         allBound = situation->bindObjectReferences(game) && allBound;
     } else if (auto effect = std::get_if<EffectInstance>(&payload)) {
         allBound = game.bindEffectCreator(*effect) && allBound;
+    } else if (auto hit = std::get_if<SavedWeaponImpact>(&payload)) {
+        bindReference(game, hit->source, allBound);
+        allBound = game.bindEffectCreator(hit->damage) && allBound;
     } else if (auto spell = std::get_if<SavedSpellImpact>(&payload)) {
         bindReference(game, spell->caster, allBound);
         bindReference(game, spell->target, allBound);

@@ -44,8 +44,8 @@ static const glm::vec3 kCombatColor(0.74f, 0.11f, 0.0f);
 void MessagesMenu::onGUILoaded() {
     loadBackground(BackgroundType::Menu);
     bindControls();
-    tintK2InGameFooter();
-    tintK2InGameHeader();
+    tintInGameFooter();
+    tintInGameHeader();
 
     _controls.BTN_EXIT->setOnClick([this]() {
         if (_game.isTSL()) {
@@ -63,8 +63,8 @@ void MessagesMenu::onGUILoaded() {
         return;
     }
 
-    useK2ShellTitle(_controls.LBL_MESSAGES);
-    enableK2ButtonBodyFill(_controls.BTN_EXIT);
+    useShellTitle(_controls.LBL_MESSAGES);
+    enableButtonBodyFill(_controls.BTN_EXIT);
     _controls.LB_DIALOG->setTintBorderFill(true);
     _controls.LB_MESSAGES->setTintBorderFill(true);
     _controls.LB_COMBAT->setTintBorderFill(true);
@@ -86,15 +86,16 @@ void MessagesMenu::onGUILoaded() {
         setFilter(Filter::Effects);
     });
 
+    for (const auto &list : {_controls.LB_MESSAGES, _controls.LB_COMBAT}) {
+        list->setItemsInteractive(false);
+        list->setProtoMatchContent(true);
+    }
     resetFilter();
 }
 
 void MessagesMenu::refresh() {
-    if (_game.isTSL()) {
-        return;
-    }
-
     _controls.LB_MESSAGES->clearItems();
+    if (_game.isTSL()) _controls.LB_COMBAT->clearItems();
 
     for (const MessageLog::Entry &entry : _game.messageLog().entries()) {
         if ((entry.type & MessageLog::kFeedbackMessageType) == 0) {
@@ -106,9 +107,17 @@ void MessagesMenu::refresh() {
         item.textColor = entry.style == MessageLog::Style::Combat
                              ? kCombatColor
                              : kFeedbackColor;
-        _controls.LB_MESSAGES->addItem(std::move(item));
+        if (_game.isTSL() && entry.style == MessageLog::Style::Combat)
+            _controls.LB_COMBAT->addItem(std::move(item));
+        else
+            _controls.LB_MESSAGES->addItem(std::move(item));
     }
     _controls.LB_MESSAGES->scrollToBottom();
+    if (_game.isTSL()) {
+        _controls.LB_COMBAT->scrollToBottom();
+        refreshFilterVisibility();
+        return;
+    }
 
     if (_showingFeedback) {
         showFeedbackMessages();
@@ -166,10 +175,10 @@ void MessagesMenu::refreshFilterVisibility() {
     bool combat = _filter == Filter::Combat;
     bool effects = _filter == Filter::Effects;
 
-    updateK2FilterButton(_controls.BTN_DIALOG, dialog);
-    updateK2FilterButton(_controls.BTN_FEEDBACK, feedback);
-    updateK2FilterButton(_controls.BTN_COMBAT, combat);
-    updateK2FilterButton(_controls.BTN_EFFECTS, effects);
+    updateFilterButton(_controls.BTN_DIALOG, dialog);
+    updateFilterButton(_controls.BTN_FEEDBACK, feedback);
+    updateFilterButton(_controls.BTN_COMBAT, combat);
+    updateFilterButton(_controls.BTN_EFFECTS, effects);
 
     _controls.LB_DIALOG->setVisible(dialog);
     _controls.LB_MESSAGES->setVisible(feedback);

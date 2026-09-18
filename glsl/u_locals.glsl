@@ -13,6 +13,7 @@ const int FEATURE_HASHEDALPHATEST = 1 << 11;
 const int FEATURE_PREMULALPHA = 1 << 12;
 const int FEATURE_ENVMAPCUBE = 1 << 13;
 const int FEATURE_STATIC = 1 << 14;
+const int FEATURE_SHELL = 1 << 15;
 
 layout(std140) uniform Locals {
     mat4 uModel;
@@ -27,6 +28,7 @@ layout(std140) uniform Locals {
     float uBumpMapScale;
     float uWaterAlpha;
     float uBillboardSize;
+    float uShellOffset;
 };
 
 uniform int uEnvMapDerivedLayer;

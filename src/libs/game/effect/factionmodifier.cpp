@@ -1,30 +1,71 @@
 /*
  * Copyright (c) 2020-2023 The reone project contributors
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 #include "reone/game/effect/factionmodifier.h"
 
-namespace reone {
+#include <optional>
 
-namespace game {
+#include "reone/game/game.h"
+#include "reone/game/object/creature.h"
+#include "reone/game/object/door.h"
+#include "reone/game/object/placeable.h"
+#include "reone/game/object/trigger.h"
+#include "reone/game/reputes.h"
 
-void FactionModifierEffect::applyTo(Object &object) {
-    // TODO: implement
+namespace reone::game {
+namespace {
+std::optional<Faction> factionOf(Object &object) {
+    if (auto *v = dyn_cast<Creature>(&object)) return v->faction();
+    if (auto *v = dyn_cast<Door>(&object)) return v->faction();
+    if (auto *v = dyn_cast<Placeable>(&object)) return v->faction();
+    if (auto *v = dyn_cast<Trigger>(&object)) return v->faction();
+    return std::nullopt;
+}
+void setFactionOf(Object &object, Faction faction) {
+    if (auto *v = dyn_cast<Creature>(&object)) v->setFaction(faction);
+    else if (auto *v = dyn_cast<Door>(&object)) v->setFaction(faction);
+    else if (auto *v = dyn_cast<Placeable>(&object)) v->setFaction(faction);
+    else if (auto *v = dyn_cast<Trigger>(&object)) v->setFaction(faction);
+}
+bool isNpcFaction(const Object &object, int faction) {
+    if (faction <= static_cast<int>(Faction::Player)) return false;
+    return static_cast<size_t>(faction) < object.services().game.reputes.state().factions.size();
+}
 }
 
-} // namespace game
+EffectApplicationResult FactionModifierEffect::onApply(Object &object, EffectInstance &instance) {
+    if (instance.restoring) return EffectApplicationResult::Retained;
+    const auto oldFaction = factionOf(object);
+    if (!oldFaction || !isNpcFaction(object, _newFaction)) return EffectApplicationResult::Rejected;
+    if (auto *creature = dyn_cast<Creature>(&object); creature && creature->isPC()) {
+        return EffectApplicationResult::Rejected;
+    }
 
-} // namespace reone
+    instance.setIntegerParameter(1, static_cast<int>(*oldFaction));
+    setFactionOf(object, static_cast<Faction>(_newFaction));
+    if (auto *creature = dyn_cast<Creature>(&object)) {
+        creature->clearAllActions(true);
+        if (!creature->isDead() && !creature->isTemporarilyDead()) {
+            creature->refreshVisibilityPerception();
+        }
+    }
+    return EffectApplicationResult::Retained;
+}
+
+EffectRemovalResult FactionModifierEffect::onRemove(Object &object, const EffectInstance &instance) {
+    switch (instance.spellId) {
+    case 184: object.game().setGlobalNumber("000_Beast_Conf_Active", 0); break;
+    case 200: object.game().setGlobalNumber("000_Human_Conf_Active", 0); break;
+    case 269: object.game().setGlobalNumber("000_Droid_Conf_Active", 0); break;
+    default: break;
+    }
+    setFactionOf(object, static_cast<Faction>(instance.integerParameter(1)));
+    if (auto *creature = dyn_cast<Creature>(&object)) {
+        creature->refreshVisibilityPerception();
+    }
+    return EffectRemovalResult::Removed;
+}
+
+} // namespace reone::game

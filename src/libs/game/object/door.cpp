@@ -118,7 +118,8 @@ void Door::deserializeAll(
     if (gff.readShort(_hitPoints, "HP")) {
         _maxHitPoints = _hitPoints;
     }
-    gff.readShort(_currentHitPoints, "CurrentHP");
+    int16_t currentHitPoints = static_cast<int16_t>(_currentHitPoints);
+    if (gff.readShort(currentHitPoints, "CurrentHP")) _currentHitPoints = currentHitPoints;
     if (identityContext.isSerializedState() && gff.has("CurrentHP")) {
         _dead = _currentHitPoints <= 0;
     }
@@ -326,7 +327,7 @@ void Door::open() {
         return;
     }
 
-    // A door that is swinging aside is still in the doorway. Retail K2 will not
+    // A door that is swinging aside is still in the doorway. K2 will not
     // let the player through one until the opening animation has finished, so
     // the closed walkmesh stays enabled for the whole transition and only comes
     // off when the door has physically arrived at its opened pose.
@@ -474,6 +475,20 @@ void Door::updateTransform() {
     if (_walkmeshClosed) {
         _walkmeshClosed->setLocalTransform(_transform);
     }
+}
+
+void Door::applyDamageEffect(
+    int amount,
+    const std::shared_ptr<Object> &damager) {
+
+
+    if (amount == 0) {
+        _game.floatingText().addDamage(*this, 0, 0, getLastDamager());
+        runDamagedScript();
+        return;
+    }
+
+    damage(amount, damager);
 }
 
 } // namespace game

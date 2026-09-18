@@ -21,8 +21,10 @@ namespace reone {
 
 namespace game {
 
-void ForceBodyEffect::applyTo(Object &object) {
-    // TODO: implement
+EffectApplicationResult ForceBodyEffect::onApply(Object &object, EffectInstance &) {
+    // This is a cost-policy marker. The casting transaction reads its level;
+    // application itself does not grant or debit either resource.
+    return EffectApplicationResult::Retained;
 }
 
 } // namespace game

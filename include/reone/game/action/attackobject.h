@@ -47,9 +47,13 @@ public:
         return from->type() == ActionType::AttackObject;
     }
 
+    bool holdsCombatRound() const override { return _schedule.holdsCombatRound(); }
     void execute(std::shared_ptr<Action> self, Object &actor, float dt) override;
-    void cancel(std::shared_ptr<Action> self, Object &actor) override;
+    bool cancel(std::shared_ptr<Action> self, Object &actor) override;
+    void onQueued(Object &actor) override;
+    void retireCombatRound() override { _attacks.clearHistory(); }
     std::optional<SavedActionRecord> saveFacingState() const override;
+    void restorePhysicalState(const SavedPhysicalAction &state);
     std::shared_ptr<Object> target() const { return _target.resolve(); }
 
     AttackResultType result() const { return _attacks.result(); }

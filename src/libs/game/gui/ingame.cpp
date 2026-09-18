@@ -38,7 +38,7 @@ namespace reone {
 
 namespace game {
 
-static void tintK2TopNavigationIcon(const std::shared_ptr<ImageButton> &button, const glm::vec3 &baseColor) {
+static void tintTopNavigationIcon(const std::shared_ptr<ImageButton> &button, const glm::vec3 &baseColor) {
     if (!button) {
         return;
     }
@@ -77,18 +77,18 @@ void InGameMenu::onGUILoaded() {
     configureTopNavigationIcon(_controls.LBLH_OPT);
 
     if (_game.isTSL()) {
-        tintK2TopNavigationIcon(_controls.LBLH_EQU, _baseColor);
-        tintK2TopNavigationIcon(_controls.LBLH_INV, _baseColor);
-        tintK2TopNavigationIcon(_controls.LBLH_CHA, _baseColor);
-        tintK2TopNavigationIcon(_controls.LBLH_ABI, _baseColor);
-        tintK2TopNavigationIcon(_controls.LBLH_MSG, _baseColor);
-        tintK2TopNavigationIcon(_controls.LBLH_JOU, _baseColor);
-        tintK2TopNavigationIcon(_controls.LBLH_MAP, _baseColor);
-        tintK2TopNavigationIcon(_controls.LBLH_OPT, _baseColor);
+        tintTopNavigationIcon(_controls.LBLH_EQU, _baseColor);
+        tintTopNavigationIcon(_controls.LBLH_INV, _baseColor);
+        tintTopNavigationIcon(_controls.LBLH_CHA, _baseColor);
+        tintTopNavigationIcon(_controls.LBLH_ABI, _baseColor);
+        tintTopNavigationIcon(_controls.LBLH_MSG, _baseColor);
+        tintTopNavigationIcon(_controls.LBLH_JOU, _baseColor);
+        tintTopNavigationIcon(_controls.LBLH_MAP, _baseColor);
+        tintTopNavigationIcon(_controls.LBLH_OPT, _baseColor);
         _controls.LBL_SECTITLE->setBorderFill(std::string());
-        updateK2SectionTitle();
+        updateSectionTitle();
         _controls.LBL_BACK1->setTintBorderFill(true);
-        refreshK2Footer();
+        refreshFooter();
     }
 
     // _controls.BTN_EQU->setVisible(false);
@@ -227,7 +227,7 @@ GameGUI *InGameMenu::getActiveTabGUI() const {
 void InGameMenu::update(float dt) {
     GameGUI::update(dt);
 
-    refreshK2Footer();
+    refreshFooter();
 
     auto tabGui = getActiveTabGUI();
     if (tabGui) {
@@ -259,12 +259,12 @@ void InGameMenu::changeTab(InGameMenuTab tab) {
         gui->clearSelection();
     }
     _tab = tab;
-    updateK2SectionTitle();
+    updateSectionTitle();
     updateTabButtons();
-    refreshK2Footer();
+    refreshFooter();
 }
 
-void InGameMenu::updateK2SectionTitle() {
+void InGameMenu::updateSectionTitle() {
     if (!_game.isTSL() || !_controls.LBL_SECTITLE) {
         return;
     }
@@ -276,7 +276,7 @@ void InGameMenu::updateK2SectionTitle() {
     _controls.LBL_SECTITLE->setBorder(std::move(border));
 
     auto activeTab = getActiveTabGUI();
-    auto titleControl = activeTab ? activeTab->k2InGameTitleControl() : nullptr;
+    auto titleControl = activeTab ? activeTab->inGameTitleControl() : nullptr;
     if (titleControl) {
         _controls.LBL_SECTITLE->setText(titleControl->text());
     } else {
@@ -284,7 +284,7 @@ void InGameMenu::updateK2SectionTitle() {
     }
 }
 
-void InGameMenu::refreshK2Footer() {
+void InGameMenu::refreshFooter() {
     if (!_game.isTSL()) {
         return;
     }

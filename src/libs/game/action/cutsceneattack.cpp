@@ -172,9 +172,10 @@ void CutsceneAttackAction::execute(std::shared_ptr<Action> self, Object &actor, 
     }
 }
 
-void CutsceneAttackAction::cancel(std::shared_ptr<Action> self, Object &actor) {
+bool CutsceneAttackAction::cancel(std::shared_ptr<Action> self, Object &actor) {
     Creature &attacker = cast<Creature>(actor);
     finish(attacker);
+    return true;
 }
 
 void CutsceneAttackAction::finish(Creature &attacker) {

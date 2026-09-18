@@ -277,6 +277,7 @@ private:
     void updateTransitionPresentation();
     std::optional<TransitionPortal> currentTransitionCandidate() const;
 
+    void renderEffectStacks();
     void renderMinimap();
 };
 

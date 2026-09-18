@@ -51,9 +51,8 @@ static int g_strRefAdd = 38455;
 static int g_strRefRemove = 38456;
 
 static glm::vec3 g_kotorColorOn = {0.984314f, 1.0f, 0};
-// Neither game authors an in-party colour; K1's green is the retail runtime
-// tint. TSL authors white for its buttons' selected state, and the K1 green
-// clashes with its teal-and-sand palette.
+// Neither game specifies an in-party colour in the layout. K1 uses green
+// for an active companion.
 static glm::vec3 g_kotorColorAdded = {0, 0.831373f, 0.090196f};
 static glm::vec3 g_tslColorAdded = {1.0f, 1.0f, 1.0f};
 
@@ -78,16 +77,16 @@ void PartySelection::onGUILoaded() {
         // between them. Collapsing them the way the in-game menus do strands
         // the count below the strip, so the bars keep their authored places
         // and only take the shell tint.
-        tintK2InGameHeader();
+        tintInGameHeader();
         for (auto &control : {
                  _controls.LBL_NA0, _controls.LBL_NA1, _controls.LBL_NA2, _controls.LBL_NA3,
                  _controls.LBL_NA4, _controls.LBL_NA5, _controls.LBL_NA6, _controls.LBL_NA7,
                  _controls.LBL_NA8, _controls.LBL_NA9, _controls.LBL_NA10, _controls.LBL_NA11}) {
             control->setTintBorderFill(true);
         }
-        useK2ShellTitle(_controls.LBL_TITLE);
+        useShellTitle(_controls.LBL_TITLE);
         for (auto &button : {_controls.BTN_ACCEPT, _controls.BTN_DONE, _controls.BTN_BACK}) {
-            enableK2ButtonBodyFill(button);
+            enableButtonBodyFill(button);
         }
     }
 

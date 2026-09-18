@@ -36,25 +36,54 @@ public:
         std::shared_ptr<Spell> spell,
         std::shared_ptr<Object> target,
         std::optional<std::shared_ptr<Item>> item,
-        bool cheat = false);
+        bool cheat = false,
+        int metaMagic = 0,
+        int domainLevel = 0,
+        ProjectilePathType projectilePathType = ProjectilePathType::Default,
+        bool instantSpell = false,
+        std::optional<size_t> itemProperty = std::nullopt,
+        std::optional<int> itemCasterLevel = std::nullopt);
 
     static bool classof(Action *from) {
         return from->type() == ActionType::CastSpellAtObject;
     }
 
     void execute(std::shared_ptr<Action> self, Object &actor, float dt) override;
-    void finish(Creature &caster);
+    void finish(Object &caster);
+    bool cancel(std::shared_ptr<Action> self, Object &actor) override;
 
+    std::optional<SavedActionRecord> saveFacingState() const override;
+    void restoreCastState(const SavedCastAction &state);
+    bool suppressesEndRoundScript() const override { return _instantSpell || _cutsceneAttack; }
+    bool holdsCombatRound() const override { return _started && _schedule.holdsRound() && !isCompleted() && !isCancelled(); }
+    const std::shared_ptr<Object> &target() const { return _target; }
     const std::shared_ptr<Spell> &spell() const { return _spell; }
     const std::optional<std::shared_ptr<Item>> &item() const { return _item; }
 
 private:
+    bool itemAvailable(const Object &actor) const;
+    bool commit(Object &actor);
+    void release(Object &actor);
+
     std::shared_ptr<Spell> _spell;
     std::shared_ptr<Object> _target;
     std::optional<std::shared_ptr<Item>> _item;
     SpellSchedule _schedule;
-    std::optional<Grenade> _grenade;
+    uint64_t _presentationId {0};
+    float _projectileTime {0.0f};
+    bool _restorePresentation {false};
+    bool _itemConsumed {false};
     bool _cheat;
+    ProjectilePathType _projectilePathType;
+    bool _instantSpell;
+    bool _ownsMovementRestriction {false};
+    SpellCastContext _castContext;
+    std::optional<size_t> _itemProperty;
+    std::optional<int> _itemCasterLevel;
+    bool _started {false};
+    bool _commitAttempted {false};
+    bool _committed {false};
+    bool _dispatched {false};
 };
 
 } // namespace game

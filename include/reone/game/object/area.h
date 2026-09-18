@@ -73,6 +73,8 @@ public:
         Game &game,
         ServicesView &services);
 
+    ~Area() override;
+
     static bool classof(const Object *from) {
         return from->type() == ObjectType::Area;
     }
@@ -88,6 +90,7 @@ public:
     void update(float dt);
 
     void destroyObject(const Object &object);
+    glm::vec3 findPartyPosition(const Creature &member, const glm::vec3 &position, float radius = 10.0f) const;
     void initCameras(const glm::vec3 &entryPosition, float entryFacing);
 
     void onPartyLeaderMoved(bool roomChanged = false);
@@ -99,9 +102,18 @@ public:
     bool landObject(Object &object);
     void add(const std::shared_ptr<Object> &object);
 
+    void updateObjectSpatialIndex(Object &object);
+    Object *getObjectInShape(bool first, float minX, float maxX,
+                             const std::function<bool(const Object &)> &matches);
+
+
+    bool moveCreatureByDistance(const std::shared_ptr<Creature> &creature,
+                                const glm::vec2 &direction, float distance);
+
     bool moveCreature(const std::shared_ptr<Creature> &creature, const glm::vec2 &dir, bool run, float dt,
                       float maxDistance = FLT_MAX);
     void determineObjectRoom(Object &object);
+    int getRoomForceRating(const glm::vec3 &position) const;
 
     bool isUnescapable() const { return _unescapable; }
 
@@ -117,6 +129,9 @@ public:
 
     const CameraStyle &camStyleDefault() const { return _camStyleDefault; }
     const std::string &music() const { return _music; }
+    bool transitionPending() const { return _transitionPending; }
+    bool playerRestrictMode() const { return _playerRestrictMode; }
+    void setPlayerRestrictMode(bool value) { _playerRestrictMode = value; }
     const ObjectList &objects() const { return _objects; }
     const std::string &localizedName() const { return _localizedName; }
     const RoomMap &rooms() const { return _rooms; }
@@ -284,10 +299,16 @@ private:
     std::string _localizedName;
     resource::generated::ARE_Map _map;
     RoomMap _rooms;
+    // Room lookup is first walkable hit in LYT order, not nearest
+    // visible room. Keep that order separately from the name index.
+    std::vector<Room *> _roomOrder;
+    std::unordered_map<std::string, int> _roomForceRatings;
     resource::Visibility _visibility;
     CameraStyle _camStyleDefault;
     CameraStyle _camStyleCombat;
     std::string _music;
+    bool _playerRestrictMode {false};
+    bool _transitionPending {false};
     Timer _heartbeatTimer;
     bool _unescapable {false};
     Grass _grass;
@@ -319,6 +340,13 @@ private:
     // Objects
 
     ObjectList _objects;
+    // Shape queries share one live X-ordered area cursor, not a VM snapshot.
+    std::vector<Object *> _objectsByX;
+    size_t _shapeQueryIndex {static_cast<size_t>(-1)};
+
+    void addToSpatialIndex(Object &object);
+    void removeFromSpatialIndex(Object &object);
+
     std::unordered_map<ObjectType, ObjectList> _objectsByType;
     std::unordered_map<std::string, ObjectList> _objectsByTag;
     std::set<uint32_t> _objectsToDestroy;
@@ -368,7 +396,7 @@ private:
     void repositionPartyMember(
         const std::shared_ptr<Creature> &member,
         int index);
-    glm::vec3 findPartyPosition(const Creature &member, const glm::vec3 &position) const;
+
 
     struct CreatureCollision {
         const Creature *creature {nullptr};

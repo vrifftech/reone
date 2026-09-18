@@ -21,8 +21,9 @@ namespace reone {
 
 namespace game {
 
-void HorrifiedEffect::applyTo(Object &object) {
+EffectApplicationResult HorrifiedEffect::onApply(Object &object, EffectInstance &) {
     // TODO: implement
+    return EffectApplicationResult::Retained;
 }
 
 } // namespace game

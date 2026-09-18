@@ -16,6 +16,9 @@
  */
 
 #include "reone/game/object/module.h"
+#include "reone/game/castspell.h"
+#include "reone/game/d20/spells.h"
+#include "reone/game/location.h"
 
 #include "reone/game/action/attackobject.h"
 #include "reone/game/action/opencontainer.h"
@@ -23,6 +26,7 @@
 #include "reone/game/action/startconversation.h"
 #include "reone/game/di/services.h"
 #include "reone/game/game.h"
+#include "reone/game/projectiles.h"
 #include "reone/game/party.h"
 #include "reone/game/script/savedsituation.h"
 #include "reone/game/reputes.h"
@@ -36,6 +40,7 @@
 #include "reone/system/logutil.h"
 
 #include "../action/commonactions.h"
+#include "../savedeventdispatch.h"
 
 #include <algorithm>
 #include <boost/algorithm/string/case_conv.hpp>
@@ -103,14 +108,23 @@ void Module::load(
 
     auto ifoParsed = resource::generated::parseIFO(ifo);
     _isSaveGame = restoreSavedWorld && ifoParsed.Mod_IsSaveGame != 0;
+    _projectilesAwaitingRestore = restoreSavedWorld;
     if (restoreSavedWorld) {
         const auto identityContext =
             SerializedIdentityContext::moduleGraph(_name);
         deserializeRuntimeState(ifo, identityContext);
         deserializeSavedEventQueue(ifo, identityContext);
+        _savedProjectiles.clear();
+        for (const auto &record : ifo.getList("ReoneProjectiles")) {
+            const auto version = record->getUint("Version");
+            if (version == 1 || version == 2 || version == 3) {
+                _savedProjectiles.push_back(SavedProjectile::fromGff(*record, identityContext));
+            }
+        }
         loadLimboCreatures(ifo);
     } else {
         _savedEventQueue = SavedEventQueue {};
+        _savedProjectiles.clear();
         _savedEventLive.clear();
     }
     loadInfo(ifoParsed);
@@ -224,7 +238,7 @@ void Module::loadParty(const std::string &entry, bool preserveSavedPlacement) {
     _area->update3rdPersonCameraFacing();
 
     // Where the party stands is restored from the save; the area's authored
-    // OnEnter still runs. Retail defers that script and hands it the
+    // OnEnter still runs. The game defers that script and hands it the
     // load-from-save answer captured when the enter event was made, so the
     // script sees the restore it was created during. Here the script runs
     // inline, still inside the load, so it reads the same answer from the
@@ -333,6 +347,13 @@ bool Module::handleMouseButtonDown(const input::MouseButtonEvent &event) {
         return false;
     }
     auto objectPtr = _game.getObjectById(object->id());
+    if (!objectPtr) {
+        return false;
+    }
+    // World-click handling publishes the selected target before
+    // interaction. Repeat clicks must rebind it too; hover and programmatic
+    // selection are not substitutes for this player-input producer.
+    _game.setLastTarget(objectPtr->id());
     auto selectedObject = _area->selectedObject();
     if (objectPtr != selectedObject) {
         _area->selectObject(objectPtr);
@@ -344,6 +365,8 @@ bool Module::handleMouseButtonDown(const input::MouseButtonEvent &event) {
 }
 
 void Module::onObjectClick(const std::shared_ptr<Object> &object) {
+    const auto leader = _game.party().getLeader();
+    if (!leader || leader->stateControlsActions()) return;
     switch (object->type()) {
     case ObjectType::Creature:
         onCreatureClick(std::static_pointer_cast<Creature>(object));
@@ -462,7 +485,9 @@ size_t Module::enqueueSaveEvent(SavedEventRecord event) {
     _savedEventQueue.events.push_back(std::move(event));
     _savedEventLive.push_back(true);
     _savedEventReferencesBound.push_back(referencesBound);
-    return _savedEventQueue.events.size() - 1;
+    const auto index = _savedEventQueue.events.size() - 1;
+    if (_savedEventsPublished) publishSavedEvent(index);
+    return index;
 }
 
 size_t Module::enqueueBoundSaveEvent(
@@ -474,7 +499,9 @@ size_t Module::enqueueBoundSaveEvent(
     _savedEventQueue.events.push_back(std::move(event));
     _savedEventLive.push_back(true);
     _savedEventReferencesBound.push_back(referencesBound);
-    return _savedEventQueue.events.size() - 1;
+    const auto index = _savedEventQueue.events.size() - 1;
+    if (_savedEventsPublished) publishSavedEvent(index);
+    return index;
 }
 
 bool Module::cancelSaveEvent(size_t index) {
@@ -499,57 +526,54 @@ void Module::bindSavedEventQueue() {
     }
 }
 
+void Module::restoreProjectilePresentations() {
+    if (!_projectilesAwaitingRestore) return;
+    _projectilesAwaitingRestore = false;
+    _services.game.projectiles.restorePresentations(std::move(_savedProjectiles), _game, _services);
+    _savedProjectiles.clear();
+}
 void Module::publishSavedEventQueue() {
-    if (_savedEventsPublished) {
-        return;
-    }
-    SavedScriptSituationImporter importer(
-        _game, _services.resource.scripts);
+    if (_savedEventsPublished) return;
     _publishedSavedEvents.clear();
-
-    for (size_t index = 0; index < _savedEventQueue.events.size(); ++index) {
-        const auto &savedEvent = _savedEventQueue.events[index];
-        if (!savedEvent.shouldRestore() ||
-            index >= _savedEventReferencesBound.size() ||
-            !_savedEventReferencesBound[index] ||
-            savedEvent.executionSupport() != SavedExecutionSupport::Executable) {
-            continue;
-        }
-
-        PublishedSavedEvent event;
-        event.savedIndex = index;
-        // Both fields are Dwords and a day is at most 255 * 60 * 1000 * 24 ms,
-        // so the composition cannot overflow the 64-bit clock.
-        event.dueMilliseconds =
-            static_cast<uint64_t>(savedEvent.day) *
-                _game.millisecondsPerWorldDay() +
-            savedEvent.time;
-        if (savedEvent.eventId == static_cast<uint32_t>(SavedEventType::Timed)) {
-            auto situation = std::get_if<SerializedScriptSituation>(
-                &savedEvent.payload);
-            if (!situation) {
-                continue;
-            }
-            auto imported = importer.import(*situation);
-            if (!imported) {
-                warn("Module: preserving unsupported timed event: " + imported.message);
-                continue;
-            }
-            event.continuation = std::move(imported.continuation);
-        }
-        _publishedSavedEvents.push_back(std::move(event));
-    }
+    for (size_t index = 0; index < _savedEventQueue.events.size(); ++index) publishSavedEvent(index);
     _savedEventsPublished = true;
 }
 
+void Module::publishSavedEvent(size_t index) {
+    const auto &savedEvent = _savedEventQueue.events[index];
+    if (!_savedEventLive[index] || !savedEvent.shouldRestore() ||
+        index >= _savedEventReferencesBound.size() || !_savedEventReferencesBound[index] ||
+        savedEvent.executionSupport() != SavedExecutionSupport::Executable) return;
+    PublishedSavedEvent event;
+    event.savedIndex = index;
+    event.dueMilliseconds = static_cast<uint64_t>(savedEvent.day) * _game.millisecondsPerWorldDay() + savedEvent.time;
+    if (savedEvent.eventId == static_cast<uint32_t>(SavedEventType::Timed)) {
+        auto situation = std::get_if<SerializedScriptSituation>(&savedEvent.payload);
+        if (!situation) return;
+        SavedScriptSituationImporter importer(_game, _services.resource.scripts);
+        auto imported = importer.import(*situation);
+        if (!imported) {
+            warn("Module: preserving unsupported timed event: " + imported.message);
+            return;
+        }
+        event.continuation = std::move(imported.continuation);
+    }
+    _publishedSavedEvents.push_back(std::move(event));
+}
+
 void Module::dispatchDueSavedEvents() {
-    for (auto &published : _publishedSavedEvents) {
-        if (published.delivered) {
-            continue;
-        }
-        if (published.dueMilliseconds <= _game.worldTimeMilliseconds()) {
-            deliverSavedEvent(published);
-        }
+    publishSavedEventQueue();
+    detail::dispatchDueSavedEvents(_publishedSavedEvents, _dispatchingSavedEvents,
+        [&](size_t savedIndex) { return _savedEventLive[savedIndex]; },
+        [&]() { return _game.worldTimeMilliseconds(); },
+        [&](PublishedSavedEvent &event) { deliverSavedEvent(event); });
+}
+
+void Module::cancelObjectDestruction(const Object &object) {
+    for (size_t index = 0; index < _savedEventQueue.events.size(); ++index) {
+        const auto &event = _savedEventQueue.events[index];
+        if (event.eventId == static_cast<uint32_t>(SavedEventType::DestroyObject) &&
+            event.object.boundObject().get() == &object) _savedEventLive[index] = false;
     }
 }
 
@@ -558,13 +582,97 @@ void Module::deliverSavedEvent(PublishedSavedEvent &published) {
     if (published.savedIndex < _savedEventLive.size()) {
         _savedEventLive[published.savedIndex] = false;
     }
-    const auto &savedEvent = _savedEventQueue.events[published.savedIndex];
+    const auto savedEvent = _savedEventQueue.events[published.savedIndex];
     auto target = savedEvent.object.boundObject();
     if (!target) {
         return;
     }
 
     switch (static_cast<SavedEventType>(savedEvent.eventId)) {
+    case SavedEventType::SpellImpact:
+    case SavedEventType::ItemOnHitSpellImpact: {
+        if (const auto *hit = std::get_if<SavedWeaponImpact>(&savedEvent.payload)) {
+            auto source = hit->source.boundObject();
+            auto applications = hit->applications;
+            for (auto &application : applications) application.creator = source;
+            auto damage = hit->damage;
+            damage.restoring = false;
+            if (!damage.hasStableId()) damage.id = _game.allocateEffectId();
+            target->applyEffect(std::move(damage));
+            addDeferredCombatFeedback(_game, _services, source, *target, hit->feedback);
+            applyItemOnHitApplications(std::move(applications), *target, _game, _services);
+            break;
+        }
+        const auto *impact = std::get_if<SavedSpellImpact>(&savedEvent.payload);
+        if (!impact) break;
+        auto caster = impact->caster.boundObject();
+        if (!caster) break;
+        const auto definition = _services.game.spells.get(static_cast<SpellType>(impact->spellId));
+        if (!definition) break;
+        Spell spell(*definition);
+        spell.impactScript = impact->script;
+        auto spellTarget = impact->target.boundObject();
+        int casterLevel = impact->casterLevel;
+        if (casterLevel < 0) {
+            if (const auto *creature = dyn_cast<Creature>(caster.get()))
+                casterLevel = creature->spellCasterLevel(spell, !impact->item.isInvalid());
+            else casterLevel = std::max(10, 2 * static_cast<int>(spell.innateLevel) - 1);
+        }
+        SpellCastContext context {impact->spellId, std::max(0, casterLevel), impact->metaMagic, impact->finalForceCost};
+        runSpellImpact(_game, spell, *caster, spellTarget.get(),
+            std::make_shared<Location>(impact->targetPosition, impact->targetFacing), &context);
+        break;
+    }
+    case SavedEventType::SignalEvent: {
+        const auto &event = std::get<SavedScriptEvent>(savedEvent.payload);
+        if (event.type == 11 && !event.integers.empty()) {
+            _game.scriptRunner().run(target->getOnUserDefined(), {
+                {script::ArgKind::Caller, script::Variable::ofObject(target->id())},
+                {script::ArgKind::UserDefinedEventNumber, script::Variable::ofInt(event.integers[0])}});
+        } else if (event.type == 2 && event.integers.size() >= 2) {
+            auto caster = event.objects.empty() ? nullptr : event.objects[0].boundObject();
+            _game.scriptRunner().run(target->getOnSpellCastAt(), {
+                {script::ArgKind::Caller, script::Variable::ofObject(target->id())},
+                {script::ArgKind::LastSpellCaster, script::Variable::ofObject(caster ? caster->id() : script::kObjectInvalid)},
+                {script::ArgKind::LastSpell, script::Variable::ofInt(event.integers[0])},
+                {script::ArgKind::LastSpellHarmful, script::Variable::ofInt(event.integers[1])}});
+        }
+        break;
+    }
+    case SavedEventType::OnMeleeAttacked: {
+        if (auto creature = dyn_cast<Creature>(target)) {
+            const auto *attack = std::get_if<SavedCombatAttack>(&savedEvent.payload);
+            auto caller = savedEvent.caller.boundObject();
+            creature->receiveAttackEvent(attack ? attack->history.get() : nullptr,
+                caller ? caller->id() : script::kObjectInvalid,
+                attack ? attack->fields.get() : nullptr);
+        }
+        break;
+    }
+    case SavedEventType::BroadcastSafeProjectile: {
+        const auto *attack = std::get_if<SavedCombatAttack>(&savedEvent.payload);
+        auto source = std::dynamic_pointer_cast<Creature>(savedEvent.caller.boundObject());
+        auto receiver = attack ? attack->reactionObject.boundObject() : nullptr;
+        auto weapon = attack ? std::dynamic_pointer_cast<Item>(attack->ammoItem.boundObject()) : nullptr;
+        if (source && receiver && weapon && _area &&
+            _area->isObjectResident(*source) && _area->isObjectResident(*receiver)) {
+            if (attack->fields) _services.game.projectiles.launchSafeProjectile(
+                *source, *receiver, *weapon, *attack->fields, _game, _services,
+                attack->history ? attack->history->type : 0);
+        }
+        break;
+    }
+    case SavedEventType::DestroyObject: {
+        if (auto item = dyn_cast<Item>(target)) {
+            if (auto owner = _game.getObjectById(item->owner())) {
+                if (item->isEquipped()) {
+                    if (auto *creature = dyn_cast<Creature>(owner.get())) creature->takeEquippedItem(item);
+                } else owner->removeItemStack(item);
+            }
+        }
+        _area->destroyObject(*target);
+        break;
+    }
     case SavedEventType::Timed:
         if (published.continuation) {
             _game.scriptRunner().run(
@@ -577,19 +685,13 @@ void Module::deliverSavedEvent(PublishedSavedEvent &published) {
             break;
         }
         EffectInstance effect(*savedEffect);
-        if (effect.durationType() == DurationType::Temporary) {
-            auto remaining = _game.remainingEffectDuration(effect);
-            if (!remaining || *remaining <= 0.0f) {
-                break;
-            }
-            effect.remainingDuration = *remaining;
-        }
+        effect.restoring = false;
         if (effect.hasStableId()) {
             _game.importEffectId(effect.id);
         } else {
             effect.id = _game.allocateEffectId();
         }
-        target->restoreEffect(std::move(effect));
+        target->applyEffect(std::move(effect));
         break;
     }
     case SavedEventType::RemoveEffect: {
@@ -604,7 +706,6 @@ void Module::deliverSavedEvent(PublishedSavedEvent &published) {
     }
 }
 
-
 void Module::update(float dt) {
     // Process the module object's own action queue so delayed/assigned commands
     // scheduled by module scripts (e.g. Mod_OnModLoad) execute. Without this the
@@ -616,6 +717,7 @@ void Module::update(float dt) {
         _player->update(dt);
     }
     _area->update(dt);
+    dispatchDueSavedEvents();
 }
 
 std::vector<ContextAction> Module::getContextActions(const std::shared_ptr<Object> &object) const {

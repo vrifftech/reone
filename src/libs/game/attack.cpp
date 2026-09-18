@@ -16,14 +16,18 @@
  */
 
 #include "reone/game/attack.h"
+#include "reone/game/action/movetoobject.h"
+#include "reone/game/onhit.h"
 
 #include "reone/game/animations.h"
 #include "reone/game/d20/feats.h"
 #include "reone/game/di/services.h"
 #include "reone/game/effect/acdecrease.h"
 #include "reone/game/effect/immunity.h"
+#include "reone/game/effect/forcepushed.h"
 #include "reone/game/effect/stunned.h"
 #include "reone/game/game.h"
+#include "reone/game/mitigationfeedback.h"
 #include "reone/game/object/creature.h"
 #include "reone/game/object/item.h"
 #include "reone/game/projectiles.h"
@@ -32,8 +36,12 @@
 #include "reone/system/arrayref.h"
 #include "reone/system/randomutil.h"
 
+#include "physicalcombatrules.h"
+
 #include <algorithm>
+#include <cassert>
 #include <initializer_list>
+#include <stdexcept>
 
 namespace reone {
 
@@ -44,40 +52,51 @@ static constexpr float kProjectileSpeed = 16.0f;
 static constexpr int kUnarmedCriticalThreat = 1;
 static constexpr float kSpecialAttackDefensePenaltyDuration = 3.0f;
 static constexpr float kCriticalStrikeStunDuration = 6.0f;
+static constexpr float kPowerAttackKnockdownDuration = 0.1f;
 
-bool isMeleeWieldType(CreatureWieldType type) {
-    switch (type) {
+namespace {
+
+std::string attackAnimation(
+    char prefix,
+    CreatureWieldType wield,
+    int variant) {
+
+    return str(boost::format("%c%da%d") %
+               prefix %
+               static_cast<int>(wield) %
+               variant);
+}
+
+std::string formatPhysicalMeleeAttackAnimation(
+    CreatureWieldType wield,
+    int variant,
+    bool creatureModel,
+    bool cinematic) {
+
+    if (creatureModel) {
+        if (wield == CreatureWieldType::None) {
+            throw std::logic_error("Monster attacks are not supported");
+        }
+        return attackAnimation('g', CreatureWieldType::None, variant);
+    }
+
+    switch (wield) {
     case CreatureWieldType::SingleSword:
     case CreatureWieldType::DoubleBladedSword:
     case CreatureWieldType::DualSwords:
-        return true;
+        return attackAnimation(cinematic ? 'c' : 'm', wield, variant);
+    case CreatureWieldType::StunBaton:
+    case CreatureWieldType::HandToHand:
+    case CreatureWieldType::HandToHandComplex:
+        return attackAnimation('g', wield, variant);
+    case CreatureWieldType::None:
+        throw std::logic_error("Monster attacks are not supported");
     default:
-        return false;
+        throw std::logic_error("Invalid melee wield type");
     }
 }
 
-bool isRangedWieldType(CreatureWieldType type) {
-    switch (type) {
-    case CreatureWieldType::BlasterPistol:
-    case CreatureWieldType::DualPistols:
-    case CreatureWieldType::BlasterRifle:
-    case CreatureWieldType::HeavyWeapon:
-        return true;
-    default:
-        return false;
-    }
-}
-
-bool isAttackSuccessful(AttackResultType result) {
-    switch (result) {
-    case AttackResultType::HitSuccessful:
-    case AttackResultType::CriticalHit:
-    case AttackResultType::AutomaticHit:
-        return true;
-    default:
-        return false;
-    }
-}
+} // namespace
 
 bool isPhysicalAttackFeat(FeatType feat) {
     switch (feat) {
@@ -111,7 +130,7 @@ static bool hasActiveItemProperty(
     int subtype = -1) {
 
     for (const Item::PropertyEntry &property : item.properties()) {
-        if (property.upgradeType != 0 ||
+        if (!item.isPropertyActive(property) ||
             property.propertyName != static_cast<uint16_t>(type) ||
             (subtype >= 0 && property.subtype != subtype)) {
             continue;
@@ -119,39 +138,6 @@ static bool hasActiveItemProperty(
         return true;
     }
     return false;
-}
-
-static bool hasEffectImmunity(
-    const Creature &target,
-    ImmunityType immunityType) {
-
-    for (const EffectInstance &applied : target.effects()) {
-        if (!applied.hasLiveRuntimeSource()) {
-            continue;
-        }
-        if (!applied.effect) {
-            continue;
-        }
-        if (applied.effect->type() != EffectType::Immunity) {
-            continue;
-        }
-
-        const auto &effect = static_cast<const ImmunityEffect &>(*applied.effect);
-        if (effect.immunityType() == immunityType) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool hasStunImmunity(const Creature &target) {
-    return hasEffectImmunity(target, ImmunityType::Stun) ||
-           target.hasEffectiveFeat(FeatType::ForceImmunityStun) ||
-           target.hasEffectiveFeat(FeatType::ForceImmunityParalysis);
-}
-
-static bool hasCriticalHitImmunity(const Creature &target) {
-    return hasEffectImmunity(target, ImmunityType::CriticalHit);
 }
 
 static int getBaseCriticalThreat(const Item *weapon) {
@@ -169,8 +155,15 @@ static int getCriticalThreat(const Item *weapon, int threatBonus) {
 struct AttackResolution {
     AttackResultType result {AttackResultType::Invalid};
     int roll {0};
-    int defense {0};
-    bool assuredHit {false};
+    DefenseBreakdown defenseBreakdown;
+    bool naturalTwenty {false};
+    bool naturalOne {false};
+    bool coupDeGrace {false};
+    int criticalThreatThreshold {0};
+    bool criticalThreatened {false};
+    int criticalConfirmationRoll {0};
+    int criticalConfirmationBonus {0};
+    bool criticalConfirmed {false};
 };
 
 static AttackResolution computeAttack(
@@ -178,55 +171,98 @@ static AttackResolution computeAttack(
     const Object &target,
     int attackBonus,
     int criticalThreat,
-    int damageFlags) {
+    int damageFlags,
+    bool ranged) {
 
     AttackResolution resolution;
 
     // Determine defense of a target
     const auto *targetCreature = dyn_cast<Creature>(&target);
-    resolution.defense = targetCreature
-                             ? targetCreature->getDefense(&attacker, damageFlags)
-                             : 0;
+    if (targetCreature) {
+        resolution.defenseBreakdown = targetCreature->getDefenseBreakdown(
+            &attacker,
+            damageFlags);
+    }
+    int defense = resolution.defenseBreakdown.total;
 
-    // Attack roll
+    // Consume the d20 before applying Coup de Grace's automatic result.
     resolution.roll = randomInt(1, 20);
+
+    if (!ranged &&
+        targetCreature &&
+        targetCreature->isDebilitated() &&
+        targetCreature->attributes().getAggregateLevel() <= 4 &&
+        !targetCreature->isPartyMember()) {
+        resolution.result = AttackResultType::AutomaticHit;
+        resolution.roll = 20;
+        resolution.coupDeGrace = true;
+        return resolution;
+    }
 
     if (attacker.hasAssuredHit()) {
         resolution.result = AttackResultType::HitSuccessful;
-        resolution.assuredHit = true;
         debug(str(boost::format("computeAttack: assured hit: roll(%d)") % resolution.roll),
               LogChannel::Combat);
         return resolution;
     }
 
+    if (ranged && targetCreature) {
+        resolution.result = targetCreature->resolveRangedDefense(attacker, damageFlags, resolution.roll + attackBonus);
+        if (resolution.result != AttackResultType::Invalid) return resolution;
+    }
+
     if (resolution.roll == 1) {
         resolution.result = AttackResultType::Miss;
+        resolution.naturalOne = true;
         debug(str(boost::format("computeAttack: miss: roll(1)")), LogChannel::Combat);
         return resolution;
     }
 
     if (resolution.roll != 20 &&
-        (resolution.roll + attackBonus) < resolution.defense) {
+        (resolution.roll + attackBonus) < defense) {
         resolution.result = AttackResultType::Miss;
         debug(str(boost::format("computeAttack: miss: roll(%d), bonus(%d), defense(%d)") %
-                  resolution.roll % attackBonus % resolution.defense),
+                  resolution.roll % attackBonus % defense),
               LogChannel::Combat);
         return resolution;
     }
 
-    // Critical threat
-    if (resolution.roll >= (21 - criticalThreat)) {
-        // Critical confirmation
-        int confirmationRoll = randomInt(1, 20);
-        if ((confirmationRoll + attackBonus) >= resolution.defense) {
+    resolution.naturalTwenty = resolution.roll == 20;
+
+    auto rightHand = attacker.getEquippedItem(InventorySlots::rightWeapon);
+    bool rightHandLightsaber = rightHand && rightHand->isLightsaber();
+
+    // Critical threat. K2 applies Soresu/Ataru to the final threshold,
+    // after weapon threat, Keen, and special-attack threat have been combined.
+    resolution.criticalThreatThreshold = getCriticalThreatThreshold(
+        attacker.game().isTSL(),
+        rightHandLightsaber,
+        attacker.currentForm(),
+        21 - criticalThreat);
+    if (resolution.roll >= resolution.criticalThreatThreshold) {
+        resolution.criticalThreatened = true;
+
+        // Critical confirmation. Juyo contributes to confirmation only, not to
+        // the original attack roll or the stored d20 result.
+        resolution.criticalConfirmationRoll = randomInt(1, 20);
+        resolution.criticalConfirmationBonus = getCriticalConfirmationBonus(
+            attacker.game().isTSL(),
+            rightHandLightsaber,
+            attacker.currentForm());
+        if ((resolution.criticalConfirmationRoll +
+             resolution.criticalConfirmationBonus +
+             attackBonus) >= defense) {
+            resolution.criticalConfirmed = true;
+
             bool criticalHitImmune =
-                targetCreature && hasCriticalHitImmunity(*targetCreature);
+                targetCreature && targetCreature->hasEffectImmunity(
+                    ImmunityType::CriticalHit, &attacker);
             if (!criticalHitImmune) {
                 resolution.result = AttackResultType::CriticalHit;
                 debug(str(boost::format("computeAttack: critical hit: roll(%d), confirmation(%d),"
                                         " bonus(%d), defense(%d), critical threat(%d)") %
-                          resolution.roll % confirmationRoll % attackBonus %
-                          resolution.defense % criticalThreat),
+                          resolution.roll % resolution.criticalConfirmationRoll % attackBonus %
+                          defense % criticalThreat),
                       LogChannel::Combat);
                 return resolution;
             }
@@ -236,7 +272,7 @@ static AttackResolution computeAttack(
     resolution.result = AttackResultType::HitSuccessful;
     debug(str(boost::format("computeAttack: hit: roll(%d), bonus(%d), defense(%d),"
                             " critical threat(%d)") %
-              resolution.roll % attackBonus % resolution.defense % criticalThreat),
+              resolution.roll % attackBonus % defense % criticalThreat),
           LogChannel::Combat);
 
     return resolution;
@@ -250,66 +286,156 @@ static int rollDamageDice(int numDice, int die) {
     return result;
 }
 
+static int getResolvedCriticalMultiplier(
+    const Creature &attacker,
+    const Item *weapon,
+    FeatType feat) {
+
+    int baseMultiplier = weapon ? weapon->criticalHitMultiplier() : 2;
+    auto rightHand = attacker.getEquippedItem(InventorySlots::rightWeapon);
+    bool rightHandLightsaber = rightHand && rightHand->isLightsaber();
+    bool tsl = attacker.game().isTSL();
+    return baseMultiplier +
+           getPowerAttackCriticalMultiplierBonus(tsl, feat) +
+           getCriticalMultiplierBonus(
+               tsl,
+               rightHandLightsaber,
+               attacker.currentForm());
+}
+
 static void computeWeaponDamage(
     const Creature &attacker, const Object &target, const Item &weapon,
     AttackBuffer::Source source, AttackResultType result,
-    int damageBonus, DamagePacket &damage) {
+    bool criticalConfirmed, int criticalMultiplier, int damageBonus,
+    DamagePacket &damage, DamageBreakdown &breakdown) {
 
     int multiplier = result == AttackResultType::CriticalHit
-                         ? weapon.criticalHitMultiplier()
+                         ? criticalMultiplier
                          : 1;
     bool offHand = source == AttackBuffer::Source::Offhand;
+    PhysicalDamageBonus physicalBonus = attacker.getPhysicalDamageBonus(
+        &weapon,
+        offHand);
 
-    int amount = multiplier * (damageBonus + attacker.getPhysicalDamageBonus(&weapon, offHand));
+    int baseDamage = 0;
+    int amount = multiplier * (
+        damageBonus + physicalBonus.total());
     if (!hasActiveItemProperty(weapon, ItemProperty::NoDamage)) {
         for (int multiple = 0; multiple < multiplier; ++multiple) {
-            amount += rollDamageDice(weapon.numDice(), weapon.dieToRoll());
+            baseDamage += rollDamageDice(weapon.numDice(), weapon.dieToRoll());
         }
+        baseDamage *= attacker.getPhysicalDamageAutoBalanceFactor();
     }
+    amount += baseDamage;
 
-    amount += attacker.getMassiveCriticalDamage(
+    int massiveCriticalDamage = attacker.getMassiveCriticalDamage(
         &weapon, result == AttackResultType::CriticalHit);
+    amount += massiveCriticalDamage;
+
+    breakdown.strengthModifier = weapon.isRanged()
+                                     ? 0
+                                     : multiplier * physicalBonus.strengthModifier;
+    breakdown.weaponSpecialization =
+        multiplier * physicalBonus.weaponSpecialization;
+    breakdown.combatFeatDamage = multiplier * physicalBonus.combatFeatDamage;
+    breakdown.preciseShotDamage = multiplier * physicalBonus.preciseShotDamage;
+    breakdown.formDamage = multiplier * physicalBonus.formDamage;
+    breakdown.otherSpecialBonus =
+        multiplier * (damageBonus + physicalBonus.furyDamage) + massiveCriticalDamage;
+    breakdown.criticalMultiplier = criticalConfirmed
+                                       ? criticalMultiplier
+                                       : 0;
 
     DamageType type = getPrimaryDamageType(weapon.damageFlags());
+    if (baseDamage > 0) {
+        breakdown.addRawDamage(baseDamage, type);
+    }
     damage.add(std::max(amount, 1), type);
     damage.setDamageFlags(weapon.damageFlags());
+    const auto *targetCreature = dyn_cast<Creature>(&target);
     attacker.addPhysicalDamageModifiers(
         damage,
-        dyn_cast<Creature>(&target),
+        breakdown,
+        targetCreature,
         &weapon,
         offHand,
         multiplier);
+    damage.setPower(attacker.calculateDamagePower(
+        targetCreature,
+        &weapon,
+        offHand));
+    if (amount <= 0) {
+        breakdown.addRawDamage(1, type);
+    }
 
     debug(str(boost::format("computeWeaponDamage: %s -> %s (%d)") % attacker.tag() % target.tag() % damage.total()),
           LogChannel::Combat);
 }
 
-static int getUnarmedDamageDie(const Creature &attacker) {
-    return attacker.size() <= CreatureSize::Small ? 2 : 1;
-}
-
 static void computeUnarmedDamage(
     const Creature &attacker, const Object &target,
-    AttackResultType result, int damageBonus, DamagePacket &damage) {
+    AttackResultType result, bool criticalConfirmed, int criticalMultiplier,
+    int damageBonus, DamagePacket &damage, DamageBreakdown &breakdown) {
 
-    int multiplier = (result == AttackResultType::CriticalHit) ? 2 : 1;
+    int multiplier = result == AttackResultType::CriticalHit
+                         ? criticalMultiplier
+                         : 1;
+    PhysicalDamageBonus physicalBonus = attacker.getPhysicalDamageBonus(
+        nullptr,
+        false);
 
-    int amount = multiplier * (damageBonus + attacker.getPhysicalDamageBonus(nullptr, false));
+    auto featDamage = rollUnarmedFeatDamage(
+        physicalBonus.unarmedDice209, physicalBonus.unarmedDice212,
+        [](int die) { return randomInt(1, die); });
+    int baseDamage = 0;
+    int amount = multiplier * (
+        damageBonus + physicalBonus.total() + featDamage.total());
+    breakdown.unarmedFeatDamage209 = multiplier * featDamage.rank209;
+    breakdown.unarmedFeatDamage212 = multiplier * featDamage.rank212;
     for (int multiple = 0; multiple < multiplier; ++multiple) {
-        amount += randomInt(1, getUnarmedDamageDie(attacker));
+        baseDamage += randomInt(1, getOrdinaryUnarmedDamageDie(
+            attacker.game().isTSL(), attacker.size()));
     }
+    baseDamage *= attacker.getPhysicalDamageAutoBalanceFactor();
+    amount += baseDamage;
 
-    amount += attacker.getMassiveCriticalDamage(
+    int massiveCriticalDamage = attacker.getMassiveCriticalDamage(
         nullptr, result == AttackResultType::CriticalHit);
+    amount += massiveCriticalDamage;
 
+    breakdown.strengthModifier =
+        multiplier * physicalBonus.strengthModifier;
+    breakdown.weaponSpecialization =
+        multiplier * physicalBonus.weaponSpecialization;
+    breakdown.combatFeatDamage = multiplier * physicalBonus.combatFeatDamage;
+    breakdown.preciseShotDamage = multiplier * physicalBonus.preciseShotDamage;
+    breakdown.formDamage = multiplier * physicalBonus.formDamage;
+    breakdown.otherSpecialBonus =
+        multiplier * (damageBonus + physicalBonus.furyDamage) + massiveCriticalDamage;
+    breakdown.criticalMultiplier = criticalConfirmed
+                                       ? criticalMultiplier
+                                       : 0;
+
+    if (baseDamage > 0) {
+        breakdown.addRawDamage(baseDamage, DamageType::Bludgeoning);
+    }
     damage.add(std::max(amount, 1), DamageType::Bludgeoning);
     damage.setDamageFlags(static_cast<int>(DamageType::Bludgeoning));
+    const auto *targetCreature = dyn_cast<Creature>(&target);
     attacker.addPhysicalDamageModifiers(
         damage,
-        dyn_cast<Creature>(&target),
+        breakdown,
+        targetCreature,
         nullptr,
         false,
         multiplier);
+    damage.setPower(attacker.calculateDamagePower(
+        targetCreature,
+        nullptr,
+        false));
+    if (amount <= 0) {
+        breakdown.addRawDamage(1, DamageType::Bludgeoning);
+    }
 
     debug(str(boost::format("computeUnarmedDamage: %s -> %s (%d)") % attacker.tag() % target.tag() % damage.total()),
           LogChannel::Combat);
@@ -326,36 +452,6 @@ static bool grantsExtraMainHandAttack(FeatType feat) {
         return true;
     default:
         return false;
-    }
-}
-
-static int getSpecialAttackRollBonus(FeatType feat) {
-    switch (feat) {
-    case FeatType::PowerAttack:
-    case FeatType::ImprovedPowerAttack:
-    case FeatType::MasterPowerAttack:
-        return -3;
-    case FeatType::Flurry:
-        return -4;
-    case FeatType::ImprovedFlurry:
-        return -2;
-    case FeatType::WhirlwindAttack:
-        return -1;
-    default:
-        return 0;
-    }
-}
-
-static int getSpecialAttackDamageBonus(FeatType feat) {
-    switch (feat) {
-    case FeatType::PowerAttack:
-        return 5;
-    case FeatType::ImprovedPowerAttack:
-        return 8;
-    case FeatType::MasterPowerAttack:
-        return 10;
-    default:
-        return 0;
     }
 }
 
@@ -380,47 +476,30 @@ static int getSpecialAttackThreatBonus(
     return multiplier * getBaseCriticalThreat(weapon);
 }
 
-static int getMeleeSpecialAttackDefensePenalty(FeatType feat) {
-    switch (feat) {
-    case FeatType::CriticalStrike:
-    case FeatType::ImprovedCriticalStrike:
-    case FeatType::MasterCriticalStrike:
-        return 5;
-    case FeatType::Flurry:
-        return 4;
-    case FeatType::ImprovedFlurry:
-        return 2;
-    case FeatType::WhirlwindAttack:
-        return 1;
-    default:
-        return 0;
-    }
-}
-
-static bool isCriticalStrikeFeat(FeatType feat) {
-    switch (feat) {
-    case FeatType::CriticalStrike:
-    case FeatType::ImprovedCriticalStrike:
-    case FeatType::MasterCriticalStrike:
-        return true;
-    default:
-        return false;
-    }
-}
-
 void AttackBuffer::addPhysicalAttacks(const Creature &attacker, const Object &target,
                                       FeatType feat) {
     _feat = feat;
 
-    int mainHandAttacks = 1 + attacker.modifiedAttacks();
+    bool tsl = attacker.game().isTSL();
+    // K2 caps the raw bonus at consumption, without a negative floor. K1's
+    // effect callbacks have already saturated its stored value.
+    int bonusAttacks = tsl ? std::min(attacker.modifiedAttacks(), 2)
+                          : attacker.modifiedAttacks();
+    int mainHandAttacks = 1 + bonusAttacks;
     if (grantsExtraMainHandAttack(feat)) {
         ++mainHandAttacks;
     }
 
-    int attackRollBonus = getSpecialAttackRollBonus(feat);
-    int damageBonus = getSpecialAttackDamageBonus(feat);
+    int attackRollBonus = getMeleeSpecialAttackRollBonus(tsl, feat);
+    int damageBonus = getMeleeSpecialAttackDamageBonus(tsl, feat);
 
     auto main = attacker.getEquippedItem(InventorySlots::rightWeapon);
+    if (grantsJuyoExtraOnHandAttack(
+            attacker.game().isTSL(),
+            main && main->isLightsaber(),
+            attacker.currentForm())) {
+        ++mainHandAttacks;
+    }
     if (!main) {
         auto gloves = attacker.getEquippedItem(InventorySlots::hands);
         int attackThreatBonus = getSpecialAttackThreatBonus(feat, gloves.get());
@@ -473,34 +552,80 @@ void AttackBuffer::resolveMeleeSpecialAttack(
         return;
     }
 
-    int defensePenalty = getMeleeSpecialAttackDefensePenalty(feat);
+    bool tsl = attacker.game().isTSL();
+    int defensePenalty = getMeleeSpecialAttackDefensePenalty(tsl, feat);
     if (defensePenalty != 0) {
         auto effect = game.newEffect<ACDecreaseEffect>(
             defensePenalty,
             ACBonus::Dodge,
-            kAllDamageTypeFlags);
+            kPhysicalDamageTypeFlags);
         attacker.applyEffect(
             std::move(effect),
             DurationType::Temporary,
             kSpecialAttackDefensePenaltyDuration);
     }
 
-    if (!isCriticalStrikeFeat(feat) ||
-        !isAttackSuccessful(_attacks.front().result)) {
-        return;
-    }
-
     auto *targetCreature = dyn_cast<Creature>(&target);
-    if (!targetCreature || hasStunImmunity(*targetCreature)) {
+    if (!targetCreature) {
         return;
     }
 
-    int difficultyClass =
-        attacker.attributes().getAggregateLevel() +
-        attacker.getEffectiveAbilityModifier(Ability::Strength);
-    if (!targetCreature->rollFortitudeSave(difficultyClass)) {
-        _attacks.front().stunTarget = true;
+    // Melee special-attack state belongs to the first physical
+    // subattack in the action. Retain the generated effect there so it lands
+    // at that subattack's impact rather than when the action is queued.
+    Attack &attack = _attacks.front();
+    if (attack.ranged) {
+        return;
     }
+
+    int attackerLevel = attacker.attributes().getAggregateLevel();
+    int strengthModifier =
+        attacker.getEffectiveAbilityModifier(Ability::Strength);
+
+    if (shouldAttemptPowerAttackKnockdown(
+            tsl,
+            feat,
+            attack.result)) {
+        int difficultyClass = getMeleeSpecialAttackSaveDC(
+            tsl,
+            feat,
+            attackerLevel,
+            strengthModifier);
+        auto secondary = game.newEffect<ForcePushedEffect>();
+        secondary->setSaveFacingCreator(game.getObjectById(attacker.id()));
+        if (targetCreature->isEffectLinkImmune(*secondary) ||
+            targetCreature->rollSavingThrow(SavingThrow::Fortitude, difficultyClass,
+                SavingThrowType::All, &attacker) != SavingThrowResult::Failed) {
+            return;
+        }
+
+        attack.secondaryEffect = std::move(secondary);
+        attack.secondaryEffectDurationType = DurationType::Temporary;
+        attack.secondaryEffectDuration = kPowerAttackKnockdownDuration;
+        return;
+    }
+
+    bool attemptCriticalStrikeStun = shouldAttemptCriticalStrikeStun(feat, attack.result);
+    if (!attemptCriticalStrikeStun) {
+        return;
+    }
+
+    int difficultyClass = getMeleeSpecialAttackSaveDC(
+        tsl, feat, attackerLevel, strengthModifier);
+    auto secondary = game.newEffect<StunnedEffect>();
+    secondary->setSaveFacingCreator(game.getObjectById(attacker.id()));
+    if (targetCreature->isEffectLinkImmune(*secondary) ||
+        targetCreature->hasEffectiveFeat(FeatType::ForceImmunityStun) ||
+        targetCreature->hasEffectiveFeat(
+            FeatType::ForceImmunityParalysis) ||
+        targetCreature->rollSavingThrow(SavingThrow::Fortitude, difficultyClass,
+                SavingThrowType::All, &attacker) != SavingThrowResult::Failed) {
+        return;
+    }
+
+    attack.secondaryEffect = std::move(secondary);
+    attack.secondaryEffectDurationType = DurationType::Temporary;
+    attack.secondaryEffectDuration = kCriticalStrikeStunDuration;
 }
 
 void AttackBuffer::addPhysicalAttack(
@@ -535,18 +660,52 @@ void AttackBuffer::addPhysicalAttack(
         target,
         attackRollBonus,
         criticalThreat,
-        damageFlags);
+        damageFlags,
+        weapon && weapon->isRanged());
 
-    _attacks.emplace_back(
+    if (weapon && weapon->isRanged() && targetCreature &&
+        (resolution.result == AttackResultType::Miss ||
+         resolution.result == AttackResultType::AttackResisted ||
+         resolution.result == AttackResultType::AttackFailed)) {
+        const auto interception = targetCreature->resolveRangedMiss(attacker, *weapon);
+        if (interception != AttackResultType::Invalid) resolution.result = interception;
+    }
+
+    Attack &attack = _attacks.emplace_back(
         source,
         weapon && weapon->isRanged(),
-        resolution.result,
-        resolution.roll,
-        std::move(attackBonusBreakdown),
-        resolution.defense,
-        resolution.assuredHit);
+        std::move(attackBonusBreakdown));
+    attack.sourceActor = attacker.game().getObjectById(attacker.id());
+    for (const auto &[slot, item] : attacker.equipment()) {
+        if (item.get() == criticalWeapon) {
+            attack.sourceItem = item;
+            break;
+        }
+    }
+    attack.result = resolution.result;
+    attack.roll = resolution.roll;
+    attack.defenseBreakdown = resolution.defenseBreakdown;
+    attack.naturalTwenty = resolution.naturalTwenty;
+    attack.naturalOne = resolution.naturalOne;
+    attack.coupDeGrace = resolution.coupDeGrace;
+    attack.criticalThreat.threshold = resolution.criticalThreatThreshold;
+    attack.criticalThreat.threatened = resolution.criticalThreatened;
+    attack.criticalThreat.confirmationRoll = resolution.criticalConfirmationRoll;
+    attack.criticalThreat.confirmationBonus = resolution.criticalConfirmationBonus;
+    attack.criticalThreat.confirmed = resolution.criticalConfirmed;
+    if (resolution.criticalConfirmed) {
+        attack.criticalThreat.multiplier = getResolvedCriticalMultiplier(
+            attacker,
+            weapon,
+            _feat);
+    }
 
-    if (!isAttackSuccessful(resolution.result)) {
+    if (!isAttackSuccessful(resolution.result) && resolution.result != AttackResultType::Deflected) {
+        return;
+    }
+
+    if (attacker.game().isConversationActive() &&
+        attacker.isPartyMember()) {
         return;
     }
 
@@ -557,40 +716,323 @@ void AttackBuffer::addPhysicalAttack(
             *weapon,
             source,
             resolution.result,
+            resolution.criticalConfirmed,
+            attack.criticalThreat.multiplier,
             damageBonus,
-            _attacks.back().damage);
+            attack.damage,
+            attack.damageBreakdown);
     } else {
         computeUnarmedDamage(
             attacker,
             target,
             resolution.result,
+            resolution.criticalConfirmed,
+            attack.criticalThreat.multiplier,
             damageBonus,
-            _attacks.back().damage);
+            attack.damage,
+            attack.damageBreakdown);
     }
 }
 
-void AttackBuffer::resolveDamage(Object &target) {
-    for (Attack &attack : _attacks) {
-        if (attack.damage.empty()) {
+void AttackBuffer::saveContinuation(SavedPhysicalAction &saved, const Game &game) const {
+    using G = resource::Gff; using F = G::Field;
+    std::vector<std::shared_ptr<G>> attacks;
+    saved.sources.clear(); saved.secondaryEffects.clear(); saved.histories.clear();
+    for (const auto &a : _attacks) {
+        std::vector<std::shared_ptr<G>> values, slots;
+        const int fields[] = {static_cast<int>(a.source), static_cast<int>(a.ranged), static_cast<int>(a.result), static_cast<int>(a.roll), static_cast<int>(a.naturalTwenty), static_cast<int>(a.naturalOne), static_cast<int>(a.coupDeGrace), static_cast<int>(a.criticalThreat.threshold), static_cast<int>(a.criticalThreat.threatened), static_cast<int>(a.criticalThreat.confirmationRoll), static_cast<int>(a.criticalThreat.confirmationBonus), static_cast<int>(a.criticalThreat.confirmed), static_cast<int>(a.criticalThreat.multiplier), static_cast<int>(a.impactTimeMilliseconds), static_cast<int>(a.meleeSignaled), static_cast<int>(a.onHitResolved), static_cast<int>(a.secondaryEffectDurationType), static_cast<int>(a.attackBonusBreakdown.baseAttackBonus), static_cast<int>(a.attackBonusBreakdown.strengthModifier), static_cast<int>(a.attackBonusBreakdown.dexterityModifier), static_cast<int>(a.attackBonusBreakdown.dualWieldPenalty), static_cast<int>(a.attackBonusBreakdown.smallOffhandBonus), static_cast<int>(a.attackBonusBreakdown.featBonus), static_cast<int>(a.attackBonusBreakdown.duelingFeat), static_cast<int>(a.attackBonusBreakdown.duelingBonus), static_cast<int>(a.attackBonusBreakdown.closeProximityRangedBonus), static_cast<int>(a.attackBonusBreakdown.meleeOnRangedBonus), static_cast<int>(a.attackBonusBreakdown.weaponFocusBonus), static_cast<int>(a.attackBonusBreakdown.targetingBonus), static_cast<int>(a.attackBonusBreakdown.superiorWeaponFocusBonus), static_cast<int>(a.attackBonusBreakdown.formBonus), static_cast<int>(a.attackBonusBreakdown.dualStrikeBonus), static_cast<int>(a.attackBonusBreakdown.effectBonus), static_cast<int>(a.defenseBreakdown.total), static_cast<int>(a.defenseBreakdown.armor), static_cast<int>(a.defenseBreakdown.dexterity), static_cast<int>(a.defenseBreakdown.classDefense), static_cast<int>(a.defenseBreakdown.natural), static_cast<int>(a.defenseBreakdown.dodgeAndDeflection), static_cast<int>(a.defenseBreakdown.feat), static_cast<int>(a.defenseBreakdown.stance), static_cast<int>(a.defenseBreakdown.form), static_cast<int>(a.defenseBreakdown.debilitationPenalty), static_cast<int>(a.damageBreakdown.strengthModifier), static_cast<int>(a.damageBreakdown.otherSpecialBonus), static_cast<int>(a.damageBreakdown.sneakAttack), static_cast<int>(a.damageBreakdown.weaponSpecialization), static_cast<int>(a.damageBreakdown.combatFeatDamage), static_cast<int>(a.damageBreakdown.preciseShotDamage), static_cast<int>(a.damageBreakdown.formDamage), static_cast<int>(a.damageBreakdown.unarmedFeatDamage209), static_cast<int>(a.damageBreakdown.unarmedFeatDamage212), static_cast<int>(a.damageBreakdown.criticalMultiplier)};
+        for (int value : fields) values.push_back(G::Builder().type(0).field(F::newInt("Value", value)).build());
+        for (int value : a.damageBreakdown.rawDamageSlots) slots.push_back(G::Builder().type(0).field(F::newInt("Value", value)).build());
+        SavedWeaponImpact onHit; onHit.applications = a.onHitApplications; onHit.feedback = a.deferredFeedback;
+        auto g = G::Builder().type(0).field(F::newList("Values", std::move(values)))
+            .field(F::newList("DamageSlots", std::move(slots))).field(F::newStruct("Packet", a.damage.saveContinuation()))
+            .field(F::newFloat("EffectDuration", a.secondaryEffectDuration)).field(F::newStruct("OnHit", onHit.toGff())).build();
+        attacks.push_back(std::move(g));
+        for (const auto &object : {std::static_pointer_cast<Object>(a.sourceItem.resolve()), a.sourceActor.resolve()}) {
+            auto ref = SavedObjectReference::fromRuntimeId(object ? object->id() : script::kObjectInvalid);
+            game.bindSavedObjectReference(ref); saved.sources.push_back(std::move(ref));
+        }
+        saved.secondaryEffects.push_back(a.secondaryEffect ? a.secondaryEffect->saveFacingInstance() : EffectInstance {});
+        SavedCombatAttack history; history.history = std::make_shared<AttackHistory>(*a.history);
+        history.fields = std::make_shared<AttackEventFields>(*a.eventFields); saved.histories.push_back(std::move(history));
+    }
+    saved.state = G::Builder().type(0).field(F::newInt("Feat", static_cast<int>(_feat)))
+        .field(F::newInt("Pending", static_cast<int>(_pendingMeleeAttacks)))
+        .field(F::newByte("Prepared", _meleeSequencePrepared)).field(F::newList("Attacks", std::move(attacks))).build();
+}
+
+void AttackBuffer::restoreContinuation(const SavedPhysicalAction &saved) {
+    _attacks.clear();
+    _feat = static_cast<FeatType>(saved.state->getInt("Feat", -1));
+    _pendingMeleeAttacks = saved.state->getInt("Pending"); _meleeSequencePrepared = saved.state->getBool("Prepared");
+    size_t index = 0;
+    for (const auto &g : saved.state->getList("Attacks")) {
+        const auto &values = g->getList("Values");
+        auto value = [&](size_t i) { return i < values.size() ? values[i]->getInt("Value") : 0; };
+        auto packet = g->findStruct("Packet");
+        auto &a = _attacks.emplace_back(
+            Source::Main, false, AttackBonusBreakdown {},
+            packet ? DamagePacket::restoreContinuation(*packet) : DamagePacket());
+        a.source = static_cast<decltype(a.source)>(value(0));
+        a.ranged = static_cast<decltype(a.ranged)>(value(1));
+        a.result = static_cast<decltype(a.result)>(value(2));
+        a.roll = static_cast<decltype(a.roll)>(value(3));
+        a.naturalTwenty = static_cast<decltype(a.naturalTwenty)>(value(4));
+        a.naturalOne = static_cast<decltype(a.naturalOne)>(value(5));
+        a.coupDeGrace = static_cast<decltype(a.coupDeGrace)>(value(6));
+        a.criticalThreat.threshold = static_cast<decltype(a.criticalThreat.threshold)>(value(7));
+        a.criticalThreat.threatened = static_cast<decltype(a.criticalThreat.threatened)>(value(8));
+        a.criticalThreat.confirmationRoll = static_cast<decltype(a.criticalThreat.confirmationRoll)>(value(9));
+        a.criticalThreat.confirmationBonus = static_cast<decltype(a.criticalThreat.confirmationBonus)>(value(10));
+        a.criticalThreat.confirmed = static_cast<decltype(a.criticalThreat.confirmed)>(value(11));
+        a.criticalThreat.multiplier = static_cast<decltype(a.criticalThreat.multiplier)>(value(12));
+        a.impactTimeMilliseconds = static_cast<decltype(a.impactTimeMilliseconds)>(value(13));
+        a.meleeSignaled = static_cast<decltype(a.meleeSignaled)>(value(14));
+        a.onHitResolved = static_cast<decltype(a.onHitResolved)>(value(15));
+        a.secondaryEffectDurationType = static_cast<decltype(a.secondaryEffectDurationType)>(value(16));
+        a.attackBonusBreakdown.baseAttackBonus = static_cast<decltype(a.attackBonusBreakdown.baseAttackBonus)>(value(17));
+        a.attackBonusBreakdown.strengthModifier = static_cast<decltype(a.attackBonusBreakdown.strengthModifier)>(value(18));
+        a.attackBonusBreakdown.dexterityModifier = static_cast<decltype(a.attackBonusBreakdown.dexterityModifier)>(value(19));
+        a.attackBonusBreakdown.dualWieldPenalty = static_cast<decltype(a.attackBonusBreakdown.dualWieldPenalty)>(value(20));
+        a.attackBonusBreakdown.smallOffhandBonus = static_cast<decltype(a.attackBonusBreakdown.smallOffhandBonus)>(value(21));
+        a.attackBonusBreakdown.featBonus = static_cast<decltype(a.attackBonusBreakdown.featBonus)>(value(22));
+        a.attackBonusBreakdown.duelingFeat = static_cast<decltype(a.attackBonusBreakdown.duelingFeat)>(value(23));
+        a.attackBonusBreakdown.duelingBonus = static_cast<decltype(a.attackBonusBreakdown.duelingBonus)>(value(24));
+        a.attackBonusBreakdown.closeProximityRangedBonus = static_cast<decltype(a.attackBonusBreakdown.closeProximityRangedBonus)>(value(25));
+        a.attackBonusBreakdown.meleeOnRangedBonus = static_cast<decltype(a.attackBonusBreakdown.meleeOnRangedBonus)>(value(26));
+        a.attackBonusBreakdown.weaponFocusBonus = static_cast<decltype(a.attackBonusBreakdown.weaponFocusBonus)>(value(27));
+        a.attackBonusBreakdown.targetingBonus = static_cast<decltype(a.attackBonusBreakdown.targetingBonus)>(value(28));
+        a.attackBonusBreakdown.superiorWeaponFocusBonus = static_cast<decltype(a.attackBonusBreakdown.superiorWeaponFocusBonus)>(value(29));
+        a.attackBonusBreakdown.formBonus = static_cast<decltype(a.attackBonusBreakdown.formBonus)>(value(30));
+        a.attackBonusBreakdown.dualStrikeBonus = static_cast<decltype(a.attackBonusBreakdown.dualStrikeBonus)>(value(31));
+        a.attackBonusBreakdown.effectBonus = static_cast<decltype(a.attackBonusBreakdown.effectBonus)>(value(32));
+        a.defenseBreakdown.total = static_cast<decltype(a.defenseBreakdown.total)>(value(33));
+        a.defenseBreakdown.armor = static_cast<decltype(a.defenseBreakdown.armor)>(value(34));
+        a.defenseBreakdown.dexterity = static_cast<decltype(a.defenseBreakdown.dexterity)>(value(35));
+        a.defenseBreakdown.classDefense = static_cast<decltype(a.defenseBreakdown.classDefense)>(value(36));
+        a.defenseBreakdown.natural = static_cast<decltype(a.defenseBreakdown.natural)>(value(37));
+        a.defenseBreakdown.dodgeAndDeflection = static_cast<decltype(a.defenseBreakdown.dodgeAndDeflection)>(value(38));
+        a.defenseBreakdown.feat = static_cast<decltype(a.defenseBreakdown.feat)>(value(39));
+        a.defenseBreakdown.stance = static_cast<decltype(a.defenseBreakdown.stance)>(value(40));
+        a.defenseBreakdown.form = static_cast<decltype(a.defenseBreakdown.form)>(value(41));
+        a.defenseBreakdown.debilitationPenalty = static_cast<decltype(a.defenseBreakdown.debilitationPenalty)>(value(42));
+        a.damageBreakdown.strengthModifier = static_cast<decltype(a.damageBreakdown.strengthModifier)>(value(43));
+        a.damageBreakdown.otherSpecialBonus = static_cast<decltype(a.damageBreakdown.otherSpecialBonus)>(value(44));
+        a.damageBreakdown.sneakAttack = static_cast<decltype(a.damageBreakdown.sneakAttack)>(value(45));
+        a.damageBreakdown.weaponSpecialization = static_cast<decltype(a.damageBreakdown.weaponSpecialization)>(value(46));
+        a.damageBreakdown.combatFeatDamage = static_cast<decltype(a.damageBreakdown.combatFeatDamage)>(value(47));
+        a.damageBreakdown.preciseShotDamage = static_cast<decltype(a.damageBreakdown.preciseShotDamage)>(value(48));
+        a.damageBreakdown.formDamage = static_cast<decltype(a.damageBreakdown.formDamage)>(value(49));
+        a.damageBreakdown.unarmedFeatDamage209 = static_cast<decltype(a.damageBreakdown.unarmedFeatDamage209)>(value(50));
+        a.damageBreakdown.unarmedFeatDamage212 = static_cast<decltype(a.damageBreakdown.unarmedFeatDamage212)>(value(51));
+        a.damageBreakdown.criticalMultiplier = static_cast<decltype(a.damageBreakdown.criticalMultiplier)>(value(52));
+        const auto &slots = g->getList("DamageSlots");
+        for (size_t n = 0; n < std::min(slots.size(), a.damageBreakdown.rawDamageSlots.size()); ++n)
+            a.damageBreakdown.rawDamageSlots[n] = slots[n]->getInt("Value");
+        a.sourceItem = std::dynamic_pointer_cast<Item>(saved.sources[index * 2].boundObject());
+        a.sourceActor = saved.sources[index * 2 + 1].boundObject();
+        auto secondary = saved.secondaryEffects[index];
+        if (secondary.serializedType) { secondary.restoring = false; secondary.materialize(); a.secondaryEffect = secondary.effect; }
+        a.secondaryEffectDuration = g->getFloat("EffectDuration");
+        a.history = std::make_shared<AttackHistory>(*saved.histories[index].history);
+        a.eventFields = std::make_shared<AttackEventFields>(*saved.histories[index].fields);
+        if (auto p = g->findStruct("OnHit")) {
+            auto onHit = SavedWeaponImpact::fromGff(*p, SerializedIdentityContext {});
+            a.onHitApplications = std::move(onHit.applications); a.deferredFeedback = std::move(onHit.feedback);
+            for (auto &application : a.onHitApplications) application.creator = a.sourceActor;
+        }
+        ++index;
+    }
+}
+
+void AttackSchedule::saveContinuation(resource::Gff &g) const {
+    using F = resource::Gff::Field;
+    g.fields().push_back(F::newInt("Phase", _state)); g.fields().push_back(F::newFloat("Time", _time));
+    g.fields().push_back(F::newByte("Melee", _melee)); g.fields().push_back(F::newInt("MeleeElapsed", _meleeElapsedMilliseconds));
+    g.fields().push_back(F::newInt("MeleeEnd", _meleeCompletionMilliseconds));
+    g.fields().push_back(F::newFloat("MeleeRemainder", _meleeElapsedRemainderMilliseconds));
+}
+void AttackSchedule::restoreContinuation(const resource::Gff &g) {
+    _state = static_cast<State>(g.getInt("Phase")); _time = g.getFloat("Time"); _melee = g.getBool("Melee");
+    _meleeElapsedMilliseconds = g.getInt("MeleeElapsed"); _meleeCompletionMilliseconds = g.getInt("MeleeEnd");
+    _meleeElapsedRemainderMilliseconds = g.getFloat("MeleeRemainder");
+    // Entry states have already executed before the snapshot was taken.
+    if (_state == Attack) _state = WaitDamage;
+    else if (_state == Damage) _state = _melee && _meleeElapsedMilliseconds < _meleeCompletionMilliseconds ? WaitDamage : WaitFinish;
+}
+
+static bool producesItemOnHitEffects(AttackResultType result) {
+    return isAttackSuccessful(result) ||
+           result == AttackResultType::Deflected;
+}
+
+void AttackBuffer::resolveItemOnHitProperties(
+    const Creature &attacker,
+    Object &target,
+    Attack &attack) {
+
+    if (attack.onHitResolved) {
+        return;
+    }
+    attack.onHitResolved = true;
+    const auto sourceItem = attack.sourceItem.resolve();
+    if (!sourceItem ||
+        !producesItemOnHitEffects(attack.result) ||
+        target.plotFlag()) {
+        return;
+    }
+
+    auto *targetCreature = dyn_cast<Creature>(&target);
+    if (!targetCreature) {
+        return;
+    }
+
+    for (const ItemOnHitProperty &property :
+         sourceItem->itemOnHitProperties()) {
+        if (property.durationBranch &&
+            (property.chance <= 0 || property.duration <= 0.0f)) {
             continue;
         }
 
-        attack.damage.resolve(target);
+        if (property.durationBranch || property.chance != 100) {
+            int chanceRoll = randomInt(0, 99);
+            if (chanceRoll >= property.chance) {
+                continue;
+            }
+        }
+
+        std::optional<int> effectOutcomeType =
+            getItemOnHitEffectOutcomeType(property.subtype);
+        if (effectOutcomeType) {
+            for (ItemOnHitApplication &pending :
+                 attack.onHitApplications) {
+                pending.emitEffectOutcome = false;
+            }
+        }
+
+        EffectOutcomeBreakdown effectOutcome;
+        bool saved = false;
+        if (property.savingThrow != SavingThrow::None) {
+            SavingThrowBreakdown save =
+                targetCreature->getSavingThrowBreakdown(
+                    property.savingThrow,
+                    property.savingThrowType, &attacker);
+            int roll = randomInt(1, 20);
+            int total = roll + save.total();
+            const auto result = targetCreature->getSavingThrowResult(total, property.difficultyClass,
+                property.savingThrowType, &attacker);
+            saved = result != SavingThrowResult::Failed;
+
+            attack.deferredFeedback.emplace_back(SavingThrowFeedback {
+                property.savingThrow,
+                save.base,
+                save.modifier,
+                roll,
+                property.difficultyClass,
+            });
+
+            if (effectOutcomeType) {
+                effectOutcome.present = true;
+                effectOutcome.saveType =
+                    static_cast<int>(property.savingThrow);
+                effectOutcome.effectType = *effectOutcomeType;
+                effectOutcome.saveMode = 0;
+                effectOutcome.saveRoll = roll;
+                effectOutcome.modifierTotal = save.modifier;
+                effectOutcome.baseSave = save.base;
+                effectOutcome.finalTotal = total;
+                effectOutcome.difficultyClass =
+                    property.difficultyClass;
+                effectOutcome.outcome = static_cast<int>(result);
+            }
+        }
+        if (saved) {
+            continue;
+        }
+
+        if (property.subtype == ItemOnHitSubtype::SlayAG ||
+            (property.subtype == ItemOnHitSubtype::SlayRG &&
+             !matchesSlayRacialGroup(
+                 static_cast<int>(targetCreature->racialType()), property.parameter))) {
+            continue;
+        }
+
+        if (property.subtype == ItemOnHitSubtype::AbilityDrain &&
+            property.parameter >= static_cast<int>(Ability::Strength) &&
+            property.parameter <= static_cast<int>(Ability::Charisma)) {
+            attack.deferredFeedback.emplace_back(AbilityDrainFeedback {
+                static_cast<Ability>(property.parameter),
+                1,
+                30,
+            });
+        }
+
+        attack.onHitApplications.emplace_back(ItemOnHitApplication {
+            property.subtype,
+            property.duration,
+            property.parameter,
+            attack.sourceActor,
+            effectOutcome,
+            effectOutcomeType.has_value(),
+        });
+    }
+}
+
+void AttackBuffer::resolveDamage(
+    const Creature &attacker,
+    Object &target) {
+
+    for (Attack &attack : _attacks) {
+        if (attack.result == AttackResultType::Deflected) {
+            // A returned shot must not consume the original defender's finite pools.
+            continue;
+        }
+        if (!attack.damage.empty() && !attack.damage.isResolved()) attack.damage.resolve(target);
+        resolveItemOnHitProperties(attacker, target, attack);
     }
 }
 
 void AttackBuffer::resolve(Creature &attacker, Object &target) {
-    if (_attacks.empty()) {
-        throw std::logic_error("Physical attack buffer is empty");
+    assert(!_attacks.empty() && "Physical attack buffer is empty");
+
+    attacker.beginCombatAttack(target, _feat);
+    auto *targetCreature = dyn_cast<Creature>(&target);
+    const int targetHpBefore = targetCreature ? targetCreature->currentHitPoints() : 0;
+    resolveDamage(attacker, target);
+    if (targetCreature && targetCreature->currentHitPoints() <= targetHpBefore) {
+        attacker.incrementFuryDamageBonus();
     }
-
-    resolveDamage(target);
-    attacker.setLastAttackResult(_attacks.back().result);
-
-    if (auto *targetCreature = dyn_cast<Creature>(&target)) {
-        targetCreature->runAttackedScript(attacker.id());
+    _attacks.front().history->type = static_cast<uint16_t>(_feat);
+    for (auto &attack : _attacks) {
+        // Populate only fields with an existing represented producer. The
+        // remaining reaction/animation/debug fields retain clear state.
+        auto &fields = *attack.eventFields;
+        fields.result = static_cast<uint8_t>(attack.result);
+        fields.deflected = attack.result == AttackResultType::Deflected;
+        fields.ranged = attack.ranged ? 1 : 0;
+        if (attack.ranged && (isAttackSuccessful(attack.result) ||
+            attack.result == AttackResultType::Parried || attack.result == AttackResultType::Deflected ||
+            attack.result == AttackResultType::ShieldHit)) {
+            const auto position = target.position();
+            fields.rangedTarget = {position.x, position.y, position.z};
+            fields.reactionAnimation = isAttackSuccessful(attack.result) ? 10014 : 10012;
+            fields.reactionDelay = static_cast<uint16_t>(glm::distance(attacker.position(), position) * 1000.0f / 42.0f);
+        }
+        // The serialized weapon-attack byte is 1 for the main hand and 2 for the off hand.
+        fields.weaponAttackType = attack.source == Source::Offhand ? 2 : 1;
+        fields.coupDeGrace = attack.coupDeGrace ? 1 : 0;
+        std::copy(attack.damageBreakdown.rawDamageSlots.begin(),
+                  attack.damageBreakdown.rawDamageSlots.end(), fields.damage.begin());
+        fields.damage.back() = attack.damage.isResolved() ? attack.damage.resolvedDamage() : -1;
     }
 }
+
+static void addMitigationFeedback(
+    Game &game,
+    ServicesView &services,
+    const Creature &attacker,
+    const Object &target,
+    const DamagePacket &damage);
 
 void AttackBuffer::applyEffects(
     Attack &attack,
@@ -598,25 +1040,30 @@ void AttackBuffer::applyEffects(
     Object &target,
     Game &game) {
 
-    // Failed ranged attacks do not produce floating miss text.
     if (!attack.ranged && !isAttackSuccessful(attack.result)) {
         game.floatingText().addMiss(attacker, target);
     }
     if (!attack.damage.empty()) {
+        DamageEffect::ApplicationContext context;
+        std::copy(
+            attack.damageBreakdown.rawDamageSlots.begin(),
+            attack.damageBreakdown.rawDamageSlots.end(),
+            context.damageAmounts.begin());
+        context.damageAmounts.back() = attack.damage.resolvedDamage();
+        context.suppressDamageShields = attack.ranged;
+
         auto effect = game.newEffect<DamageEffect>(
-            std::move(attack.damage));
-        auto liveAttacker = game.getObjectById(attacker.id());
-        if (liveAttacker.get() == &attacker) {
-            effect->setSaveFacingCreator(liveAttacker);
-        }
+            std::move(attack.damage),
+            std::move(context));
+        effect->setSaveFacingCreator(attack.sourceActor.resolve());
         target.applyEffect(std::move(effect), DurationType::Instant);
     }
-    if (attack.stunTarget) {
-        auto effect = game.newEffect<StunnedEffect>();
+    if (attack.secondaryEffect) {
         target.applyEffect(
-            std::move(effect),
-            DurationType::Temporary,
-            kCriticalStrikeStunDuration);
+            attack.secondaryEffect,
+            attack.secondaryEffectDurationType,
+            attack.secondaryEffectDuration);
+        attack.secondaryEffect.reset();
     }
 }
 
@@ -627,8 +1074,98 @@ void AttackBuffer::signalAttack(
     Creature &attacker,
     Object &target) {
 
+    if (attack.meleeSignaled) return;
+    attack.meleeSignaled = true;
+    // Emit event 15 for logical subattacks, including misses. Cosmetic projectile
+    // discharges do not emit attack-history events.
+    if (isa<Creature>(target)) {
+        auto module = game.module();
+        if (module) {
+            SavedCombatAttack payload;
+            payload.data.type = 0x2222;
+            payload.history = attack.history;
+            payload.fields = attack.eventFields;
+            payload.reactionObject = SavedObjectReference::fromRuntimeId(target.id());
+            const auto weapon = attack.sourceItem.resolve();
+            payload.ammoItem = SavedObjectReference::fromRuntimeId(weapon ? weapon->id() : script::kObjectInvalid);
+            SavedEventRecord event;
+            const uint64_t when = game.worldTimeMilliseconds() +
+                static_cast<uint64_t>(&attack - &_attacks.front());
+            event.day = static_cast<uint32_t>(when / game.millisecondsPerWorldDay());
+            event.time = static_cast<uint32_t>(when % game.millisecondsPerWorldDay());
+            event.object = SavedObjectReference::fromRuntimeId(target.id());
+            event.caller = SavedObjectReference::fromRuntimeId(attacker.id());
+            event.eventId = static_cast<uint32_t>(SavedEventType::OnMeleeAttacked);
+            event.payload = std::move(payload);
+            module->enqueueSaveEvent(std::move(event));
+        }
+    }
     addCombatFeedback(game, services, attacker, target, attack);
+    if (attack.result == AttackResultType::Deflected && !attack.damage.empty()) {
+        auto *deflector = dyn_cast<Creature>(&target);
+        if (!deflector) return;
+        attack.sourceActor = game.getObjectById(deflector->id());
+        resolveItemOnHitProperties(*deflector, attacker, attack);
+        SavedWeaponImpact impact;
+        impact.source = SavedObjectReference::fromRuntimeId(deflector->id());
+        game.bindSavedObjectReference(impact.source);
+        impact.damage.serializedType = 38;
+        impact.damage.setDuration(DurationType::Instant, 0.0f);
+        impact.damage.exposed = 1;
+        impact.damage.creator = game.getObjectById(deflector->id());
+        impact.damage.creatorId = deflector->id();
+        impact.damage.integerParameters.assign(21, -1);
+        std::copy(attack.damageBreakdown.rawDamageSlots.begin(), attack.damageBreakdown.rawDamageSlots.end(),
+            impact.damage.integerParameters.begin());
+        impact.damage.integerParameters[14] = attack.damage.total();
+        impact.damage.integerParameters[15] = 0;
+        impact.damage.integerParameters[16] = 0;
+        impact.damage.integerParameters[17] = attack.damage.damageFlags();
+        impact.damage.integerParameters[18] = static_cast<int>(attack.damage.power());
+        impact.damage.integerParameters[19] = 0;
+        impact.damage.integerParameters[20] = 1;
+        impact.applications = std::move(attack.onHitApplications);
+        impact.feedback = std::move(attack.deferredFeedback);
+        const uint32_t delay = static_cast<uint32_t>(glm::length(attacker.position() - target.position()) * 1000.0f / 42.0f);
+        const uint64_t when = game.worldTimeMilliseconds() + delay;
+        SavedEventRecord event;
+        event.day = static_cast<uint32_t>(when / game.millisecondsPerWorldDay());
+        event.time = static_cast<uint32_t>(when % game.millisecondsPerWorldDay());
+        event.eventId = static_cast<uint32_t>(SavedEventType::ItemOnHitSpellImpact);
+        event.object = SavedObjectReference::fromRuntimeId(attacker.id());
+        event.caller = impact.source;
+        event.payload = std::move(impact);
+        if (auto module = game.module()) module->enqueueSaveEvent(std::move(event));
+        if (auto weapon = attack.sourceItem.resolve()) {
+            if (auto module = game.module()) {
+                SavedCombatAttack presentation;
+                presentation.data.type = 0x2222;
+                presentation.history = std::make_shared<AttackHistory>(*attack.history);
+                presentation.fields = std::make_shared<AttackEventFields>(*attack.eventFields);
+                presentation.fields->result = static_cast<uint8_t>(AttackResultType::HitSuccessful);
+                presentation.fields->reactionDelay = static_cast<uint16_t>(delay);
+                presentation.reactionObject = SavedObjectReference::fromRuntimeId(attacker.id());
+                presentation.ammoItem = SavedObjectReference::fromRuntimeId(weapon->id());
+                SavedEventRecord visual;
+                const uint64_t now = game.worldTimeMilliseconds();
+                visual.day = static_cast<uint32_t>(now / game.millisecondsPerWorldDay());
+                visual.time = static_cast<uint32_t>(now % game.millisecondsPerWorldDay());
+                visual.object = SavedObjectReference::fromRuntimeId(deflector->id());
+                visual.caller = visual.object;
+                visual.eventId = static_cast<uint32_t>(SavedEventType::BroadcastSafeProjectile);
+                visual.payload = std::move(presentation);
+                module->enqueueSaveEvent(std::move(visual));
+            }
+        }
+        return;
+    }
+    addDeferredCombatFeedback(game, services, attack.sourceActor.resolve(), target, attack.deferredFeedback);
+    attack.deferredFeedback.clear();
+    addMitigationFeedback(
+        game, services, attacker, target, attack.damage);
     applyEffects(attack, attacker, target, game);
+    applyItemOnHitApplications(std::move(attack.onHitApplications), target, game, services);
+    attack.onHitApplications.clear();
 }
 
 void AttackBuffer::signal(
@@ -646,19 +1183,14 @@ void AttackBuffer::prepareMeleeSequence(
     const IAnimations &animations,
     const std::vector<std::string> &attackAnimations) {
 
-    if (_attacks.empty()) {
-        throw std::logic_error("Physical attack buffer is empty");
-    }
-    if (std::any_of(
-            _attacks.begin(),
-            _attacks.end(),
-            [](const Attack &attack) { return attack.ranged; })) {
-        throw std::logic_error("Ranged attack in melee sequence");
-    }
-    if (attackAnimations.size() != _attacks.size()) {
-        throw std::logic_error(
-            "Melee attack animation count does not match attack count");
-    }
+    assert(!_attacks.empty() && "Physical attack buffer is empty");
+    assert(std::none_of(
+               _attacks.begin(),
+               _attacks.end(),
+               [](const Attack &attack) { return attack.ranged; }) &&
+           "Ranged attack in melee sequence");
+    assert(attackAnimations.size() == _attacks.size() &&
+           "melee attack animation count does not match attack count");
 
     for (size_t index = 0; index < _attacks.size(); ++index) {
         Attack &attack = _attacks[index];
@@ -666,6 +1198,7 @@ void AttackBuffer::prepareMeleeSequence(
             animations.getMeleeImpactTime(attackAnimations[index], index);
         attack.meleeSignaled = false;
     }
+
     _pendingMeleeAttacks = _attacks.size();
     _meleeSequencePrepared = true;
 }
@@ -677,9 +1210,8 @@ size_t AttackBuffer::signalReadyMelee(
     Creature &attacker,
     Object &target) {
 
-    if (!_meleeSequencePrepared) {
-        throw std::logic_error("Melee attack sequence is not prepared");
-    }
+    assert(_meleeSequencePrepared &&
+           "melee attack sequence is not prepared");
     if (!hasPendingMelee()) {
         return 0;
     }
@@ -688,10 +1220,11 @@ size_t AttackBuffer::signalReadyMelee(
     ready.reserve(_pendingMeleeAttacks);
     for (size_t index = 0; index < _attacks.size(); ++index) {
         const Attack &attack = _attacks[index];
-        if (!attack.meleeSignaled &&
-            elapsedMilliseconds >= attack.impactTimeMilliseconds) {
-            ready.push_back(index);
+        if (attack.meleeSignaled ||
+            elapsedMilliseconds < attack.impactTimeMilliseconds) {
+            continue;
         }
+        ready.push_back(index);
     }
     std::stable_sort(
         ready.begin(),
@@ -711,9 +1244,9 @@ size_t AttackBuffer::signalReadyMelee(
 }
 
 int AttackBuffer::latestMeleeImpactMilliseconds() const {
-    if (!_meleeSequencePrepared) {
-        throw std::logic_error("Melee attack sequence is not prepared");
-    }
+    assert(_meleeSequencePrepared &&
+           "melee attack sequence is not prepared");
+
     int latest = 0;
     for (const Attack &attack : _attacks) {
         latest = std::max(latest, attack.impactTimeMilliseconds);
@@ -721,14 +1254,20 @@ int AttackBuffer::latestMeleeImpactMilliseconds() const {
     return latest;
 }
 
+void AttackBuffer::clearHistory() {
+    for (auto &attack : _attacks) {
+        *attack.history = {};
+        *attack.eventFields = AttackEventFields {};
+    }
+}
+
 void AttackBuffer::discardPendingMelee() {
-    if (!_meleeSequencePrepared) {
-        return;
+    if (_meleeSequencePrepared) {
+        for (Attack &attack : _attacks) {
+            attack.meleeSignaled = true;
+        }
+        _pendingMeleeAttacks = 0;
     }
-    for (Attack &attack : _attacks) {
-        attack.meleeSignaled = true;
-    }
-    _pendingMeleeAttacks = 0;
 }
 
 bool AttackBuffer::hasPendingMelee() const {
@@ -753,7 +1292,26 @@ static constexpr int kStrRefAttackRoll = 42119;
 static constexpr int kStrRefAttackRollSuccess = 42133;
 static constexpr int kStrRefAttackRollFailure = 42134;
 static constexpr int kStrRefAttackBreakdown = 42146;
+static constexpr int kStrRefCriticalThreatBreakdown = 42148;
+static constexpr int kStrRefDefenseBreakdown = 42149;
+static constexpr int kStrRefDamageBreakdown = 42150;
 static constexpr int kStrRefStrengthModifier = 42154;
+static constexpr int kStrRefOtherDamageBonus = 42155;
+static constexpr int kStrRefSneakAttackDamage = 42156;
+static constexpr int kStrRefConfirmedCritical = 1511;
+static constexpr int kStrRefCriticalThreatConfirmed = 1392;
+static constexpr int kStrRefCriticalThreatFailed = 1393;
+static constexpr int kStrRefUniversalDamage = 1422;
+static constexpr int kStrRefPhysicalDamage = 1423;
+static constexpr int kStrRefAcidDamage = 1440;
+static constexpr int kStrRefColdDamage = 1441;
+static constexpr int kStrRefLightSideDamage = 1442;
+static constexpr int kStrRefElectricalDamage = 1443;
+static constexpr int kStrRefFireDamage = 1444;
+static constexpr int kStrRefDarkSideDamage = 1445;
+static constexpr int kStrRefSonicDamage = 1446;
+static constexpr int kStrRefIonDamage = 1447;
+static constexpr int kStrRefEnergyDamage = 1448;
 static constexpr int kStrRefMainhand = 42314;
 static constexpr int kStrRefOffhand = 42315;
 static constexpr int kStrRefAttackRollComponent = 42316;
@@ -764,10 +1322,23 @@ static constexpr int kStrRefWeaponFocusBonus = 42331;
 static constexpr int kStrRefEffectBonus = 42332;
 static constexpr int kStrRefDualWieldPenalty = 42333;
 static constexpr int kStrRefSmallOffhandBonus = 42334;
+static constexpr int kStrRefDefenseArmor = 42338;
+static constexpr int kStrRefDefenseDexterity = 42339;
+static constexpr int kStrRefDefenseClass = 42340;
+static constexpr int kStrRefDefenseNatural = 42341;
+static constexpr int kStrRefDefenseEffects = 42342;
+static constexpr int kStrRefDefenseFeat = 42343;
+static constexpr int kStrRefWeaponSpecializationDamage = 42363;
 static constexpr int kStrRefDexterityModifier = 42375;
+static constexpr int kStrRefCriticalDamageMultiplier = 42386;
+static constexpr int kStrRefCoupDeGrace = 42303;
 static constexpr int kStrRefAutomaticHit = 42390;
 static constexpr int kStrRefAutomaticMiss = 42391;
 static constexpr int kStrRefBaseAttackBonus = 42392;
+static constexpr int kStrRefPoisonDamage = 41902;
+static constexpr int kStrRefDefenseDebilitated = 42427;
+static constexpr int kStrRefImprovedToughnessDamage = 42433;
+static constexpr int kStrRefWookieeEnduranceDamage = 42434;
 
 static std::string getFeedbackString(
     Game &game,
@@ -785,16 +1356,292 @@ static std::string getFeedbackString(
     return text;
 }
 
+static void appendDefenseComponent(
+    Game &game,
+    ServicesView &services,
+    std::string &breakdown,
+    int strRef,
+    int value) {
+
+    if (value == 0) {
+        return;
+    }
+    breakdown += getFeedbackString(
+        game,
+        services,
+        strRef,
+        {{0, std::to_string(value)}});
+}
+
+static void appendDamageComponent(
+    Game &game,
+    ServicesView &services,
+    std::string &breakdown,
+    int strRef,
+    int value) {
+
+    if (value <= 0) {
+        return;
+    }
+    if (!breakdown.empty()) {
+        breakdown += " + ";
+    }
+    breakdown += getFeedbackString(
+        game,
+        services,
+        strRef,
+        {{0, std::to_string(value)}});
+}
+
+static void appendDamageModifier(
+    Game &game,
+    ServicesView &services,
+    std::string &breakdown,
+    const char *separator,
+    int strRef,
+    int value) {
+
+    breakdown += separator;
+    breakdown += getFeedbackString(
+        game,
+        services,
+        strRef,
+        {{0, std::to_string(value)}});
+}
+
+static std::string getDamageBreakdown(
+    Game &game,
+    ServicesView &services,
+    const DamageBreakdown &values,
+    const DamagePacket &damage) {
+
+    const DamageResolution &resolution = damage.resolution();
+    int finalDamage = resolution.finalDamage;
+    if (finalDamage <= 0) {
+        return {};
+    }
+
+    const auto &slots = values.rawDamageSlots;
+    int physicalDamage = 0;
+    for (int slot = 0; slot != 3; ++slot) {
+        if (slots[slot] > 0) {
+            physicalDamage += slots[slot];
+        }
+    }
+
+    std::string breakdown;
+    appendDamageComponent(
+        game,
+        services,
+        breakdown,
+        kStrRefEnergyDamage,
+        slots[12]);
+    appendDamageComponent(
+        game,
+        services,
+        breakdown,
+        kStrRefPhysicalDamage,
+        physicalDamage);
+    static constexpr std::pair<int, int> kDamageComponents[] {
+        {3, kStrRefUniversalDamage},
+        {4, kStrRefAcidDamage},
+        {5, kStrRefColdDamage},
+        {6, kStrRefLightSideDamage},
+        {7, kStrRefElectricalDamage},
+        {8, kStrRefFireDamage},
+        {9, kStrRefDarkSideDamage},
+        {10, kStrRefSonicDamage},
+        {11, kStrRefIonDamage},
+        {13, kStrRefPoisonDamage},
+    };
+    for (const auto &[slot, strRef] : kDamageComponents) {
+        appendDamageComponent(
+            game,
+            services,
+            breakdown,
+            strRef,
+            slots[slot]);
+    }
+
+    if (values.strengthModifier != 0) {
+        appendDamageModifier(
+            game,
+            services,
+            breakdown,
+            " ",
+            kStrRefStrengthModifier,
+            values.strengthModifier);
+    }
+    if (values.weaponSpecialization != 0) {
+        appendDamageModifier(
+            game,
+            services,
+            breakdown,
+            " ",
+            kStrRefWeaponSpecializationDamage,
+            values.weaponSpecialization);
+    }
+    if (values.otherSpecialBonus > 0) {
+        appendDamageModifier(
+            game,
+            services,
+            breakdown,
+            " + ",
+            kStrRefOtherDamageBonus,
+            values.otherSpecialBonus);
+    }
+    if (values.sneakAttack > 0) {
+        appendDamageModifier(
+            game,
+            services,
+            breakdown,
+            " + ",
+            kStrRefSneakAttackDamage,
+            values.sneakAttack);
+    }
+
+    int improvedToughness = resolution.improvedToughnessBonus;
+    if (improvedToughness != 0) {
+        appendDamageModifier(
+            game,
+            services,
+            breakdown,
+            " - ",
+            kStrRefImprovedToughnessDamage,
+            improvedToughness);
+    }
+    int wookieeEndurance = resolution.wookieeEnduranceBonus;
+    if (wookieeEndurance != 0) {
+        appendDamageModifier(
+            game,
+            services,
+            breakdown,
+            " - ",
+            kStrRefWookieeEnduranceDamage,
+            wookieeEndurance);
+    }
+
+    std::string finalText;
+    if (values.criticalMultiplier > 0) {
+        finalText = getFeedbackString(
+            game,
+            services,
+            kStrRefCriticalDamageMultiplier,
+            {{0, std::to_string(values.criticalMultiplier)}});
+    }
+    finalText += std::to_string(finalDamage);
+
+    return getFeedbackString(
+        game,
+        services,
+        kStrRefDamageBreakdown,
+        {
+            {0, finalText},
+            {1, breakdown},
+        });
+}
+
+static void addDamageBreakdownFeedback(
+    Game &game,
+    ServicesView &services,
+    const DamageBreakdown &values,
+    const DamagePacket &damage,
+    int broadcasts) {
+
+    if (damage.empty() || !damage.isResolved()) return;
+
+    std::string breakdown = getDamageBreakdown(
+        game,
+        services,
+        values,
+        damage);
+    if (breakdown.empty()) {
+        return;
+    }
+
+    for (int broadcast = 0; broadcast < broadcasts; ++broadcast) {
+        game.messageLog().add(
+            MessageLog::kFeedbackMessageType,
+            MessageLog::Style::Normal,
+            breakdown);
+    }
+}
+
+static std::string getMitigationFeedback(
+    Game &game,
+    ServicesView &services,
+    const Object &target,
+    const MitigationFeedback &feedback) {
+
+    MitigationFeedbackMessage message = buildMitigationFeedbackMessage(
+        services.resource.strings,
+        target.name(),
+        feedback);
+    std::string text = services.resource.strings.getText(message.strRef);
+    for (std::size_t token = 0; token < message.customTokenCount; ++token) {
+        text = game.substituteCustomToken(
+            std::move(text),
+            static_cast<int>(token),
+            message.customTokens[token]);
+    }
+    return text;
+}
+
+static void addMitigationFeedback(
+    Game &game,
+    ServicesView &services,
+    const Creature &attacker,
+    const Object &target,
+    const DamagePacket &damage) {
+
+    if (damage.empty()) {
+        return;
+    }
+
+    auto leader = game.party().getLeader();
+    if (!leader) {
+        return;
+    }
+
+    const auto *targetCreature = dyn_cast<Creature>(&target);
+    if (!targetCreature) {
+        return;
+    }
+
+    bool targetHasRecipient = targetCreature->id() == leader->id();
+    bool attackerHasRecipient = attacker.id() == leader->id();
+    if (!targetHasRecipient && !attackerHasRecipient) {
+        return;
+    }
+
+    for (const MitigationFeedback &feedback :
+         damage.resolution().mitigationFeedback) {
+        std::string text = getMitigationFeedback(
+            game,
+            services,
+            target,
+            feedback);
+        if (targetHasRecipient) {
+            game.messageLog().add(
+                MessageLog::kFeedbackMessageType,
+                MessageLog::Style::Normal,
+                text);
+        }
+        if (attackerHasRecipient) {
+            game.messageLog().add(
+                MessageLog::kFeedbackMessageType,
+                MessageLog::Style::Normal,
+                text);
+        }
+    }
+}
+
 void AttackBuffer::addCombatFeedback(
     Game &game,
     ServicesView &services,
     const Creature &attacker,
     const Object &target,
     const Attack &attack) const {
-
-    if (game.isTSL()) {
-        return;
-    }
 
     auto leader = game.party().getLeader();
     if (!leader) {
@@ -813,6 +1660,7 @@ void AttackBuffer::addCombatFeedback(
 
     const std::string &attackerName = attacker.name();
     const std::string &targetName = target.name();
+    int defense = attack.defenseBreakdown.total;
 
     bool successful = isAttackSuccessful(attack.result);
     std::string feedback = getFeedbackString(
@@ -846,13 +1694,31 @@ void AttackBuffer::addCombatFeedback(
                     successful ? kStrRefAttackRollSuccess : kStrRefAttackRollFailure)},
             {1, std::to_string(
                     attack.roll + attack.attackBonusBreakdown.total())},
-            {2, std::to_string(attack.defense)},
+            {2, std::to_string(defense)},
             {3, std::to_string(
-                    attack.damage.empty()
+                    (attack.damage.empty() || !attack.damage.isResolved())
                         ? 0
                         : game.scaleDamageForDifficulty(
-                              attack.damage.resolvedDamage(), target))},
+                              attack.damage.resolvedDamage(),
+                              target))},
         });
+
+    if (attack.coupDeGrace) {
+        feedback += services.resource.strings.getText(kStrRefCoupDeGrace);
+        feedback += " ";
+    }
+    if (attack.criticalThreat.confirmed) {
+        feedback += services.resource.strings.getText(kStrRefConfirmedCritical);
+        feedback += " ";
+    }
+    if (attack.naturalTwenty) {
+        feedback += services.resource.strings.getText(kStrRefAutomaticHit);
+        feedback += " ";
+    }
+    if (attack.naturalOne) {
+        feedback += services.resource.strings.getText(kStrRefAutomaticMiss);
+        feedback += " ";
+    }
 
     for (int broadcast = 0; broadcast < broadcasts; ++broadcast) {
         game.messageLog().add(
@@ -880,10 +1746,10 @@ void AttackBuffer::addCombatFeedback(
         kStrRefAttackRollComponent,
         {{0, std::to_string(attack.roll)}});
 
-    if (!attack.assuredHit && attack.roll == 20) {
+    if (attack.naturalTwenty) {
         breakdown += " ";
         breakdown += services.resource.strings.getText(kStrRefAutomaticHit);
-    } else if (!attack.assuredHit && attack.roll == 1) {
+    } else if (attack.naturalOne) {
         breakdown += " ";
         breakdown += services.resource.strings.getText(kStrRefAutomaticMiss);
     } else {
@@ -978,6 +1844,117 @@ void AttackBuffer::addCombatFeedback(
             MessageLog::Style::Normal,
             breakdown);
     }
+
+    if (attack.criticalThreat.threatened) {
+        std::string criticalThreatBreakdown = getFeedbackString(
+            game,
+            services,
+            kStrRefCriticalThreatBreakdown,
+            {
+                {0, std::to_string(attack.roll)},
+                {1, std::to_string(attack.criticalThreat.threshold)},
+                {2, services.resource.strings.getText(
+                        attack.criticalThreat.confirmed
+                            ? kStrRefCriticalThreatConfirmed
+                            : kStrRefCriticalThreatFailed)},
+                {3, std::to_string(
+                        attack.criticalThreat.confirmationRoll +
+                        attack.criticalThreat.confirmationBonus +
+                        bonus.total())},
+                {4, std::to_string(defense)},
+            });
+
+        for (int broadcast = 0; broadcast < broadcasts; ++broadcast) {
+            game.messageLog().add(
+                MessageLog::kFeedbackMessageType,
+                MessageLog::Style::Normal,
+                criticalThreatBreakdown);
+        }
+    }
+
+    if (defense == 0) {
+        addDamageBreakdownFeedback(
+            game,
+            services,
+            attack.damageBreakdown,
+            attack.damage,
+            broadcasts);
+        return;
+    }
+
+    const DefenseBreakdown &defenseValues = attack.defenseBreakdown;
+    std::string defenseBreakdown = getFeedbackString(
+        game,
+        services,
+        kStrRefDefenseBreakdown,
+        {{0, std::to_string(defense)}});
+    appendDefenseComponent(
+        game,
+        services,
+        defenseBreakdown,
+        kStrRefDefenseArmor,
+        defenseValues.armor);
+    appendDefenseComponent(
+        game,
+        services,
+        defenseBreakdown,
+        kStrRefDefenseDexterity,
+        defenseValues.dexterity);
+    appendDefenseComponent(
+        game,
+        services,
+        defenseBreakdown,
+        kStrRefDefenseClass,
+        defenseValues.classDefense);
+    appendDefenseComponent(
+        game,
+        services,
+        defenseBreakdown,
+        kStrRefDefenseNatural,
+        defenseValues.natural);
+    appendDefenseComponent(
+        game,
+        services,
+        defenseBreakdown,
+        kStrRefDefenseEffects,
+        defenseValues.dodgeAndDeflection);
+    appendDefenseComponent(
+        game,
+        services,
+        defenseBreakdown,
+        kStrRefDefenseFeat,
+        defenseValues.feat);
+    appendDefenseComponent(
+        game,
+        services,
+        defenseBreakdown,
+        kStrRefDefenseDebilitated,
+        defenseValues.debilitationPenalty);
+
+    for (int broadcast = 0; broadcast < broadcasts; ++broadcast) {
+        game.messageLog().add(
+            MessageLog::kFeedbackMessageType,
+            MessageLog::Style::Normal,
+            defenseBreakdown);
+    }
+
+    addDamageBreakdownFeedback(
+        game,
+        services,
+        attack.damageBreakdown,
+        attack.damage,
+        broadcasts);
+}
+
+AttackResultType AttackBuffer::rangedResult(bool offHand, size_t index) const {
+    AttackResultType result = AttackResultType::Invalid;
+    for (const auto &attack : _attacks) {
+        if (!attack.ranged || (attack.source == Source::Offhand) != offHand) continue;
+        result = attack.result;
+        if (index == 0) break;
+        --index;
+    }
+    return result;
 }
 
 AttackResultType AttackBuffer::result() const {
@@ -987,6 +1964,7 @@ AttackResultType AttackBuffer::result() const {
         AttackResultType::AttackResisted,
         AttackResultType::AttackFailed,
         AttackResultType::Parried,
+        AttackResultType::ShieldHit,
         AttackResultType::Deflected,
         AttackResultType::HitSuccessful,
         AttackResultType::CriticalHit,
@@ -1073,7 +2051,9 @@ void Projectile::fire(Creature &attacker, Object &target, scene::ISceneGraph &sc
 
     // Determine projectile direction
     auto impact = targetModel->getNodeByName("impact");
-    if (impact) {
+    if (_result == AttackResultType::ShieldHit) {
+        _target = target.position() + glm::vec3(0.0f, 0.0f, 1.25f);
+    } else if (impact) {
         _target = impact->origin();
     } else {
         _target = targetModel->origin();
@@ -1126,6 +2106,7 @@ bool Projectile::update(float dt) {
 
     float dist = dt * kProjectileSpeed;
     if (dist >= length) {
+        _model->setLocalTransform(glm::translate(_target));
         return true;
     }
 
@@ -1150,12 +2131,14 @@ void Projectile::reset() {
 
     _model->graph().removeRoot(*_model);
     _model.reset();
-    _flash->graph().removeRoot(*_flash);
-    _flash.reset();
+    if (_flash) {
+        _flash->graph().removeRoot(*_flash);
+        _flash.reset();
+    }
 }
 
-void ProjectileSequence::push_back(float time, Projectile::Source source, bool miss) {
-    _projectiles.emplace_back(source, miss);
+void ProjectileSequence::push_back(float time, Projectile::Source source, bool miss, AttackResultType result) {
+    _projectiles.emplace_back(source, miss, result);
     _events.push_back(time, _projectiles.size());
 }
 
@@ -1183,14 +2166,9 @@ void ProjectileSequence::reset() {
     }
 }
 
-static void addProjectile(ProjectileSequence &seq, std::pair<float, int> timeKind, bool miss) {
-    float time = timeKind.first;
-    float kind = timeKind.second;
-    seq.push_back(time, kind == 0 ? Projectile::Main : Projectile::Offhand, miss);
-}
-
-void addProjectilesFromSpec(ProjectileSequence &seq, const ProjectileSpec &spec) {
+void addProjectilesFromSpec(ProjectileSequence &seq, const ProjectileSpec &spec, const AttackBuffer *attacks) {
     uint32_t remainingMisses = spec.misses;
+    size_t handAttack[2] {};
     size_t numProjectiles = spec.projectiles.size();
     for (size_t i = 0; i < numProjectiles; ++i) {
         bool autoMiss = (i + remainingMisses) >= numProjectiles;
@@ -1198,13 +2176,26 @@ void addProjectilesFromSpec(ProjectileSequence &seq, const ProjectileSpec &spec)
         if (miss) {
             --remainingMisses;
         }
-        addProjectile(seq, spec.projectiles[i], miss);
+        const auto source = spec.projectiles[i].second == 0 ? Projectile::Main : Projectile::Offhand;
+        auto result = AttackResultType::Invalid;
+        if (!miss && attacks) {
+            const bool offHand = source == Projectile::Offhand;
+            result = attacks->rangedResult(offHand, handAttack[offHand]++);
+            miss = result == AttackResultType::Miss || result == AttackResultType::AttackResisted ||
+                result == AttackResultType::AttackFailed;
+        }
+        seq.push_back(spec.projectiles[i].first, source, miss, result);
     }
 }
+
+// Standard physical attack actions pass 1500 to SetPauseTimer.
+static constexpr int kPhysicalAttackPauseMilliseconds = 1500;
 
 AttackSchedule::State AttackSchedule::update(
     const CombatRound &round, Action &action, float dt) {
 
+    if (round.suspends(action)) return _state;
+    dt = round.actionDelta(dt);
     _time += dt;
     if (_melee && _state != AttackSchedule::WaitAttack) {
         float elapsedMilliseconds =
@@ -1224,7 +2215,8 @@ AttackSchedule::State AttackSchedule::update(
     }
     case AttackSchedule::Attack: {
         if (_melee &&
-            _meleeElapsedMilliseconds >= _meleeCompletionMilliseconds) {
+            _meleeElapsedMilliseconds >=
+                _meleeCompletionMilliseconds) {
             _state = AttackSchedule::Damage;
         } else {
             _state = AttackSchedule::WaitDamage;
@@ -1233,7 +2225,8 @@ AttackSchedule::State AttackSchedule::update(
     }
     case AttackSchedule::WaitDamage: {
         if ((_melee &&
-             _meleeElapsedMilliseconds >= _meleeCompletionMilliseconds) ||
+             _meleeElapsedMilliseconds >=
+                 _meleeCompletionMilliseconds) ||
             (!_melee && _time >= kAttackDamageDelay)) {
             _state = AttackSchedule::Damage;
         }
@@ -1258,14 +2251,9 @@ AttackSchedule::State AttackSchedule::update(
 }
 
 void AttackSchedule::startMelee(int latestImpactMilliseconds) {
-    if (_state != AttackSchedule::Attack) {
-        throw std::logic_error("Melee attack schedule has not started");
-    }
+    assert(_state == AttackSchedule::Attack &&
+           "melee attack schedule has not started");
 
-    // Standard physical attack actions use a 1500 ms pause. A malformed
-    // authored impact beyond it extends the execution window rather than
-    // dropping the pending hit.
-    static constexpr int kPhysicalAttackPauseMilliseconds = 1500;
     _melee = true;
     _meleeElapsedMilliseconds = 0;
     _meleeCompletionMilliseconds = std::max(
@@ -1274,17 +2262,60 @@ void AttackSchedule::startMelee(int latestImpactMilliseconds) {
     _meleeElapsedRemainderMilliseconds = 0.0f;
 }
 
-bool navigateToAttackTarget(Creature &attacker, Object &target, float dt, bool &reachedOnce) {
-    if (reachedOnce) {
-        return true;
+bool navigateToAttackTarget(Creature &attacker, Object &target, float dt,
+                            bool &reachedOnce, Game *game, const Action *parent) {
+    if (reachedOnce) return true;
+
+    const float range = attacker.getAttackRange();
+    if (game && parent && game->module() && game->module()->area() &&
+        attacker.getSquareDistanceTo(glm::vec2(target.position())) > range * range) {
+        // Navigation actions inherit the parent action group and use the existing
+        // range and pathfinding rules.
+        auto targetObject = game->getObjectById(target.id());
+        if (targetObject) {
+            auto move = game->newAction<MoveToObjectAction>(
+                std::move(targetObject), true, range, false, -1.0f,
+                !isRangedWieldType(attacker.getWieldType()));
+            if (attacker.addActionBefore(*parent, std::move(move))) return false;
+        }
+        // A parent removed by a callback must not continue navigating off-queue.
+        return false;
     }
 
-    if (!attacker.navigateTo(target.position(), true, attacker.getAttackRange(), dt)) {
+    if (!attacker.navigateTo(target.position(), true, range, dt)) {
         return false;
     }
 
     reachedOnce = true;
     return true;
+}
+
+bool isCreatureCombat(
+    const Creature &attacker,
+    const Object &target) {
+
+    if (attacker.modelType() == Creature::ModelType::Creature) {
+        return true;
+    }
+
+    const auto *targetCreature = dyn_cast<Creature>(&target);
+    return targetCreature &&
+           targetCreature->modelType() == Creature::ModelType::Creature;
+}
+
+std::string selectPhysicalMeleeAttackAnimation(
+    Creature &attacker,
+    const Object &target,
+    CreatureWieldType wield) {
+
+    bool creatureCombat = isCreatureCombat(attacker, target);
+    bool cinematic = !creatureCombat && isMeleeWieldType(wield);
+    int variant = attacker.selectMeleeAttackVariant(cinematic);
+    return formatPhysicalMeleeAttackAnimation(
+        wield,
+        variant,
+        attacker.modelType() == Creature::ModelType::Creature,
+        cinematic);
 }
 
 static bool hasAnim(const graphics::Model &model, const std::string &anim) {
@@ -1321,4 +2352,80 @@ std::string getRangedAttackAnim(Creature &attacker, int kind) {
 
 } // namespace game
 
+} // namespace reone
+
+namespace reone {
+namespace game {
+
+static int getDamageSlot(DamageType type) {
+    int damageFlags = static_cast<int>(type);
+    if (damageFlags <= 0) {
+        throw std::invalid_argument("Damage breakdown type must be positive");
+    }
+
+    int slot = 0;
+    while (damageFlags > 1) {
+        damageFlags >>= 1;
+        ++slot;
+    }
+    if (slot >= 14) {
+        throw std::invalid_argument("Damage breakdown type is out of range");
+    }
+    return slot;
+}
+
+DamageBreakdown::DamageBreakdown() {
+    rawDamageSlots.fill(-1);
+}
+
+void DamageBreakdown::addRawDamage(int amount, DamageType type) {
+    int slot = getDamageSlot(type);
+    int &current = rawDamageSlots[slot];
+    int result;
+    if (current > 0) {
+        result = current + amount;
+        if (result <= 0) {
+            result = 1;
+        }
+    } else {
+        result = std::max(amount, 0);
+    }
+    current = result;
+}
+
+bool isMeleeWieldType(CreatureWieldType type) {
+    switch (type) {
+    case CreatureWieldType::SingleSword:
+    case CreatureWieldType::DoubleBladedSword:
+    case CreatureWieldType::DualSwords:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool isRangedWieldType(CreatureWieldType type) {
+    switch (type) {
+    case CreatureWieldType::BlasterPistol:
+    case CreatureWieldType::DualPistols:
+    case CreatureWieldType::BlasterRifle:
+    case CreatureWieldType::HeavyWeapon:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool isAttackSuccessful(AttackResultType result) {
+    switch (result) {
+    case AttackResultType::HitSuccessful:
+    case AttackResultType::CriticalHit:
+    case AttackResultType::AutomaticHit:
+        return true;
+    default:
+        return false;
+    }
+}
+
+} // namespace game
 } // namespace reone

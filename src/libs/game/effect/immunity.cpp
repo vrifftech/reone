@@ -21,8 +21,9 @@ namespace reone {
 
 namespace game {
 
-void ImmunityEffect::applyTo(Object &object) {
+EffectApplicationResult ImmunityEffect::onApply(Object &object, EffectInstance &) {
     // TODO: implement
+    return EffectApplicationResult::Retained;
 }
 
 } // namespace game

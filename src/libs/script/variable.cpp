@@ -16,6 +16,8 @@
  */
 
 #include "reone/script/variable.h"
+#include "reone/script/enginetype.h"
+#include <cstring>
 #include "reone/game/location.h"
 
 namespace reone {
@@ -23,6 +25,32 @@ namespace reone {
 namespace script {
 
 std::atomic<uint64_t> g_id {0};
+
+Variable::Variable(const Variable &other) :
+    type(other.type), strValue(other.strValue), vecValue(other.vecValue),
+    engineType(other.engineType), context(other.context), id(other.id) {
+    // Copy the scalar union's representation without reading an inactive member.
+    std::memcpy(&intValue, &other.intValue, sizeof(intValue));
+    if (type == VariableType::Effect && engineType) {
+        engineType = std::static_pointer_cast<CopyableEngineType>(engineType)->cloneForScript();
+    }
+}
+
+Variable &Variable::operator=(const Variable &other) {
+    if (this != &other) {
+        Variable copy(other);
+        *this = std::move(copy);
+    }
+    return *this;
+}
+
+bool equalEffectValues(const std::shared_ptr<EngineType> &left,
+                       const std::shared_ptr<EngineType> &right) {
+    if (!left || !right) return left == right;
+    // The game compares the preserved 64-bit effect ID, not allocation addresses.
+    return std::static_pointer_cast<CopyableEngineType>(left)->scriptValueId() ==
+           std::static_pointer_cast<CopyableEngineType>(right)->scriptValueId();
+}
 
 Variable Variable::ofNull() {
     Variable result;
@@ -195,6 +223,13 @@ const char *argKindToString(ArgKind kind) {
         return "LastAttacker";
     case ArgKind::LastDamager:
         return "LastDamager";
+    case ArgKind::SpellTargetObject: return "SpellTargetObject";
+    case ArgKind::LastSpellCaster: return "LastSpellCaster";
+    case ArgKind::LastSpell: return "LastSpell";
+    case ArgKind::LastSpellHarmful: return "LastSpellHarmful";
+    case ArgKind::SpellForcePointCost: return "SpellForcePointCost";
+    case ArgKind::SpellMetaMagic: return "SpellMetaMagic";
+    case ArgKind::SpellCasterLevel: return "SpellCasterLevel";
     case ArgKind::SpellId:
         return "SpellId";
     case ArgKind::SpellLocation:
@@ -301,6 +336,13 @@ Argument Argument::fromString(std::string str) {
     if (kind == "LastDamager") {
         return {ArgKind::LastDamager, Variable::ofObject(std::stoul(value))};
     }
+    if (kind == "SpellTargetObject") return {ArgKind::SpellTargetObject, Variable::ofObject(std::stoul(value))};
+    if (kind == "LastSpellCaster") return {ArgKind::LastSpellCaster, Variable::ofObject(std::stoul(value))};
+    if (kind == "LastSpell") return {ArgKind::LastSpell, Variable::ofInt(std::stoi(value))};
+    if (kind == "LastSpellHarmful") return {ArgKind::LastSpellHarmful, Variable::ofInt(std::stoi(value))};
+    if (kind == "SpellForcePointCost") return {ArgKind::SpellForcePointCost, Variable::ofInt(std::stoi(value))};
+    if (kind == "SpellMetaMagic") return {ArgKind::SpellMetaMagic, Variable::ofInt(std::stoi(value))};
+    if (kind == "SpellCasterLevel") return {ArgKind::SpellCasterLevel, Variable::ofInt(std::stoi(value))};
     if (kind == "SpellId") {
         return {ArgKind::SpellId, Variable::ofInt(std::stoul(value))};
     }
@@ -356,6 +398,8 @@ void Argument::verify() {
     case ArgKind::LastUsedBy:
     case ArgKind::LastSpeaker:
     case ArgKind::LastAttacker:
+    case ArgKind::SpellTargetObject:
+    case ArgKind::LastSpellCaster:
     case ArgKind::LastDamager: {
         if (var.type != VariableType::Object || var.objectId == kObjectSelf) {
             throw std::invalid_argument(toString() + ": expected an object != self");
@@ -369,6 +413,11 @@ void Argument::verify() {
     case ArgKind::LastPerceptionSeen:
     case ArgKind::LastPerceptionVanished:
     case ArgKind::ListenPatternNumber:
+    case ArgKind::LastSpell:
+    case ArgKind::LastSpellHarmful:
+    case ArgKind::SpellForcePointCost:
+    case ArgKind::SpellMetaMagic:
+    case ArgKind::SpellCasterLevel:
     case ArgKind::SpellId:
     case ArgKind::InventoryDisturbType: {
         if (var.type != VariableType::Int) {

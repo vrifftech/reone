@@ -28,11 +28,18 @@ class Item;
 
 class UnequipItemAction : public Action {
 public:
-    UnequipItemAction(Game &game, ServicesView &services, std::shared_ptr<Item> item, bool instant) :
+    UnequipItemAction(Game &game, ServicesView &services, std::shared_ptr<Item> item, int32_t instant) :
         Action(game, services, ActionType::UnequipItem),
         _item(std::move(item)),
         _instant(instant) {
         requireRuntimeObject(_item);
+    }
+
+    UnequipItemAction(Game &game, ServicesView &services, std::shared_ptr<Item> item,
+                      int32_t flags, std::shared_ptr<Item> container) :
+        UnequipItemAction(game, services, std::move(item), flags) {
+        _container = std::move(container);
+        if (_container) requireRuntimeObject(_container);
     }
 
     static bool classof(Action *from) {
@@ -40,10 +47,12 @@ public:
     }
 
     void execute(std::shared_ptr<Action> self, Object &actor, float dt) override;
+    std::optional<SavedActionRecord> saveFacingState() const override;
 
 private:
     std::shared_ptr<Item> _item;
-    bool _instant;
+    std::shared_ptr<Item> _container;
+    int32_t _instant;
 };
 
 } // namespace game

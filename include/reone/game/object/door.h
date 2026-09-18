@@ -31,6 +31,7 @@ class IReputes;
 
 class Door : public Object {
 public:
+    std::string getOnSpellCastAt() const override { return _onSpellCastAt; }
     Door(
         uint32_t id,
         std::string sceneName,
@@ -100,6 +101,7 @@ public:
 
     int genericType() const { return _genericType; }
     Faction faction() const { return _faction; }
+    void setFaction(Faction faction) { _faction = faction; }
     const std::string &linkedToModule() const { return _linkedToModule; }
     const std::string &linkedTo() const { return _linkedTo; }
     uint8_t linkedToFlags() const { return _linkedToFlags; }
@@ -116,6 +118,10 @@ public:
     std::shared_ptr<scene::WalkmeshSceneNode> walkmeshClosed() const { return _walkmeshClosed; }
 
     // END Walkmeshes
+
+    void applyDamageEffect(
+        int amount,
+        const std::shared_ptr<Object> &damager) override;
 
 private:
     friend class ModuleSnapshotBuilder;

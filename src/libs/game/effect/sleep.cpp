@@ -21,8 +21,12 @@ namespace reone {
 
 namespace game {
 
-void SleepEffect::applyTo(Object &object) {
-    // TODO: implement
+SleepEffect::SleepEffect() :
+    CreatureStateEffect(CreatureState::Sleep) {
+}
+
+std::shared_ptr<script::EngineType> SleepEffect::cloneForScript() const {
+    return std::make_shared<SleepEffect>(*this);
 }
 
 } // namespace game

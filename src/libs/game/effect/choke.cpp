@@ -21,8 +21,9 @@ namespace reone {
 
 namespace game {
 
-void ChokeEffect::applyTo(Object &object) {
+EffectApplicationResult ChokeEffect::onApply(Object &object, EffectInstance &) {
     // TODO: implement
+    return EffectApplicationResult::Retained;
 }
 
 } // namespace game

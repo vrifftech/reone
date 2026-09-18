@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include "reone/game/attackhistory.h"
+
 #include "reone/audio/clip.h"
 #include "reone/audio/source.h"
 #include "reone/graphics/lipanimation.h"
@@ -31,6 +33,9 @@
 #include "reone/system/timer.h"
 
 #include "../d20/attributes.h"
+#include "../forceresistancerules.h"
+#include "../forcerules.h"
+#include "../armorclassrules.h"
 #include "../d20/itemattributes.h"
 #include "../object.h"
 #include "../menupresentation.h"
@@ -50,11 +55,22 @@ namespace game {
 constexpr float kDefaultAttackRange = 2.0f;
 
 class DamagePacket;
+class Spell;
 class ModuleSnapshotBuilder;
 struct AttackBonusBreakdown;
+struct DefenseBreakdown;
+struct DamageBreakdown;
+struct PhysicalDamageBonus;
+struct DamageResolution;
+struct SavingThrowBreakdown {
+    int base {0};
+    int modifier {0};
+    int total() const { return base + modifier; }
+};
 
 class Creature : public Object, public scene::IAnimationEventListener {
 public:
+    std::string getOnSpellCastAt() const override { return _onSpellAt; }
     enum class ModelType {
         Creature,
         Droid,
@@ -89,12 +105,19 @@ public:
         }
     };
 
+    struct AutoBalanceContext {
+        uint8_t multiplierSet {0};
+        uint8_t playerLevelAtSpawn {0};
+    };
+
     struct CombatState {
         bool active {false};
+        uint8_t activationType {0};
         bool shouldDeactivate {false};
         bool debilitated {false};
         RuntimeObjectRef<Object> attackTarget;
         RuntimeObjectRef<Object> attemptedAttackTarget;
+        RuntimeObjectRef<Object> attemptedSpellTarget;
         ActionType attackAction {ActionType::QueueEmpty};
         FeatType combatFeat {FeatType::Invalid};
         Timer deactivationTimer;
@@ -112,6 +135,8 @@ public:
 
     void loadFromBlueprint(const std::string &resRef);
     void loadAppearance();
+    void applyDisguiseAppearance(int appearance);
+    void removeDisguiseAppearance();
 
     void deserialize(
         const resource::Gff &gff,
@@ -133,6 +158,10 @@ public:
         int amount,
         const std::shared_ptr<Object> &damager) override;
 
+    void applyDamageEffect(
+        int amount,
+        const std::shared_ptr<Object> &damager) override;
+
     void giveXP(int amount);
     void setXP(int xp);
 
@@ -142,7 +171,66 @@ public:
     void stopTalking();
 
     bool isSelectable() const override;
-    bool isMovementRestricted() const { return _movementRestricted || !canExecuteActions(); }
+    int effectState() const { return _effectState; }
+    int effectAIStateMask() const { return _effectAIStateMask; }
+    int effectAmbientState() const { return _effectAmbientState; }
+    EffectId activeStateRootId() const { return _activeStateRootId; }
+    void onStateRootApplied(const EffectInstance &pending);
+    bool isHasted() const { return _hasted; }
+    bool isSlowed() const { return _slowed; }
+    void setHasted(bool value) { _hasted = value; }
+    void setSlowed(bool value) { _slowed = value; }
+    void rebuildStateEffects(const EffectInstance *pending = nullptr, uint64_t removingOrder = 0);
+    void beginStateImmobilization();
+    void restoreMovementAfterState();
+    void setInternalStateEffect(int state, int ambientState, EffectId id);
+    void clearInternalStateEffect(EffectId id);
+    void onInternalStateRemoved(EffectId id);
+    void recomputeAIStateEffects(int pendingMask = 0xffff, uint64_t removingOrder = 0);
+    struct EffectStackCounts { int positive {0}; int negative {0}; };
+    EffectStackCounts effectStackCounts() const;
+    void addEffectIcon(int icon);
+    void removeEffectIcon(int icon);
+    void resolveDamageShields(Creature &attacker);
+
+    void damageForcePoints(int amount);
+    void healForcePoints(int amount);
+    int maxForcePoints() const;
+    void setBodyFuel(bool active) { _bodyFuel = active; }
+    void setThrowParryBlocked(bool blocked) { _throwParryBlocked = blocked; }
+    bool throwParryBlocked() const { return _throwParryBlocked; }
+    void refreshBodyFuel();
+    int adjustedSpellForcePointCost(const Spell &spell) const;
+    bool canPaySpellForcePointCost(const Spell &spell) const;
+    bool commitSpellForcePointCost(const Spell &spell, int &cost);
+    uint32_t forceItemMask() const;
+    int forceBodyLevel() const;
+    int spellCasterLevel(const Spell &spell, bool itemOrCheat = false) const;
+    bool readySpellLikeAbility(SpellType spell, int &casterLevel) const;
+    bool consumeSpellLikeAbility(SpellType spell, int &casterLevel);
+    void addTemporaryHitPoints(int amount, bool restoring = false);
+    void removeTemporaryHitPoints(int amount);
+    void addTemporaryForcePoints(int amount, bool restoring = false);
+    void removeTemporaryForcePoints(int amount);
+    int bonusForcePoints() const { return _bonusForcePoints; }
+    void setBonusForcePoints(int amount);
+    int currentHitPoints() const override {
+        return narrowSignedResource(static_cast<int64_t>(_currentHitPoints) + _temporaryHitPoints);
+    }
+
+    void multiplyMovementRate(float multiplier);
+    void recomputeMovementRate(uint64_t removingId = 0);
+    float movementRate(bool applyMobility = false) const;
+    bool isRunLimited() const;
+    void setRunLimited(bool limited) { _runLimited = limited; }
+    MovementType movementType() const { return _movementType; }
+
+    bool canCastSpells() const { return canExecuteActions(); }
+    bool canMove() const { return canExecuteActions() && (_effectAIStateMask & 0x02) != 0; }
+    bool canAttack() const { return canExecuteActions() && (_effectAIStateMask & 0x84) == 0x84; }
+    bool isMovementRestricted() const { return _movementRestricted || !canMove(); }
+    bool movementLockedByAction() const { return _movementRestricted; }
+    bool permitsAction(const Action &action) const;
     bool isLevelUpPending() const;
 
     glm::vec3 getSelectablePosition() const override;
@@ -156,8 +244,8 @@ public:
     void setPresentation(const CreaturePresentation &presentation);
     uint16_t portraitId() const { return _portraitId; }
     std::shared_ptr<graphics::Texture> portrait() const { return _portrait; }
-    float walkSpeed() const { return _walkSpeed; }
-    float runSpeed() const { return _runSpeed; }
+    float walkSpeed() const { return _walkSpeed * movementRate(true); }
+    float runSpeed() const { return _runSpeed * movementRate(true); }
     float creaturePersonalSpace() const { return _creaturePersonalSpace; }
     CreatureSize size() const { return _size; }
     CreatureAttributes &attributes() { return _attributes; }
@@ -166,6 +254,20 @@ public:
     const ItemAttributes &itemAttributes() const { return _itemAttributes; }
     Faction faction() const { return _faction; }
     int xp() const { return _xp; }
+    float challengeRating() const { return _challengeRating; }
+    int getReputationToward(const Creature &target) const;
+    void onDestroyabilityChanged();
+    bool applyDeathEffect(const std::shared_ptr<Object> &damager, bool noFadeAway,
+                          const EffectInstance *operation = nullptr);
+    bool applyResurrectionEffect(int hpPercent);
+    void applyHealingEffect(int amount, const std::shared_ptr<Object> &creator, bool quiet);
+    void removeEffectsOnDeath();
+
+    void addArmorClassEffect(const EffectInstance &effect);
+    void removeArmorClassEffect(const EffectInstance &effect);
+    void updateArmorClassEffectCursor();
+    void clearArmorClassEffectCache() { _armorClassCache = {}; _armorClassCursor = {}; }
+
     Alignment alignment() const;
     RacialType racialType() const { return _race; }
     Subrace subrace() const { return _subrace; }
@@ -174,6 +276,11 @@ public:
     bool isPC() const { return _isPC; }
     int assignedPuppet() const { return _assignedPuppet; }
     bool isPuppet() const { return _puppet; }
+    CombatForm currentForm() const { return _currentForm; }
+    CombatStance combatStance() const { return _combatStance; }
+    const AutoBalanceContext &autoBalanceContext() const {
+        return _autoBalanceContext;
+    }
 
     void setGender(Gender gender) { _gender = gender; }
     void setAppearance(int appearance) { _appearance = appearance; }
@@ -200,6 +307,19 @@ public:
     void setAssignedPuppet(int puppet) { _assignedPuppet = puppet; }
     void setPuppet(bool puppet) { _puppet = puppet; }
     void setWalkmeshMaterial(int material) { _walkmeshMaterial = material; }
+    void setCurrentForm(CombatForm form) { _currentForm = form; }
+    bool isStealthed() const { return _stealthMode; }
+    void setStealthMode(bool enabled);
+    void beginSpellActivity(int spellId, bool itemCast);
+    void updateMindTrickPerception(const Creature &target, bool heard, bool seen);
+    void resolveInitiative() { _initiative = !isPC(); }
+    bool hasInitiative() const { return _initiative; }
+    void setExcitedState(uint8_t row);
+    bool isExcited() const { return _excitedTime > 0.0f; }
+    void setAutoBalanceContext(AutoBalanceContext context) {
+        _autoBalanceContext = context;
+        _autoBalancePlayerLevelAtSpawnSet = true;
+    }
 
     // Animation
 
@@ -220,6 +340,7 @@ public:
      * the layer disappears on its own once it has run.
      */
     void playOverlayAnimation(AnimationType type);
+    int selectMeleeAttackVariant(bool cinematic);
 
     void updateModelAnimation();
 
@@ -307,7 +428,9 @@ public:
     static constexpr uint8_t kUltravisionCounter = 0x02;
     static constexpr uint8_t kTrueSeeingCounter = 0x04;
 
+    uint8_t visibilityCounterBits() const { return _visibilityCounterBits; }
     void setVisibilityCounter(uint8_t bit);
+    void restoreBlindnessCounter(int mask, uint64_t removedApplication);
     void restoreVisibilityCounter(
         EffectType type,
         uint8_t bit,
@@ -321,19 +444,37 @@ public:
 
     // Combat
 
-    void activateCombat();
+    void activateCombat(uint8_t activationType = 1);
+    uint8_t combatActivationType() const { return _combatState.activationType; }
+    bool clientCombatMode() const { return _clientCombatMode; }
+    void setClientCombatMode(bool active);
+    void broadcastCombatState(uint32_t opponent);
+    void removeCombatInvisibilityEffects();
+    void removeMindTrickEffects();
+    uint32_t lastWeaponUsed() const { return _lastWeaponUsed; }
     void deactivateCombat(float delay);
 
     bool isInCombat() const { return _combatState.active; }
     bool isDebilitated() const;
     bool isTemporarilyDead() const;
+    EffectId activePoisonEffectId() const { return _activePoisonEffectId; }
+    void setActivePoisonEffectId(EffectId id) { _activePoisonEffectId = id; }
+    void clearActivePoisonEffectId(EffectId id) {
+        if (_activePoisonEffectId == id) _activePoisonEffectId = kUnassignedEffectId;
+    }
+    bool isPartyMember() const;
     bool isInvisibleTo(const Creature &observer) const;
     void clearHostileActionsAgainst(const Object &object);
+    bool isEffectLinkImmune(const Effect &effect) const;
     bool isTwoWeaponFighting() const;
     std::shared_ptr<Item> getOffhandAttackWeapon() const;
 
+    bool stateControlsActions() const;
+
     int forcePoints() const { return _forcePoints; }
-    int currentForce() const { return _currentForce; }
+    int currentForce() const { return _currentForce + _temporaryForcePoints; }
+    int currentForceWithoutTemporary() const { return _currentForce; }
+    void regenerateForcePoints(int amount);
 
     uint32_t getAttemptedAttackTarget() const {
         auto target = _combatState.attemptedAttackTarget.resolve();
@@ -363,17 +504,42 @@ public:
     int getEffectiveAbilityScore(Ability ability) const;
     int getEffectiveAbilityModifier(Ability ability) const;
     bool hasEffectiveFeat(FeatType feat) const;
+    DefenseBreakdown getDefenseBreakdown(const Creature *attacker, int damageFlags) const;
     int getDefense(const Creature *attacker, int damageFlags) const;
     int getDefense() const;
-    int getFortitudeSave(SavingThrowType savingThrowType = SavingThrowType::All) const;
-    bool rollFortitudeSave(
-        int difficultyClass,
-        SavingThrowType savingThrowType = SavingThrowType::All) const;
-    int getPhysicalDamageBonus(const Item *weapon, bool offHand) const;
+    // Ordinary ranged defense consumes the same permission as active saber throws.
+    bool canParryRangedWeapon(const Creature &shooter, int damageFlags, bool &canReturn) const;
+    AttackResultType resolveRangedDefense(const Creature &shooter, int damageFlags, int attackTotal) const;
+    AttackResultType resolveRangedMiss(const Creature &shooter, const Item &weapon) const;
+    SavingThrowBreakdown getSavingThrowBreakdown(
+        SavingThrow save, SavingThrowType type = SavingThrowType::All,
+        const Object *versus = nullptr) const;
+    int getSavingThrow(SavingThrow save) const;
+    SavingThrowResult rollSavingThrow(
+        SavingThrow save, int difficultyClass,
+        SavingThrowType type = SavingThrowType::All,
+        const Object *versus = nullptr) const;
+    SavingThrowResult getSavingThrowResult(
+        int total, int difficultyClass, SavingThrowType type,
+        const Object *versus = nullptr) const;
+    PhysicalDamageBonus getPhysicalDamageBonus(
+        const Item *weapon,
+        bool offHand) const;
+    int getPhysicalDamageAutoBalanceFactor() const;
+    int getSpellLevel(bool applyNegativeLevels = true) const;
+    ForceResistanceState &forceResistance() { return _forceResistance; }
+    const ForceResistanceState &forceResistance() const { return _forceResistance; }
     int getMassiveCriticalDamage(const Item *weapon, bool criticalHit) const;
-    int getDamageResistanceFeatBonus() const;
+    void getDamageResistanceFeatBonuses(
+        int damage,
+        DamageResolution &resolution) const;
+    DamagePower calculateDamagePower(
+        const Creature *target,
+        const Item *weapon,
+        bool offHand) const;
     void addPhysicalDamageModifiers(
         DamagePacket &damage,
+        DamageBreakdown &breakdown,
         const Creature *target,
         const Item *weapon,
         bool offHand,
@@ -381,13 +547,29 @@ public:
     void getMainHandDamage(int &min, int &max) const;
     void getOffhandDamage(int &min, int &max) const;
 
+    void setAttemptedSpellTarget(uint32_t id);
+    std::shared_ptr<Object> attemptedSpellTarget() const { return _combatState.attemptedSpellTarget.resolve(); }
+    float maxCleaveRange(const Creature *target) const;
+    std::string getWeaponModelName(int slot) const;
     void setAttemptedAttackTarget(uint32_t target);
-    void beginCombatAttack(std::shared_ptr<Object> target, FeatType feat);
+    void beginCombatAttack(Object &target, FeatType feat);
     void finishCombatRound();
+    void cancelCombat(int runEndRound = 0);
+    void recordQueuedAttack(Creature &target);
+    uint32_t getGoingToBeAttackedBy() const { return _incomingAttacker.id; }
+    uint32_t getFirstAttacker();
+    uint32_t getNextAttacker() { return _attackerList.next(); }
+    int getLastAttackType() const { return _receivedAttack.scriptType(isInCombat()); }
+    int getLastAttackMode() const { return _receivedAttack.scriptMode(isInCombat()); }
+    void receiveAttackEvent(const AttackHistory *history, uint32_t attackerId,
+                            const AttackEventFields *fields = nullptr);
+    void clearCurrentAttackTarget() { _combatState.attackTarget.reset(); }
     void setLastAttackResult(AttackResultType result) { _lastAttackResult = result; }
     void adjustModifiedAttacks(int amount);
     bool applyAssuredHit();
     void removeAssuredHit() { _assuredHit = false; }
+    bool applyAssuredDeflection(int returnDamage);
+    void removeAssuredDeflection() { _assuredDeflection = _assuredReturn = false; }
 
     // END Combat
 
@@ -438,10 +620,31 @@ public:
 
     // END Listeners
 
+    int getSpellSaveDC(int spellId) const;
+    void playForceResistedAnimation();
+    void beginForcePush(const glm::vec3 &destination, float facing);
+    void endForcePush();
+    bool isForcePushed() const { return _forcePushDestination.has_value(); }
+
+    int furyDamageBonus() const { return _furyDamageBonus; }
+    int furySpellState() const { return _furySpellState; }
+    void applyFuryState(int spellId);
+    void clearFuryState();
+    void incrementFuryDamageBonus();
+
 protected:
     bool canExecuteActions() const override;
 
 private:
+    void updateForcePush(float dt);
+    void updateStateHeartbeat(float dt);
+    Timer _stateSupportTimer;
+    std::optional<glm::vec3> _forcePushDestination;
+    float _forcePushFacing {0.0f};
+    int getSavingThrowBase(SavingThrow save) const;
+    int getSavingThrowEffectBonus(SavingThrow save, SavingThrowType type,
+                                 const Object *versus) const;
+
     friend class ModuleSnapshotBuilder;
     friend class TestGameModule;
     // Serializable
@@ -458,6 +661,8 @@ private:
     Faction _faction {Faction::Invalid};
     bool _disarmable {false};
     bool _noPermDeath {false};
+    std::optional<std::string> _livingName;
+    EffectId _activePoisonEffectId {kUnassignedEffectId};
     bool _notReorienting {false};
     uint8_t _bodyVariation {0};
     std::optional<CreaturePresentation> _presentation;
@@ -465,14 +670,29 @@ private:
     bool _partyInteract {false};
     int32_t _walkRate {0};
     uint8_t _naturalAC {0};
+    ArmorClassCache _armorClassCache;
+    ArmorClassCursor _armorClassCursor;
     int16_t _forcePoints {0};
+    // LvlStatList/LvlStatForce: the base grant for each individual level.
+    std::vector<uint8_t> _levelForcePoints;
     int16_t _currentForce {0};
+    int32_t _temporaryHitPoints {0};
+    int32_t _temporaryForcePoints {0};
+    int32_t _bonusForcePoints {0};
+    int8_t _furyDamageBonus {-1};
+    int32_t _furySpellState {0};
+    bool _temporaryHitPointsRestored {false};
+    bool _temporaryForcePointsRestored {false};
     int16_t _refBonus {0};
     int16_t _willBonus {0};
     int16_t _fortBonus {0};
     uint8_t _goodEvil {0};
     float _challengeRating {0};
     uint32_t _xp {0};
+    CombatForm _currentForm {CombatForm::None};
+    AutoBalanceContext _autoBalanceContext;
+    ForceResistanceState _forceResistance;
+    bool _autoBalancePlayerLevelAtSpawnSet {false};
 
     std::string _onNotice;
     std::string _onSpellAt;
@@ -486,9 +706,8 @@ private:
     std::string _onDeath;
     std::string _onBlocked;
 
-    // Retail CreatnScrptFird. The creation script belongs to the creature, not
-    // to any one area attachment: it fires at most once per creature and the
-    // flag travels with the creature through saves.
+    // CreatnScrptFird tracks whether this creature has run its creation script.
+    // It persists across area attachments and saves.
     bool _spawnScriptFired {false};
 
     // Door currently obstructing this creature, and the door the blocked event
@@ -505,6 +724,12 @@ private:
     uint8_t _perceptionId {0xFF};
 
     CreatureAttributes _attributes;
+    struct SpellLikeAbility {
+        uint16_t spell {0};
+        uint8_t flags {0};
+        uint8_t casterLevel {0};
+    };
+    std::vector<SpellLikeAbility> _spellLikeAbilities;
     std::map<int, std::shared_ptr<Item>> _equipment;
     // END Serializable
 
@@ -531,13 +756,40 @@ private:
     ItemAttributes _itemAttributes;
 
     bool _movementRestricted {false};
+    float _movementRate {1.0f};
+    bool _hasted {false};
+    bool _slowed {false};
+    bool _runLimited {false};
+    std::optional<MovementType> _movementTypeBeforeStateImmobilization;
+    int _effectState {0};
+    int _effectAmbientState {0};
+    int _effectAIStateMask {0xffff};
+    bool _bodyFuel {false};
+    bool _throwParryBlocked {false};
+    bool projectileDefenseEligible(const Creature &shooter, int damageFlags,
+        const Item *weapon, bool allowShield, bool &shieldHit, bool &canReturn) const;
+    EffectId _internalStateEffectId {0};
+    EffectId _activeStateRootId {0};
+    std::map<int, int> _effectIconCounts;
     CombatState _combatState;
+    bool _clientCombatMode {false};
+    uint32_t _lastWeaponUsed {script::kObjectInvalid};
+    SavedObjectReference _incomingAttacker;
+    AttackerList _attackerList;
+    AttackHistory _receivedAttack;
+    CombatStance _combatStance {CombatStance::None};
+    bool _stealthMode {false};
+    bool _initiative {false};
+    float _excitedTime {0.0f};
+    int _lastMeleeAttackVariant {-1};
     RuntimeObjectRef<Object> _lastHostileTarget;
     ActionType _lastAttackAction {ActionType::QueueEmpty};
     FeatType _lastCombatFeat {FeatType::Invalid};
     AttackResultType _lastAttackResult {AttackResultType::Invalid};
     int _modifiedAttacks {0};
     bool _assuredHit {false};
+    bool _assuredDeflection {false};
+    bool _assuredReturn {false};
     bool _immortal {false};
     std::shared_ptr<resource::SoundSet> _soundSet;
     BodyBag _bodyBag;
@@ -572,14 +824,15 @@ private:
     void loadTransformFromGIT(const resource::generated::GIT_Creature_List &git);
 
     void onEffectsCleared() override;
+    void onEffectsRestored() override;
     void updateModel();
 
     // Refresh appearance-derived state (model type, size, speeds, footstep, envmap,
     // portrait) for the current _appearance, without building a scene node.
     void loadAppearanceProperties();
 
-    // Recompute the disguise appearance override from equipped items: switch to a
-    // disguise item's appearance when one is equipped, and restore the original
+    // Presentation-only equipment snapshots retain their visual-only override.
+    // Live equipment uses the Disguise effect provider and restores the original
     // appearance when none remains. Updates _appearance only; callers rebuild the model.
     void updateDisguise();
     void updateEquipmentPresentation();
@@ -601,7 +854,6 @@ private:
     std::string getBodyTextureName() const;
     std::string getHeadModelName() const;
     std::string getMaskModelName() const;
-    std::string getWeaponModelName(int slot) const;
 
     // END Appearance
 
@@ -654,13 +906,15 @@ private:
     void appendEquippedItemEffects(
         std::deque<EffectInstance> &effects,
         int slot,
-        const std::shared_ptr<Item> &item) const;
+        const std::shared_ptr<Item> &item, bool onlyDeferredEffects = false) const;
     std::deque<EffectInstance> effectsWithoutEquippedSource(
         const Item *source) const;
     std::deque<EffectInstance> rebuildEquippedItemEffects(
         const std::map<int, std::shared_ptr<Item>> &equipment) const;
     int derivePermanentMaxHitPoints() const;
     void restoreSerializedVitality();
+    void applyHitPointDamage(int amount, const std::shared_ptr<Object> &damager);
+    int consumeTemporaryHitPoints(int amount);
     void updateDeathFromCurrentHitPoints();
     // END Blueprint
 };

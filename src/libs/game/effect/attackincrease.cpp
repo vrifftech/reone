@@ -16,13 +16,17 @@
  */
 
 #include "reone/game/effect/attackincrease.h"
+#include "reone/game/object/creature.h"
 
 namespace reone {
 
 namespace game {
 
-void AttackIncreaseEffect::applyTo(Object &object) {
-    // TODO: implement
+EffectApplicationResult AttackIncreaseEffect::onApply(Object &object, EffectInstance &) {
+    if (dyn_cast<Creature>(&object) && _bonus <= 0) {
+        return EffectApplicationResult::Rejected;
+    }
+    return EffectApplicationResult::Retained;
 }
 
 } // namespace game

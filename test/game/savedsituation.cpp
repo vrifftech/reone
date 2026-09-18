@@ -184,7 +184,7 @@ TEST_F(SavedSituationTest, translates_every_supported_stack_value_without_losing
     auto runtimeObject = game.newCreature();
     EffectInstance effect;
     effect.id = 77;
-    effect.retailType = static_cast<uint16_t>(EffectType::Disease);
+    effect.serializedType = static_cast<uint16_t>(EffectType::Disease);
     effect.subType = 8;
     effect.creatorId = kSavedRuntimeInvalidObjectId;
     effect.integerParameters = {4, 5, 6};
@@ -264,7 +264,7 @@ TEST_F(SavedSituationTest, saved_effect_vm_value_reuses_effect_instance_when_app
     auto situation = situationFor(fixture);
     EffectInstance effect;
     effect.id = 19160;
-    effect.retailType = static_cast<uint16_t>(EffectType::Disease);
+    effect.serializedType = static_cast<uint16_t>(EffectType::Disease);
     effect.subType = 8;
     effect.creatorId = kSavedRuntimeInvalidObjectId;
     effect.spellId = 321;
@@ -285,7 +285,7 @@ TEST_F(SavedSituationTest, saved_effect_vm_value_reuses_effect_instance_when_app
     ASSERT_EQ(target->effects().size(), 1);
     const auto &applied = target->effects().front();
     EXPECT_EQ(applied.id, 19160);
-    EXPECT_EQ(applied.retailType, static_cast<uint16_t>(EffectType::Disease));
+    EXPECT_EQ(applied.serializedType, static_cast<uint16_t>(EffectType::Disease));
     EXPECT_EQ(applied.semanticSubType(), 8);
     EXPECT_EQ(applied.durationType(), DurationType::Permanent);
     EXPECT_FLOAT_EQ(applied.duration, 12.0f);

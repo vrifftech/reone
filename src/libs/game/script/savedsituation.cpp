@@ -221,12 +221,12 @@ SavedScriptSituationImportResult SavedScriptSituationImporter::import(
     if (situation.crc != 0) {
         return failure(
             SavedScriptSituationImportError::UnsupportedCrc,
-            "retail only executes saved script situations with CRC zero");
+            "saved script execution requires CRC zero");
     }
     if (situation.secondaryPointer != 0) {
         return failure(
             SavedScriptSituationImportError::UnsupportedSecondaryPointer,
-            "non-zero SecondaryPtr is not executable by the retail resume path");
+            "saved script execution requires SecondaryPtr zero");
     }
     if (situation.codeSize < 0 ||
         static_cast<size_t>(situation.codeSize) != situation.code.size()) {

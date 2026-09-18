@@ -1,3 +1,10 @@
+#include "reone/game/spellrules.h"
+#include "reone/game/forcerules.h"
+#include "reone/game/d20/spell.h"
+#include "reone/game/savingthrowrules.h"
+#include "../deathrules.h"
+#include "reone/game/deathexperience.h"
+#include "reone/game/reputes.h"
 /*
  * Copyright (c) 2020-2023 The reone project contributors
  *
@@ -16,6 +23,15 @@
  */
 
 #include "reone/game/object/creature.h"
+#include "reone/game/effect/regenerate.h"
+#include "reone/game/projectiles.h"
+#include "reone/game/staterules.h"
+#include "../posthitdata.h"
+
+#include "reone/game/d20/abilityrules.h"
+#include "reone/game/effect/rules.h"
+#include "reone/game/effect/damageshield.h"
+#include "reone/game/effect/creaturestate.h"
 
 #include <array>
 
@@ -26,6 +42,10 @@
 #include "reone/game/action/usefeat.h"
 #include "reone/game/animationutil.h"
 #include "reone/game/attack.h"
+#include "reone/game/autobalance.h"
+#include "reone/game/effect/linkeffects.h"
+#include "../physicalcombatrules.h"
+#include "../effectimmunityrules.h"
 #include "reone/game/d20/classes.h"
 #include "reone/game/debug.h"
 #include "reone/game/di/services.h"
@@ -38,6 +58,9 @@
 #include "reone/game/effect/attackincrease.h"
 #include "reone/game/effect/bonusfeat.h"
 #include "reone/game/effect/damage.h"
+#include "reone/game/effect/disguise.h"
+#include "reone/game/effectfeedback.h"
+#include "reone/game/effect/visual.h"
 #include "reone/game/effect/damagedecrease.h"
 #include "reone/game/effect/damageimmunitydecrease.h"
 #include "reone/game/effect/damageimmunityincrease.h"
@@ -96,14 +119,44 @@ namespace reone {
 namespace game {
 
 static constexpr int kStrRefRemains = 38151;
-static constexpr int kMaximumDodgeBonus = 10;
-static constexpr int kMaximumSavingThrowModifier = 20;
 static constexpr int kMaximumDamageEffectModifier = 36;
 static constexpr int kAllSavingThrows = 0;
 static constexpr int kFortitudeSavingThrow = 1;
-static constexpr int kSituationalAttackBonus = 10;
+static constexpr int kReflexSavingThrow = 2;
+static constexpr int kWillSavingThrow = 3;
+
+static int rollDamageShieldContribution(ServicesView &services, int selector) {
+    if (selector <= 5) return selector;
+    const auto table = getRequiredTwoDA(services.resource.twoDas, "iprp_damagecost");
+    return rollDamageShieldDice(*table, selector, [](int low, int high) { return randomInt(low, high); });
+}
+
+static int getHighestOwnedFeatRank(
+    const Creature &creature,
+    FeatType firstRank,
+    int rankCount) {
+
+    int first = static_cast<int>(firstRank);
+    for (int rank = rankCount; rank >= 1; --rank) {
+        if (creature.hasEffectiveFeat(static_cast<FeatType>(first + rank - 1))) {
+            return rank;
+        }
+    }
+    return 0;
+}
+
+static int getHighestTotalDefenseClassLevel(
+    const CreatureAttributes &attributes) {
+
+    return std::max({
+        attributes.getClassLevel(ClassType::Scoundrel),
+        attributes.getClassLevel(ClassType::JediSentinel),
+        attributes.getClassLevel(ClassType::JediWatchman),
+        attributes.getClassLevel(ClassType::SithAssassin),
+    });
+}
+
 static constexpr float kCloseRangeAttackDistance2 = 25.0f;
-static constexpr size_t kACBonusTypeCount = static_cast<size_t>(ACBonus::Deflection) + 1;
 static constexpr float kKeepPathDuration = 1000.0f;
 static constexpr float kPathPointTolerance = 0.5f;
 
@@ -111,7 +164,6 @@ static constexpr char kItemPropertyCostTable[] = "iprp_costtable";
 static constexpr char kBonusCostTable[] = "iprp_bonuscost";
 static constexpr char kMeleeCostTable[] = "iprp_meleecost";
 static constexpr char kDecreaseCostTable[] = "iprp_neg5cost";
-static constexpr char kDamageCostTable[] = "iprp_damagecost";
 static constexpr char kResistanceCostTable[] = "iprp_resistcost";
 static constexpr char kReductionCostTable[] = "iprp_soakcost";
 static constexpr char kVulnerabilityCostTable[] = "iprp_damvulcost";
@@ -160,7 +212,7 @@ static bool racialTypeMatches(uint16_t racialType, const Creature &target) {
 
 static bool attackAlignmentGroupMatches(uint16_t alignment, const Creature &target) {
     auto group = static_cast<Alignment>(alignment);
-    // The native attack-property handler stores Neutral in the unused
+    // The attack-property handler stores Neutral in the unused
     // law/chaos qualifier, so it applies to every target.
     return group == Alignment::All ||
            group == Alignment::Neutral ||
@@ -194,21 +246,6 @@ static DamagePower getDamageReductionPower(
     return static_cast<DamagePower>(subtype + 1);
 }
 
-static bool acDamageTypePropertyApplies(uint16_t subtype, int damageFlags) {
-    // KOTOR 1 stores the raw IPRP_COMBATDAM row in the effect qualifier, then
-    // compares it directly with runtime damage flags. Preserve that mismatch.
-    switch (subtype) {
-    case 1:
-        return damageFlags == 0;
-    case 2:
-        return damageFlags == static_cast<int>(DamageType::Bludgeoning);
-    case 4:
-        return damageFlags == static_cast<int>(DamageType::Piercing);
-    default:
-        return false;
-    }
-}
-
 static bool attackPropertyApplies(
     ItemProperty property,
     uint16_t subtype,
@@ -229,26 +266,6 @@ static bool attackPropertyApplies(
     }
 }
 
-static bool defensePropertyApplies(
-    ItemProperty property,
-    uint16_t subtype,
-    const Creature *attacker,
-    int damageFlags) {
-
-    switch (property) {
-    case ItemProperty::AcBonus:
-        return true;
-    case ItemProperty::AcBonusVsAlignmentGroup:
-        return attacker && defenseAlignmentGroupMatches(subtype, *attacker);
-    case ItemProperty::AcBonusVsDamageType:
-        return acDamageTypePropertyApplies(subtype, damageFlags);
-    case ItemProperty::AcBonusVsRacialGroup:
-        return attacker && racialTypeMatches(subtype, *attacker);
-    default:
-        return false;
-    }
-}
-
 static void getSituationalAttackBonuses(
     const Creature &attacker,
     const Creature &target,
@@ -260,16 +277,20 @@ static void getSituationalAttackBonuses(
     meleeOnRangedBonus = 0;
 
     if (weapon && weapon->isRanged()) {
-        if (attacker.getSquareDistanceTo(target) <= kCloseRangeAttackDistance2) {
-            closeProximityRangedBonus = kSituationalAttackBonus;
-        }
+        closeProximityRangedBonus = getCloseProximityRangedAttackBonus(
+            attacker.game().isTSL(),
+            attacker.getSquareDistanceTo(target) <= kCloseRangeAttackDistance2,
+            attacker.hasEffectiveFeat(FeatType::CloseCombat),
+            attacker.hasEffectiveFeat(FeatType::ImprovedCloseCombat));
         return;
     }
 
     auto targetWeapon = target.getEquippedItem(InventorySlots::rightWeapon);
-    if (targetWeapon && targetWeapon->isRanged()) {
-        meleeOnRangedBonus = kSituationalAttackBonus;
-    }
+    meleeOnRangedBonus = getMeleeOnRangedAttackBonus(
+        attacker.game().isTSL(),
+        targetWeapon && targetWeapon->isRanged(),
+        target.hasEffectiveFeat(FeatType::CloseCombat),
+        target.hasEffectiveFeat(FeatType::ImprovedCloseCombat));
 }
 
 static bool equippedItemAppliesToAttack(
@@ -360,30 +381,32 @@ static int getItemPropertyValue(
 }
 
 static bool savingThrowModifierApplies(
-    int save,
+    int modifierSave,
     SavingThrowType modifierType,
     int requestedSave,
     SavingThrowType requestedType) {
 
-    return (save == kAllSavingThrows || save == requestedSave) &&
+    return (modifierSave == kAllSavingThrows ||
+            modifierSave == requestedSave) &&
            (modifierType == SavingThrowType::All ||
             modifierType == requestedType);
 }
 
 static bool savingThrowPropertyApplies(
-    ItemProperty property,
-    uint16_t subtype,
+    ItemProperty propertyType,
+    int subtype,
     int requestedSave,
     SavingThrowType requestedType) {
 
-    switch (property) {
+    switch (propertyType) {
     case ItemProperty::ImprovedSavingThrow:
-    case ItemProperty::DecreasedSavingThrows:
-        return subtype == static_cast<uint16_t>(SavingThrowType::All) ||
-               subtype == static_cast<uint16_t>(requestedType);
+        return requestedType != SavingThrowType::All &&
+               subtype == static_cast<int>(requestedType);
     case ItemProperty::ImprovedSavingThrowSpecific:
     case ItemProperty::DecreasedSavingThrowsSpecific:
-        return subtype == kAllSavingThrows || subtype == requestedSave;
+        return subtype == requestedSave;
+    case ItemProperty::DecreasedSavingThrows:
+        return true;
     default:
         return false;
     }
@@ -402,7 +425,7 @@ static std::optional<DamageModifier> getDamageModifier(
     uint16_t costValue,
     DamageType type) {
 
-    auto table = getRequiredTwoDA(services.resource.twoDas, kDamageCostTable);
+    auto table = getRequiredTwoDA(services.resource.twoDas, "iprp_damagecost");
 
     DamageModifier result {costValue, 0, 0, 0, type};
 
@@ -500,38 +523,67 @@ static bool equippedItemPropertiesAreActive(int slot) {
            slot != InventorySlots::leftWeapon2;
 }
 
-static void addDefenseModifier(
-    int value,
-    ACBonus modifierType,
-    std::array<int, kACBonusTypeCount> &modifiers) {
+static std::string formatFeedbackString(
+    Game &game,
+    ServicesView &services,
+    int strRef,
+    std::initializer_list<std::pair<int, std::string>> tokens) {
 
-    int index = static_cast<int>(modifierType);
-    if (value <= 0 || index < 0 || index >= static_cast<int>(modifiers.size())) {
-        return;
+    std::string text = services.resource.strings.getText(strRef);
+    for (const auto &[token, value] : tokens) {
+        text = game.substituteCustomToken(
+            std::move(text),
+            token,
+            value);
     }
-
-    if (modifierType == ACBonus::Dodge) {
-        modifiers[index] += value;
-    } else {
-        modifiers[index] = std::max(modifiers[index], value);
-    }
+    return text;
 }
 
-static int getDefenseModifier(
-    const std::array<int, kACBonusTypeCount> &bonuses,
-    const std::array<int, kACBonusTypeCount> &penalties) {
+static void applyDeathExperience(
+    Creature &victim, const std::shared_ptr<Object> &damager, const std::string &victimName,
+    Game &game, ServicesView &services) {
 
-    int result = std::min(
-        bonuses[static_cast<int>(ACBonus::Dodge)] -
-            penalties[static_cast<int>(ACBonus::Dodge)],
-        kMaximumDodgeBonus);
+    // The party-table count excludes the original PC. The faction
+    // manager maps its (NPC faction, zero) query to repute's player row.
+    if (victim.isDead() || game.party().isMember(victim) ||
+        services.game.reputes.getReputation(Faction::Player, victim.faction()) > 10) return;
+    const auto player = game.party().actualPlayer();
+    if (!player) return; // CalculateDeathExperience's original-PC lookup failed.
+    const auto thresholds = readExperienceThresholds(
+        *getRequiredTwoDA(services.resource.twoDas, "exptable"), game.isTSL());
+    const auto &context = victim.autoBalanceContext();
+    const bool autoBalance = game.isTSL() && context.multiplierSet != 0 &&
+                             !game.party().isMember(victim);
+    const int challengeModifier = autoBalance
+        ? services.game.autoBalance.get(context.multiplierSet).challengeRatingModifier : 0;
+    const int row = getDeathExperienceRow(thresholds, std::uint32_t(player->xp()), game.isTSL());
+    const int column = getDeathExperienceColumn(game.isTSL(), victim.challengeRating(),
+        autoBalance, context.playerLevelAtSpawn, challengeModifier);
+    const int companions = static_cast<int>(std::count_if(
+        game.party().members().begin(), game.party().members().end(),
+        [](const Party::Member &member) { return member.npc != kNpcPlayer; }));
+    const auto xp = resolveDeathExperience(
+        *getRequiredTwoDA(services.resource.twoDas, "xptable"),
+        *getRequiredTwoDA(services.resource.twoDas, "npc"), row, column, game.isTSL(), companions);
 
-    for (int i = static_cast<int>(ACBonus::Natural);
-         i <= static_cast<int>(ACBonus::Deflection);
-         ++i) {
-        result += bonuses[i] - penalties[i];
+    // DistributeExperience ignores nonpositive awards and always awards
+    // the party. LastDamager is feedback attribution, not an XP recipient.
+    if (xp.awarded > 0) game.party().awardXP(xp.awarded, XPSource::Combat);
+
+    // Trap-owner attribution and the K2 death-message receiver remain separate
+    // producer work; do not manufacture a trap owner or reuse K1 strings in K2.
+    if (!game.isTSL()) {
+        auto recipient = dyn_cast<Creature>(damager);
+        if (!recipient) recipient = game.party().getLeader();
+        const auto leader = game.party().getLeader();
+        if (recipient && leader && leader->faction() == recipient->faction() &&
+            leader->getSquareDistanceTo(victim) <= 900.0f) {
+            game.messageLog().add(MessageLog::kFeedbackMessageType, MessageLog::Style::Normal,
+                formatFeedbackString(game, services, 1407,
+                    {{0, recipient->name()}, {1, victimName}, {2, std::to_string(xp.reported)}}));
+        }
+        game.floatingText().addExperience(victim, xp.awarded);
     }
-    return result;
 }
 
 Creature::Creature(
@@ -574,6 +626,11 @@ void Creature::retireAreaRuntime(
     _lastAttackAction = ActionType::QueueEmpty;
     _lastCombatFeat = FeatType::Invalid;
     _lastAttackResult = AttackResultType::Invalid;
+    _incomingAttacker = SavedObjectReference {};
+    _attackerList.clear();
+    _receivedAttack = {};
+    _lastWeaponUsed = script::kObjectInvalid;
+    _clientCombatMode = false;
 
     _perception.seen.clear();
     _perception.heard.clear();
@@ -684,7 +741,7 @@ void Creature::loadTransformFromGIT(const resource::generated::GIT_Creature_List
 }
 
 bool Creature::isDebilitated() const {
-    return _combatState.debilitated || hasEffect(EffectType::Stunned);
+    return _combatState.debilitated || !canExecuteActions();
 }
 
 bool Creature::isTemporarilyDead() const {
@@ -724,6 +781,16 @@ void Creature::setVisibilityCounter(uint8_t bit) {
     _visibilityCounterBits |= bit;
 }
 
+void Creature::restoreBlindnessCounter(int mask, uint64_t removedApplication) {
+    int remaining = _visibilityCounterBits & ~mask;
+    for (const auto &effect : effects()) {
+        if (effect.serializedType > 73) break;
+        if (effect.serializedType == 73 && effect.applicationOrder != removedApplication)
+            remaining |= effect.integerParameter(0);
+    }
+    _visibilityCounterBits = static_cast<uint8_t>(remaining);
+}
+
 bool Creature::hasVisibilityCounter(uint8_t bits) const {
     uint8_t effective = _visibilityCounterBits;
     if (!hasEffect(EffectType::SeeInvisible)) {
@@ -742,7 +809,7 @@ bool Creature::hasVisibilityCounter(uint8_t bits) const {
 void Creature::restoreVisibilityCounter(
     EffectType type,
     uint8_t bit,
-    EffectId removedEffect,
+    uint64_t removedApplication,
     bool trueSeeingRemovalQuirk) {
 
     _visibilityCounterBits &= ~bit;
@@ -752,8 +819,8 @@ void Creature::restoreVisibilityCounter(
     bool another = std::any_of(
         effects().begin(),
         effects().end(),
-        [type, removedEffect](const EffectInstance &applied) {
-            return applied.id != removedEffect &&
+        [type, removedApplication](const EffectInstance &applied) {
+            return applied.applicationOrder != removedApplication &&
                    applied.hasLiveRuntimeSource() &&
                    applied.type() == type;
         });
@@ -782,8 +849,10 @@ void Creature::clearHostileActionsAgainst(const Object &object) {
         _combatState.shouldDeactivate = true;
     }
 
-    for (auto it = _actions.begin(); it != _actions.end();) {
-        const std::shared_ptr<Action> &action = *it;
+    const auto candidates = _actions.nodes;
+    for (const auto &node : candidates) {
+        if (std::find(_actions.nodes.begin(), _actions.nodes.end(), node) == _actions.nodes.end()) continue;
+        const std::shared_ptr<Action> action = node->action;
         std::shared_ptr<Object> target;
         if (action && action->type() == ActionType::AttackObject) {
             target = static_cast<AttackObjectAction &>(*action).target();
@@ -794,18 +863,37 @@ void Creature::clearHostileActionsAgainst(const Object &object) {
             }
         }
 
-        if (target.get() != &object) {
-            ++it;
-            continue;
-        }
+        if (target.get() != &object) continue;
         action->cancel(action, *this);
         action->markCancelled();
-        it = _actions.erase(it);
+        auto position = std::find(_actions.nodes.begin(), _actions.nodes.end(), node);
+        if (position != _actions.nodes.end()) _actions.nodes.erase(position);
     }
 }
 
 bool Creature::canExecuteActions() const {
-    return !hasEffect(EffectType::Stunned);
+    if (isForcePushed()) return false;
+    return !_dead && !isTemporarilyDead() && !hasEffect(EffectType::Stunned) &&
+           (_effectState != 4 && _effectState != 5 && _effectState != 6);
+}
+
+bool Creature::permitsAction(const Action &action) const {
+    switch (action.type()) {
+    case ActionType::MoveToObject:
+    case ActionType::MoveToPoint:
+    case ActionType::MoveToLocation:
+    case ActionType::MoveAwayFromObject:
+    case ActionType::MoveAwayFromLocation:
+    case ActionType::RandomWalk:
+    case ActionType::Follow:
+    case ActionType::FollowLeader:
+    case ActionType::FollowOwner:
+    case ActionType::ForceFollowObject: return canMove();
+    case ActionType::AttackObject: return canAttack();
+    case ActionType::UseFeat:
+        return !isPhysicalAttackFeat(static_cast<const UseFeatAction &>(action).feat()) || canAttack();
+    default: return canExecuteActions();
+    }
 }
 
 bool Creature::isSelectable() const {
@@ -816,11 +904,51 @@ bool Creature::isSelectable() const {
             break;
         }
     }
-    return !_dead || hasDropableItems;
+    return !isTemporarilyDead() && (!_dead || _selectableWhenDead || hasDropableItems);
+}
+
+bool Creature::isRunLimited() const {
+    return _runLimited || (_stealthMode &&
+        (!_game.isTSL() || !hasEffectiveFeat(FeatType::StealthRun)));
+}
+
+void Creature::beginSpellActivity(int spellId, bool itemCast) {
+    if (itemCast) return;
+    if (_game.isTSL()) switch (spellId) {
+    case 181: case 182: case 184: case 200: case 201: case 269: return;
+    default: break;
+    }
+    setStealthMode(false);
+}
+
+void Creature::setStealthMode(bool enabled) {
+    if (_stealthMode == enabled) return;
+    _stealthMode = enabled;
+    _animDirty = true;
+    if (isRunLimited() && _movementType == MovementType::Run)
+        setMovementType(MovementType::Walk);
+}
+
+void Creature::updateMindTrickPerception(const Creature &target, bool heard, bool seen) {
+    if (!_game.isTSL() || (!heard && !seen) || target.isStealthed()) return;
+    if (_effectState != static_cast<int>(CreatureState::MindTrick) &&
+        _effectState != static_cast<int>(CreatureState::DroidScramble)) return;
+    if (getReputationToward(target) <= 10 && getSquareDistanceTo(target) <= 10.0f)
+        removeMindTrickEffects();
+}
+
+void Creature::setExcitedState(uint8_t row) {
+    const auto table = _services.resource.twoDas.get("excitedduration");
+    if (!table) return;
+    const float duration = table->getInt(row, "duration", 0) / 1000.0f;
+    if (duration > _excitedTime) _excitedTime = duration;
 }
 
 void Creature::update(float dt) {
+    _excitedTime = std::max(0.0f, _excitedTime - dt);
     Object::update(dt);
+    updateForcePush(dt);
+    updateStateHeartbeat(dt);
     updateModelAnimation();
     updateCombat(dt);
     updateLightsaberSoundPositions();
@@ -854,6 +982,10 @@ void Creature::updateModelAnimation() {
     default:
         if (_dead) {
             anim = model->model().getAnimation(getDeadAnimation());
+        } else if (_effectAmbientState == 11) {
+            anim = model->model().getAnimation(getAnimationName(AnimationType::LoopingSleep));
+        } else if (_combatStance == CombatStance::Meditative) {
+            anim = model->model().getAnimation(getAnimationName(AnimationType::LoopingMeditate));
         } else if (_talking) {
             anim = model->model().getAnimation(getTalkNormalAnimation());
             talkAnim = model->model().getAnimation(getHeadTalkAnimation());
@@ -893,14 +1025,14 @@ int Creature::derivePermanentMaxHitPoints() const {
 }
 
 void Creature::updateDeathFromCurrentHitPoints() {
-    if (_minOneHP && _currentHitPoints < 1) {
+    if (_minOneHP && currentHitPoints() < 1) {
         _currentHitPoints = 1;
     }
-    _dead = _currentHitPoints <= (_game.isTSL() && _isPC ? -10 : 0);
+    _dead = currentHitPoints() <= (_game.isTSL() && _isPC ? -10 : 0);
 }
 
 void Creature::restoreSerializedVitality() {
-    // MaxHitPoints is a retail cache. HitPoints and CurrentHitPoints are both
+    // MaxHitPoints is a cache. HitPoints and CurrentHitPoints are both
     // serialized on the base-vitality axis, so reconstruct the runtime value
     // only after permanent attributes, levels and feats have been read.
     if (_hitPoints <= 0 && _maxHitPoints > 0) {
@@ -977,10 +1109,35 @@ void Creature::initializeGeneratedVitality() {
         static_cast<int>(std::numeric_limits<int16_t>::max())));
     _maxHitPoints = derivePermanentMaxHitPoints();
     _currentHitPoints = _maxHitPoints;
+    int64_t force = 0;
+    _levelForcePoints.clear();
+    for (const auto &[clazz, level] : _attributes.classLevels()) {
+        const uint8_t gain = isForceUsingClass(clazz->type(), _game.isTSL())
+            ? static_cast<uint8_t>(clazz->forcedie()) : 0;
+        for (int i = 0; i < level; ++i) _levelForcePoints.push_back(gain);
+        force += static_cast<int64_t>(level) * gain;
+    }
+    _forcePoints = narrowSignedResource(force);
+    _currentForce = maxForcePoints();
     updateDeathFromCurrentHitPoints();
 }
 
 void Creature::damage(
+    int amount,
+    const std::shared_ptr<Object> &damager) {
+    if (!_dead && amount >= 0) {
+        // Direct damage has no typed packet. Publish a complete observation
+        // here; effect damage has already published one before retaliation.
+        std::array<int, 15> amounts;
+        amounts.fill(-1);
+        if (amount != std::numeric_limits<int>::max()) amounts.back() = amount;
+        setLastDamager(damager);
+        setLastDamageAmounts(amounts);
+    }
+    applyHitPointDamage(amount, damager);
+}
+
+void Creature::applyHitPointDamage(
     int amount,
     const std::shared_ptr<Object> &damager) {
     if (_dead) {
@@ -996,13 +1153,21 @@ void Creature::damage(
     }
 
     bool deathEffect = amount == std::numeric_limits<int>::max();
-    int previousHitPoints = _currentHitPoints;
-    setLastDamager(damager);
-    uint32_t damagerId = getLastDamager();
+    // Attribution belongs to this application, even when a nested hit has
+    // replaced the public last-damage observation.
+    const uint32_t damagerId = damager ? damager->id() : script::kObjectInvalid;
     if (deathEffect) {
+        consumeTemporaryHitPoints(_temporaryHitPoints);
+        if (_dead) return; // A removal callback may already have killed us.
         _currentHitPoints = 0; // special case for Death effect
     } else {
-        int adjustedAmount = applyDamageToHitPoints(amount, _currentHitPoints);
+        const int totalBefore = currentHitPoints();
+        const int allowedDamage = isMinOneHP()
+            ? std::min(amount, std::max(0, totalBefore - 1)) : amount;
+        const int remainingDamage = consumeTemporaryHitPoints(allowedDamage);
+        if (_dead) return;
+        _currentHitPoints = boundedResource(static_cast<int64_t>(_currentHitPoints) - remainingDamage);
+        const int adjustedAmount = allowedDamage;
         if (amount > 0) {
             _game.floatingText().addDamage(
                 *this, amount, adjustedAmount, damagerId);
@@ -1011,18 +1176,161 @@ void Creature::damage(
 
     runDamagedScript();
 
-    if (_immortal || _currentHitPoints > 0) {
+    if (_immortal || currentHitPoints() > 0) {
         return;
     }
 
+    (void)applyDeathEffect(damager, false);
+}
+
+int Creature::getReputationToward(const Creature &target) const {
+    const bool sourceParty = _game.party().isMember(*this);
+    const bool targetParty = _game.party().isMember(target);
+    if (&target == this || (sourceParty && targetParty)) return 100;
+    if (targetParty)
+        return std::clamp(_services.game.reputes.getReputation(Faction::Player, faction()), 0, 100);
+    return std::clamp(_services.game.reputes.getReputation(
+        sourceParty ? Faction::Player : faction(), target.faction()), 0, 100);
+}
+
+void Creature::removeEffectsOnDeath() {
+    const auto table = getRequiredTwoDA(_services.resource.twoDas, "removefxondeath");
+    std::vector<uint64_t> refused;
+    for (;;) {
+        auto found = std::find_if(_effects.begin(), _effects.end(), [&](const EffectInstance &record) {
+            return std::find(refused.begin(), refused.end(), record.applicationOrder) == refused.end() &&
+                !isEffectPreservedOnDeath(record, *table, _game.isTSL());
+        });
+        if (found == _effects.end()) break;
+        const auto id = found->id;
+        const auto order = found->applicationOrder;
+        removeEffectsById(id); // package removal can also remove exempt siblings
+        if (findEffectApplication(order)) refused.push_back(order);
+    }
+}
+
+void Creature::onDestroyabilityChanged() {
+    if (_destroyable && _dead && !_game.party().isMember(*this) && !_noPermDeath)
+        _game.queueObjectDestruction(*this, 3.0f);
+}
+
+bool Creature::applyDeathEffect(const std::shared_ptr<Object> &damager,
+                               bool noFadeAway, const EffectInstance *operation) {
+    if (_dead || _immortal || plotFlag()) return false;
+    if (_minOneHP) { _currentHitPoints = 1; return false; }
+    clearAllActions(true);
+    _game.combat().cancelActions(*this);
+    if (operation && shouldCheckDeathImmunity(operation->spellId, operation->semanticSubType())) {
+        const auto creator = operation->boundCreator();
+        if (hasEffectImmunity(ImmunityType::Death, dyn_cast<Creature>(creator).get())) return false;
+    }
+    const bool partyDeath = _game.party().isMember(*this);
+    // A standalone Death effect is a new observation; HP depletion is not.
+    // Keep a newer nested hit intact while attributing death to this source.
+    if (operation) {
+        std::array<int, 15> amounts;
+        amounts.fill(-1);
+        setLastDamager(damager);
+        setLastDamageAmounts(amounts);
+    }
+    setLastHostileActor(damager ? damager->id() : script::kObjectInvalid);
+    // K2's third Death parameter suppresses both XP and fade-away. K1 has
+    // no third-parameter XP gate.
+    if (!_game.isTSL() || !noFadeAway)
+        applyDeathExperience(*this, damager, _name, _game, _services);
+    finishCombatRound();
+    _combatState.active = false;
+    _combatState.activationType = 0;
+    setClientCombatMode(false);
+    _combatState.shouldDeactivate = false;
+    _combatState.attackTarget.reset();
+    _combatState.attackAction = ActionType::QueueEmpty;
+    _combatState.combatFeat = FeatType::Invalid;
+    runDeathScript();
     _dead = true;
-    _name = _services.resource.strings.getText(kStrRefRemains);
-
-    debug(str(boost::format("Creature %s is dead") % _tag));
-
+    _currentHitPoints = std::min(-11, static_cast<int>(_currentHitPoints));
+    if (!partyDeath) {
+        if (!_livingName) _livingName = _name;
+        _name = _services.resource.strings.getText(kStrRefRemains);
+    }
     playSound(SoundSetEntry::Dead);
     playAnimation(getDieAnimation());
-    runDeathScript();
+    removeEffectsOnDeath();
+    _currentHitPoints = std::min(-11, static_cast<int>(_currentHitPoints));
+    _dead = true;
+    setMovementType(MovementType::None);
+    const auto leader = _game.party().getLeader();
+    if (leader.get() == this) {
+        for (int index = 0; index < _game.party().getSize(); ++index) {
+            const auto member = _game.party().getMember(index);
+            if (member && member.get() != this && !member->isDead() && !member->isTemporarilyDead()) {
+                _game.party().setPartyLeaderByIndex(index);
+                break;
+            }
+        }
+    }
+    if (partyDeath || _noPermDeath || noFadeAway || !_destroyable) {
+        _game.cancelObjectDestruction(*this);
+    } else {
+        const auto table = getRequiredTwoDA(_services.resource.twoDas, "appearance");
+        _game.queueObjectDestruction(*this, readDestroyObjectDelay(*table, _appearance));
+    }
+    return true;
+}
+
+void Creature::applyHealingEffect(int amount, const std::shared_ptr<Object> &creator, bool quiet) {
+    if (isDead() || isTemporarilyDead()) return;
+    const int current = currentHitPointsWithoutTemporary();
+    const int maximum = narrowSignedResource(maxHitPoints());
+    const int sum = current + amount;
+    if (sum > maximum) amount = maximum - current;
+    _game.floatingText().addHeal(*this, amount);
+    // The effect uses the direct HP setter; it is not a damage event.
+    Object::setCurrentHitPoints(currentHitPointsWithoutTemporary() + amount);
+    if (!_game.isTSL() || !quiet)
+        addHitPointHealingFeedback(_game, _services, creator, *this, amount);
+    // Heal restarts this live, sorted walk after each temporary Wounding package.
+    for (size_t index = 0; index < _effects.size();) {
+        const auto record = _effects[index];
+        if (record.serializedType > 84) break;
+        if (record.serializedType == 84 && record.durationType() == DurationType::Temporary) {
+            if (!removeEffectsById(record.id)) break; // A reentrant removal may own it already.
+            index = 0;
+        } else {
+            ++index;
+        }
+    }
+}
+
+bool Creature::applyResurrectionEffect(int hpPercent) {
+    if (!_raiseable) return false;
+    // Skip the write when the combined pool is already positive.
+    // Writing that combined value to the ordinary pool would credit temp HP twice.
+    if (currentHitPoints() <= 0) {
+        Object::setCurrentHitPoints(getResurrectionHitPoints(
+            _game.isTSL(), currentHitPoints(), maxHitPoints(), hpPercent));
+    }
+    _dead = currentHitPoints() <= 0;
+    _game.cancelObjectDestruction(*this);
+    clearAllActions(true);
+    _game.combat().cancelActions(*this);
+    finishCombatRound();
+    _combatState.active = false;
+    _combatState.activationType = 0;
+    setClientCombatMode(false);
+    _combatState.shouldDeactivate = false;
+    _combatState.attackTarget.reset();
+    _combatState.attackAction = ActionType::QueueEmpty;
+    _combatState.combatFeat = FeatType::Invalid;
+    _destroyable = true;
+    _effectAIStateMask = 0xffff;
+    _bodyFuel = false;
+    resumeStateDrivenAnimation();
+    if (!_dead && _livingName) { _name = *_livingName; _livingName.reset(); }
+    _game.dismissDeathSequence(*this);
+    removeResurrectionEffects(_effects, [this](EffectId id) { removeEffectsById(id); });
+    _animDirty = true;
+    return true;
 }
 
 void Creature::updateCombat(float dt) {
@@ -1036,6 +1344,8 @@ void Creature::updateCombat(float dt) {
     }
     if (_combatState.shouldDeactivate && _combatState.deactivationTimer.elapsed()) {
         _combatState.active = false;
+        _combatState.activationType = 0;
+        setClientCombatMode(false);
         _combatState.shouldDeactivate = false;
         _combatState.debilitated = false;
         _combatState.attackTarget.reset();
@@ -1184,7 +1494,27 @@ bool Creature::equip(const std::string &resRef) {
     return equipped;
 }
 
+void Creature::applyDisguiseAppearance(int appearance) {
+    if (_disguised) return;
+    _appearanceBeforeDisguise = static_cast<uint16_t>(_appearance);
+    _appearance = static_cast<uint16_t>(appearance);
+    _disguised = true;
+    loadAppearanceProperties();
+    if (_sceneNode) updateModel();
+}
+
+void Creature::removeDisguiseAppearance() {
+    if (!_disguised) return;
+    _appearance = _appearanceBeforeDisguise;
+    loadAppearanceProperties();
+    if (_sceneNode) updateModel();
+    _disguised = false;
+}
+
 void Creature::updateDisguise() {
+    // Presentation-only snapshots cannot admit effects. Live equipment instead
+    // uses the same Disguise records as scripts, avoiding a second override.
+    if (!isPresentationOnly()) return;
     int disguiseAppearance = -1;
     for (auto &[slot, item] : _equipment) {
         if (item->hasDisguise()) {
@@ -1386,6 +1716,18 @@ glm::vec3 Creature::getSelectablePosition() const {
     }
 }
 
+void Creature::setAttemptedSpellTarget(uint32_t id) {
+    _combatState.attemptedSpellTarget = _game.getObjectById(id);
+}
+float Creature::maxCleaveRange(const Creature *target) const {
+    auto weapon = getEquippedItem(InventorySlots::rightWeapon);
+    if (weapon && weapon->isRanged()) return 22.0f;
+    const auto table = _services.resource.twoDas.get("appearance");
+    const float sourceRadius = table ? table->getFloat(_appearance, "hitradius") : 0.0f;
+    const float targetRadius = table && target ? table->getFloat(target->_appearance, "hitradius") : 0.0f;
+    return target ? sourceRadius + targetRadius + 4.1f : 4.0f;
+}
+
 float Creature::getAttackRange() const {
     float result = kDefaultAttackRange;
 
@@ -1407,11 +1749,16 @@ int Creature::getNeededXP() const {
 }
 
 void Creature::runSpawnScript() {
-    // Retail gates the creation script on CreatnScrptFird, so it fires at most
+    if (_game.isTSL() && !_autoBalancePlayerLevelAtSpawnSet) {
+        _autoBalanceContext.playerLevelAtSpawn =
+            static_cast<uint8_t>(_game.getGlobalNumber("G_PC_LEVEL"));
+        _autoBalancePlayerLevelAtSpawnSet = true;
+    }
+    // The game gates the creation script on CreatnScrptFird, so it fires at most
     // once per creature rather than once per area attachment. A party member
     // carried through an ordinary module transition is the same creature
     // object: the destination area takes it in without recreating it, and its
-    // OnSpawn must not run a second time. Retail also latches the flag
+    // OnSpawn must not run a second time. The game also latches the flag
     // regardless of whether a script was authored.
     if (_spawnScriptFired) {
         return;
@@ -1597,8 +1944,10 @@ void Creature::runOnNotice(const Object &object, bool heard, bool seen) {
          {script::ArgKind::LastPerceptionVanished, Variable::ofInt(!seen)}});
 }
 
-void Creature::activateCombat() {
+void Creature::activateCombat(uint8_t activationType) {
     _lightsaberIdlePowerDownPending = false;
+    if (_combatState.activationType != 1) _combatState.activationType = activationType;
+    setClientCombatMode(true);
     if (_combatState.active) {
         _combatState.shouldDeactivate = false;
         return;
@@ -1607,6 +1956,28 @@ void Creature::activateCombat() {
     _combatState.shouldDeactivate = false;
     _animDirty = true;
     setLightsabersPowered(true, true);
+}
+
+void Creature::applyFuryState(int spellId) {
+    _furyDamageBonus = 0;
+    switch (spellId) {
+    case 164: case 271: _furySpellState = 7; break;
+    case 165: case 272: _furySpellState = 8; break;
+    case 166: case 273: _furySpellState = 9; break;
+    default: break;
+    }
+}
+
+void Creature::clearFuryState() {
+    _furyDamageBonus = -1;
+    _furySpellState = 0;
+}
+
+void Creature::incrementFuryDamageBonus() {
+    if (!_game.isTSL()) return;
+    if (_furyDamageBonus >= 0 && _furyDamageBonus <= 5) {
+        ++_furyDamageBonus;
+    }
 }
 
 void Creature::setLightsabersPowered(bool powered, bool animate) {
@@ -1654,6 +2025,9 @@ void Creature::deactivateCombat(float delay) {
     if (delay <= 0.0f) {
         _lightsaberIdlePowerDownPending = false;
         _combatState.active = false;
+        _combatState.activationType = 0;
+        setClientCombatMode(false);
+        _combatState.attackTarget.reset();
         _combatState.shouldDeactivate = false;
         _combatState.debilitated = false;
         _animDirty = true;
@@ -1694,7 +2068,12 @@ std::shared_ptr<Item> Creature::getOffhandAttackWeapon() const {
     return offhand;
 }
 
-void Creature::beginCombatAttack(std::shared_ptr<Object> target, FeatType feat) {
+void Creature::beginCombatAttack(Object &targetObject, FeatType feat) {
+    setStealthMode(false);
+    auto target = _game.getObjectById(targetObject.id());
+    if (target) {
+        removeCombatInvisibilityEffects();
+    }
     _combatState.attackTarget = target;
     _combatState.attackAction = ActionType::AttackObject;
     _combatState.combatFeat = feat;
@@ -1704,7 +2083,136 @@ void Creature::setAttemptedAttackTarget(uint32_t target) {
     _combatState.attemptedAttackTarget = _game.getObjectById(target);
 }
 
+void Creature::recordQueuedAttack(Creature &target) {
+    const auto leader = _game.party().getLeader();
+    if (!target.isPC() && leader.get() != &target) return;
+    target._incomingAttacker = SavedObjectReference::fromRuntimeId(id());
+    _game.bindSavedObjectReference(target._incomingAttacker);
+}
+
+uint32_t Creature::getFirstAttacker() {
+    auto module = _game.module();
+    auto area = module ? module->area() : nullptr;
+    const auto *objects = area && area->isObjectResident(*this) ? &area->objects() : nullptr;
+    return _attackerList.first(objects,
+        [this](const auto &object) {
+            const auto creature = dyn_cast<Creature>(object);
+            return creature && creature->getAttackTarget().get() == this;
+        }, [](const auto &object) { return object->id(); });
+}
+
+void Creature::setClientCombatMode(bool active) {
+    _clientCombatMode = active;
+    _game.syncClientCombatMode();
+}
+
+void Creature::removeCombatInvisibilityEffects() {
+    std::vector<EffectId> packages;
+    for (const auto &effect : effects()) {
+        if ((effect.type() == EffectType::Invisibility &&
+             effect.integerParameter(0) == static_cast<int>(InvisibilityType::Normal)) ||
+            effect.type() == EffectType::Sanctuary) {
+            if (std::find(packages.begin(), packages.end(), effect.id) == packages.end())
+                packages.push_back(effect.id);
+        }
+    }
+    for (auto id : packages) removeEffectsById(id);
+}
+
+void Creature::removeMindTrickEffects() {
+    if (!_game.isTSL()) return;
+    std::vector<EffectId> packages;
+    for (const auto &effect : effects()) {
+        if (effect.serializedType > 8) break;
+        if (effect.serializedType != 8) continue;
+        const auto state = static_cast<CreatureState>(effect.integerParameter(0));
+        if (state != CreatureState::MindTrick && state != CreatureState::DroidScramble) continue;
+        if (std::find(packages.begin(), packages.end(), effect.id) == packages.end())
+            packages.push_back(effect.id);
+    }
+    for (auto id : packages) removeEffectsById(id);
+}
+
+void Creature::broadcastCombatState(uint32_t opponentId) {
+    auto opponent = _game.getObjectById<Creature>(opponentId);
+    if (!opponent) return;
+    const auto peerTarget = opponent->getAttackTarget();
+    const auto peerAttempt = opponent->_combatState.attemptedAttackTarget.resolve();
+    auto activationType = [&](const Creature &member) -> uint8_t {
+        return peerTarget.get() == &member || peerAttempt.get() == &member ? 1 : 2;
+    };
+    if (opponent.get() == this || getReputationToward(*opponent) <= 10)
+        activateCombat(activationType(*this));
+    auto module = _game.module();
+    auto area = module ? module->area() : nullptr;
+    if (!area || !area->isObjectResident(*this)) return;
+    // Snapshot membership before any presentation or script can change the area.
+    const auto members = area->getObjectsByType(ObjectType::Creature);
+    for (const auto &object : members) {
+        auto member = std::static_pointer_cast<Creature>(object);
+        if (!member->isRuntimeLive() || member.get() == this || member->faction() != faction()) continue;
+        const float range = isPC() ? 30.0f : member->perception().sightRange;
+        if (!forceAlwaysUpdate() && getSquareDistanceTo(*member) > range * range) continue;
+        if (member->getReputationToward(*opponent) <= 10)
+            member->activateCombat(activationType(*member));
+    }
+}
+
+void Creature::receiveAttackEvent(const AttackHistory *history, uint32_t attackerId,
+                                  const AttackEventFields *fields) {
+    // Capture borrowed values before callbacks can retire their owning round.
+    if (history) _receivedAttack = *history;
+    const uint8_t weaponType = fields ? fields->weaponAttackType : 0;
+    resolveInitiative();
+    setExcitedState(1);
+    auto attacker = _game.getObjectById<Creature>(attackerId);
+    std::shared_ptr<Item> weapon;
+    if (attacker) {
+        attacker->resolveInitiative();
+        attacker->setExcitedState(2);
+        switch (weaponType) {
+        case 1: case 6: weapon = attacker->getEquippedItem(InventorySlots::rightWeapon); break;
+        case 2: weapon = attacker->getEquippedItem(InventorySlots::leftWeapon); break;
+        case 3: weapon = attacker->getEquippedItem(InventorySlots::cWeaponL); break;
+        case 4: weapon = attacker->getEquippedItem(InventorySlots::cWeaponR); break;
+        case 5: weapon = attacker->getEquippedItem(InventorySlots::cWeaponB); break;
+        case 7: case 8: weapon = attacker->getEquippedItem(InventorySlots::hands); break;
+        default: break;
+        }
+    }
+    _savedReferences["LastAttacker"] = _game.getObjectById(attackerId);
+    setLastHostileActor(attackerId);
+    if (attacker) {
+        attacker->broadcastCombatState(id());
+        attacker->removeCombatInvisibilityEffects();
+        attacker->_lastWeaponUsed = weapon ? weapon->id() : script::kObjectInvalid;
+    }
+    if (!isRuntimeLive()) return;
+    broadcastCombatState(attackerId);
+    if (!isDead() && (!isPC() || currentHitPoints() > 0)) {
+        runAttackedScript(attackerId);
+        if (isRuntimeLive()) removeMindTrickEffects();
+    }
+}
+
+void Creature::cancelCombat(int runEndRound) {
+    clearCommandActions();
+    deactivateCombat(0.0f);
+    setLastHostileActor(script::kObjectInvalid);
+    discardHostileActionGroups();
+    _game.combat().endRound(*this, runEndRound);
+    _combatState.attackTarget.reset();
+    setClientCombatMode(false);
+}
+
+void Creature::refreshBodyFuel() {
+    if (_bodyFuel) _currentForce = maxForcePoints();
+}
+
 void Creature::finishCombatRound() {
+    const auto incoming = _incomingAttacker.boundObject();
+    if (!incoming || incoming->isDead()) _incomingAttacker = SavedObjectReference {};
+    _attackerList.clear();
     if (auto target = _combatState.attackTarget.resolve()) {
         _lastHostileTarget = target;
     } else {
@@ -1717,12 +2225,28 @@ void Creature::finishCombatRound() {
 }
 
 void Creature::adjustModifiedAttacks(int amount) {
-    _modifiedAttacks = std::clamp(_modifiedAttacks + amount, 0, 2);
+    _modifiedAttacks += amount;
+    // K1 really saturates on writes. K2 preserves raw state and caps its
+    // contribution in CalculateOnHandAttacks instead.
+    if (!_game.isTSL()) {
+        _modifiedAttacks = std::clamp(_modifiedAttacks, 0, 2);
+    }
 }
 
 void Creature::onEffectsCleared() {
+    _effectState = _effectAmbientState = 0;
+    _internalStateEffectId = _activeStateRootId = 0;
+    _activePoisonEffectId = kUnassignedEffectId;
+    _effectAIStateMask = 0xffff;
+    _bodyFuel = false;
+    _throwParryBlocked = false;
+    _effectIconCounts.clear();
+    _hasted = _slowed = false;
+    _movementRate = 1.0f;
+    restoreMovementAfterState();
     _modifiedAttacks = 0;
     _assuredHit = false;
+    removeAssuredDeflection();
 }
 
 bool Creature::applyAssuredHit() {
@@ -1730,6 +2254,13 @@ bool Creature::applyAssuredHit() {
         return false;
     }
     _assuredHit = true;
+    return true;
+}
+
+bool Creature::applyAssuredDeflection(int returnDamage) {
+    if (_assuredDeflection || _assuredReturn) return false;
+    _assuredDeflection = true;
+    _assuredReturn = returnDamage != 0;
     return true;
 }
 
@@ -1743,6 +2274,35 @@ Alignment Creature::alignment() const {
     return Alignment::Neutral;
 }
 
+bool Creature::isEffectLinkImmune(const Effect &effect) const {
+    if (const auto *link = dynamic_cast<const LinkEffectsEffect *>(&effect)) {
+        return isEffectLinkImmune(*link->childEffect()) ||
+               isEffectLinkImmune(*link->parentEffect());
+    }
+    EffectInstance record = effect.saveFacingInstance();
+    int state = record.serializedType == 8 ? record.integerParameter(0) : 0;
+    auto row = getEffectImmunityRow(_game.isTSL(), record.serializedType, state);
+    if (!row) return false;
+    auto table = getRequiredTwoDA(_services.resource.twoDas, "gameeffects");
+    validateTwoDARow(*table, "gameeffects", *row);
+    const int count = _game.isTSL() ? 34 : 33;
+    if (table->getColumnCount() < count + 1) {
+        throw ValidationException("Incomplete gameeffects.2da immunity columns");
+    }
+    for (int immunity = 0; immunity < count; ++immunity) {
+        auto value = table->getIntOpt(*row, table->columns()[immunity + 1]);
+        if (!value) {
+            throw ValidationException("Missing gameeffects.2da immunity value");
+        }
+        // GetEffectLinkImmunity deliberately queries with no
+        // opposing creature; retained creator is for feedback/application.
+        if (*value != 0 && hasEffectImmunity(static_cast<ImmunityType>(immunity))) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool Creature::hasEffectImmunity(
     ImmunityType immunityType, const Creature *creator) const {
     for (const EffectInstance &applied : effects()) {
@@ -1750,7 +2310,8 @@ bool Creature::hasEffectImmunity(
             continue;
         }
         if (applied.type() == EffectType::Immunity &&
-            applied.integerParameter(0) == static_cast<int>(immunityType) &&
+            (applied.integerParameter(0) == static_cast<int>(immunityType) ||
+             applied.integerParameter(0) == static_cast<int>(ImmunityType::All)) &&
             applied.appliesVersus(creator)) {
             return true;
         }
@@ -1759,38 +2320,23 @@ bool Creature::hasEffectImmunity(
 }
 
 int Creature::getAbilityEffectModifier(Ability ability) const {
-    static constexpr int kMaximumAbilityEffectModifier = 30;
-    EffectModifierReducer reducer;
-    int subtype = static_cast<int>(ability);
-
-    for (const EffectInstance &applied : effects()) {
-        if (!applied.hasLiveRuntimeSource()) {
-            continue;
-        }
-        if (applied.integerParameter(0, -1) != subtype) {
-            continue;
-        }
-        int amount = applied.integerParameter(1);
-        switch (applied.type()) {
-        case EffectType::AbilityIncrease:
-            reducer.addIncrease(getEffectSourceKey(applied), subtype, amount);
-            break;
-        case EffectType::AbilityDecrease:
-            reducer.addDecrease(getEffectSourceKey(applied), subtype, amount);
-            break;
-        default:
-            break;
-        }
+    AbilityEffectReducer reducer(_game.isTSL());
+    for (const EffectInstance &effect : effects()) {
+        if (!effect.hasLiveRuntimeSource() ||
+            effect.integerParameter(0, -1) != static_cast<int>(ability)) continue;
+        if (effect.type() == EffectType::AbilityIncrease)
+            reducer.addIncrease(getEffectSourceKey(effect), effect.integerParameter(1));
+        else if (effect.type() == EffectType::AbilityDecrease)
+            reducer.addDecrease(getEffectSourceKey(effect), effect.integerParameter(1));
     }
-    return reducer.totalIncrease(kMaximumAbilityEffectModifier) -
-           reducer.totalDecrease(kMaximumAbilityEffectModifier);
+    return reducer.total();
 }
 
 int Creature::getEffectiveAbilityScore(Ability ability) const {
-    return std::max(
-        3,
-        _attributes.getAbilityScore(ability) +
-            getAbilityEffectModifier(ability));
+    auto races = getRequiredTwoDA(_services.resource.twoDas, "racialtypes");
+    const int racial = readRacialAbilityAdjustment(*races, static_cast<int>(_race), ability);
+    return getAbilityScoreFromParts(_attributes.getAbilityScore(ability),
+                                    getAbilityEffectModifier(ability), racial);
 }
 
 int Creature::getEffectiveAbilityModifier(Ability ability) const {
@@ -1799,6 +2345,7 @@ int Creature::getEffectiveAbilityModifier(Ability ability) const {
 }
 
 bool Creature::hasEffectiveFeat(FeatType feat) const {
+    feat = static_cast<FeatType>(static_cast<uint16_t>(feat));
     if (_attributes.hasFeat(feat)) {
         return true;
     }
@@ -1807,15 +2354,15 @@ bool Creature::hasEffectiveFeat(FeatType feat) const {
         [feat](const EffectInstance &effect) {
             return effect.hasLiveRuntimeSource() &&
                    effect.type() == EffectType::BonusFeat &&
-                   effect.integerParameter(0, static_cast<int>(FeatType::Invalid)) ==
-                       static_cast<int>(feat);
+                   static_cast<uint16_t>(effect.integerParameter(0)) ==
+                       static_cast<uint16_t>(feat);
         });
 }
 
 void Creature::appendEquippedItemEffects(
     std::deque<EffectInstance> &effects,
     int slot,
-    const std::shared_ptr<Item> &item) const {
+    const std::shared_ptr<Item> &item, bool onlyDeferredEffects) const {
     if (!item || !equippedItemPropertiesAreActive(slot)) {
         return;
     }
@@ -1833,14 +2380,52 @@ void Creature::appendEquippedItemEffects(
             static_cast<uint16_t>(DurationType::Equipped));
         instance.creatorId = item->id();
         instance.exposed = 1;
+        // Item-property application forwards load mode to ApplyEffect;
+        // equipped duration alone does not bypass admission checks.
+        instance.restoring = isRestoringSavedRuntime();
         effects.push_back(std::move(instance));
     };
 
     for (const Item::PropertyEntry &property : item->properties()) {
-        if (property.upgradeType != 0) {
+        if (!item->isPropertyActive(property)) {
             continue;
         }
-        switch (static_cast<ItemProperty>(property.propertyName)) {
+        const auto propertyType = static_cast<ItemProperty>(property.propertyName);
+        const bool armorClass = propertyType == ItemProperty::AcBonus ||
+            propertyType == ItemProperty::AcBonusVsAlignmentGroup ||
+            propertyType == ItemProperty::AcBonusVsDamageType ||
+            propertyType == ItemProperty::AcBonusVsRacialGroup ||
+            propertyType == ItemProperty::DecreasedAc;
+        const bool deferred = armorClass || propertyType == ItemProperty::Disguise;
+        if (onlyDeferredEffects && !deferred) continue;
+        // Restore canonical AC/disguise records first, then reconcile missing
+        // equipped records without replaying or duplicating the saved providers.
+        if (!onlyDeferredEffects && deferred && isRestoringSavedRuntime()) continue;
+        switch (propertyType) {
+        case ItemProperty::AcBonus:
+        case ItemProperty::AcBonusVsAlignmentGroup:
+        case ItemProperty::AcBonusVsDamageType:
+        case ItemProperty::AcBonusVsRacialGroup: {
+            int amount = getCostTableValue(_services, kBonusCostTable, property.costValue, "value", 0);
+            if (amount == 0) break;
+            const int selector = propertyType == ItemProperty::AcBonusVsDamageType
+                ? property.subtype : kPhysicalDamageTypeFlags;
+            auto effect = _game.newEffect<ACIncreaseEffect>(amount, item->acBonusType(), selector);
+            if (propertyType == ItemProperty::AcBonusVsRacialGroup)
+                effect->setVersusRacialType(property.subtype);
+            else if (propertyType == ItemProperty::AcBonusVsAlignmentGroup &&
+                     property.subtype >= 1 && property.subtype <= 3)
+                effect->setVersusAlignment(0, property.subtype);
+            append(std::move(effect));
+            break;
+        }
+        case ItemProperty::DecreasedAc: {
+            int amount = getCostTableValue(_services, kDecreaseCostTable, property.costValue, "value", 0);
+            if (amount != 0) append(_game.newEffect<ACDecreaseEffect>(
+                -amount,
+                static_cast<ACBonus>(property.subtype), kPhysicalDamageTypeFlags));
+            break;
+        }
         case ItemProperty::AbilityBonus: {
             int amount = getItemPropertyValue(
                 _services, property, "value", 0);
@@ -1859,14 +2444,22 @@ void Creature::appendEquippedItemEffects(
             }
             break;
         }
+        case ItemProperty::Disguise:
+            append(_game.newEffect<DisguiseEffect>(property.subtype));
+            break;
         case ItemProperty::BonusFeat:
             append(_game.newEffect<BonusFeatEffect>(
                 static_cast<FeatType>(property.subtype)));
             break;
-        case ItemProperty::Immunity:
-            append(_game.newEffect<ImmunityEffect>(
-                static_cast<ImmunityType>(property.subtype)));
+        case ItemProperty::Immunity: {
+            static constexpr std::array<ImmunityType, 10> immunities {
+                ImmunityType::SneakAttack, ImmunityType::AbilityDecrease,
+                ImmunityType::MindSpells, ImmunityType::Poison, ImmunityType::Disease,
+                ImmunityType::Fear, ImmunityType::Knockdown, ImmunityType::Paralysis,
+                ImmunityType::CriticalHit, ImmunityType::Death};
+            append(_game.newEffect<ImmunityEffect>(immunities.at(property.subtype)));
             break;
+        }
         case ItemProperty::ImmunityDamageType: {
             int amount = getItemPropertyValue(
                 _services, property, "value", 0);
@@ -1924,6 +2517,14 @@ void Creature::appendEquippedItemEffects(
             }
             break;
         }
+        case ItemProperty::Regeneration:
+        case ItemProperty::RegenerationForcePoints:
+            if (property.costValue != 0) {
+                auto effect = _game.newEffect<RegenerateEffect>(property.costValue, 6000, property.propertyName);
+                effect->setSubType(0);
+                append(std::move(effect));
+            }
+            break;
         case ItemProperty::TrueSeeing:
             append(_game.newEffect<TrueSeeingEffect>());
             break;
@@ -1977,21 +2578,12 @@ AttackBonusBreakdown Creature::getAttackBonusBreakdown(
     if (weapon && weapon->isRanged()) {
         result.dexterityModifier = dexterityModifier;
     } else if (weapon && dexterityModifier > strengthModifier) {
-        bool finesse = !_game.isTSL() && weapon->isLightsaber();
-        if (weapon->isLightsaber() &&
-            hasEffectiveFeat(FeatType::FinesseLightsabers)) {
-            finesse = true;
-        }
-        switch (weapon->weaponWield()) {
-        case WeaponWield::StunBaton:
-        case WeaponWield::SingleSword:
-        case WeaponWield::DoubleBladedSword:
-            finesse = finesse ||
-                      hasEffectiveFeat(FeatType::FinesseMeleeWeapons);
-            break;
-        default:
-            break;
-        }
+        bool finesse = qualifiesForWeaponFinesse(
+            _game.isTSL(),
+            weapon->isLightsaber(),
+            weapon->weaponWield(),
+            hasEffectiveFeat(FeatType::FinesseLightsabers),
+            hasEffectiveFeat(FeatType::FinesseMeleeWeapons));
 
         if (finesse) {
             result.dexterityModifier = dexterityModifier;
@@ -2051,9 +2643,6 @@ AttackBonusBreakdown Creature::getAttackBonusBreakdown(
         }
     }
 
-    modifierBonus += miscModifierReducer.totalIncrease(20);
-    modifierPenalty += miscModifierReducer.totalDecrease(20);
-
     for (const auto &[slot, item] : _equipment) {
         if (!item || !equippedItemAppliesToAttack(slot, *item, weapon, offHand)) {
             continue;
@@ -2062,7 +2651,7 @@ AttackBonusBreakdown Creature::getAttackBonusBreakdown(
         int itemBonus = 0;
         int itemPenalty = 0;
         for (const auto &property : item->properties()) {
-            if (property.upgradeType != 0) {
+            if (!item->isPropertyActive(property)) {
                 continue;
             }
 
@@ -2119,17 +2708,67 @@ AttackBonusBreakdown Creature::getAttackBonusBreakdown(
                 itemPenalty = std::max(itemPenalty, -modifier);
             }
         }
-        modifierBonus += itemBonus;
-        modifierPenalty += itemPenalty;
+        EffectSourceKey source {EffectSourceKind::Item, item->runtimeIncarnation()};
+        miscModifierReducer.addIncrease(source, static_cast<int>(AttackBonus::Misc), itemBonus);
+        miscModifierReducer.addDecrease(source, static_cast<int>(AttackBonus::Misc), itemPenalty);
     }
 
-    result.effectBonus = std::min(modifierBonus, 20) -
-                         std::min(modifierPenalty, 20);
+    int attackEffectCap = getAttackEffectModifierCap(_game.isTSL());
+    modifierBonus += miscModifierReducer.totalIncrease(attackEffectCap);
+    modifierPenalty += miscModifierReducer.totalDecrease(attackEffectCap);
+    result.effectBonus = std::min(modifierBonus, attackEffectCap) -
+                         std::min(modifierPenalty, attackEffectCap);
 
     if (weapon &&
         weapon->weaponFocusFeat() != FeatType::Invalid &&
         hasEffectiveFeat(weapon->weaponFocusFeat())) {
         result.weaponFocusBonus = 1;
+    }
+
+    result.targetingBonus = getTargetingAttackBonus(
+        _game.isTSL(),
+        weapon && weapon->isRanged(),
+        getHighestOwnedFeatRank(*this,
+            FeatType::Targeting1,
+            10));
+    result.superiorWeaponFocusBonus =
+        getSuperiorWeaponFocusLightsaberBonus(
+            _game.isTSL(),
+            weapon && weapon->isLightsaber(),
+            getHighestOwnedFeatRank(*this,
+                FeatType::SuperiorWeaponFocusLightsaber1,
+                3));
+
+    auto rightHandWeapon = getEquippedItem(InventorySlots::rightWeapon);
+    auto targetRightHandWeapon = target
+                                     ? target->getEquippedItem(
+                                           InventorySlots::rightWeapon)
+                                     : nullptr;
+    result.formBonus = target
+                           ? getLightsaberFormAttackBonus(
+                                 _game.isTSL(),
+                                 rightHandWeapon && rightHandWeapon->isLightsaber(),
+                                 currentForm(),
+                                 targetRightHandWeapon && targetRightHandWeapon->isLightsaber())
+                           : 0;
+
+    if (_game.isTSL() && target) {
+        bool rank1 = hasEffectiveFeat(FeatType::DualStrike);
+        bool rank2 = hasEffectiveFeat(FeatType::ImprovedDualStrike);
+        bool rank3 = hasEffectiveFeat(FeatType::MasterDualStrike);
+        bool qualifies = qualifiesForDualStrike(true, isPartyMember(), rank1, rank2, rank3);
+        bool matchingAlly = false;
+        if (qualifies) {
+            for (const auto &member : _game.party().members()) {
+                if (member.creature && member.creature.get() != this &&
+                    member.creature->_combatState.attemptedAttackTarget.resolve().get() == target) {
+                    matchingAlly = true;
+                    break;
+                }
+            }
+        }
+        result.dualStrikeBonus = getDualStrikeAttackBonus(
+            qualifies, matchingAlly, rank1, rank2, rank3);
     }
 
     if (target) {
@@ -2165,7 +2804,106 @@ AttackBonusBreakdown Creature::getAttackBonusBreakdown(
     }
 
     result.baseAttackBonus = _attributes.getAggregateAttackBonus();
+    if (isAutoBalanceEligible(
+            _game.isTSL(),
+            isPartyMember(),
+            _autoBalanceContext.multiplierSet)) {
+        const AutoBalanceRow &row = _services.game.autoBalance.get(
+            _autoBalanceContext.multiplierSet);
+        result.baseAttackBonus += getAutoBalanceLevelBonus(
+            _autoBalanceContext.playerLevelAtSpawn,
+            row.toHitMultiplier);
+    }
     return result;
+}
+
+bool Creature::projectileDefenseEligible(const Creature &shooter, int damageFlags,
+    const Item *weapon, bool allowShield, bool &shieldHit, bool &canReturn) const {
+    canReturn = true;
+    shieldHit = false;
+    const bool canAct = !isDead() &&
+        (_game.isTSL()
+             ? (_effectState == 0 || _effectState == 1 || _effectState == 16) &&
+                   (!isPC() || currentHitPoints() > 0) && combatStance() != CombatStance::Meditative
+             : _effectState == 0 && !isTemporarilyDead());
+    const bool facingShot = std::cos(getFacing() - shooter.getFacing()) <= 0.0f;
+    const auto main = getEquippedItem(InventorySlots::rightWeapon);
+    const auto off = getEquippedItem(InventorySlots::leftWeapon);
+    const bool saber = (main && main->isLightsaber()) || (off && off->isLightsaber());
+    const bool defense = hasEffectiveFeat(static_cast<FeatType>(55)) ||
+        hasEffectiveFeat(static_cast<FeatType>(1)) || hasEffectiveFeat(static_cast<FeatType>(24));
+    if (defense && canAct) {
+        if (!_game.isTSL()) return saber && !_throwParryBlocked && facingShot;
+        if (saber && !_throwParryBlocked && facingShot &&
+            (damageFlags & static_cast<int>(DamageType::Blaster))) return true;
+    }
+    // A missed shot may strike a shield without passing an opposed defense roll.
+    if (allowShield) {
+        const auto shield = std::find_if(effects().begin(), effects().end(), [](const EffectInstance &effect) {
+            return effect.type() == EffectType::ForceShield;
+        });
+        shieldHit = shield != effects().end() && shield->integerParameter(0) != 0;
+        const auto ammunition = weapon ? weapon->ammunitionType() : nullptr;
+        if (shieldHit && ammunition && ammunition->shieldHit) return true;
+    }
+    if (!_game.isTSL() || !canAct || _throwParryBlocked || !facingShot) return false;
+    const bool redirect = _attributes.hasSpell(static_cast<SpellType>(163));
+    canReturn = redirect;
+    return redirect || _attributes.hasSpell(static_cast<SpellType>(162));
+}
+
+bool Creature::canParryRangedWeapon(const Creature &shooter, int damageFlags, bool &canReturn) const {
+    bool shieldHit = false;
+    return projectileDefenseEligible(shooter, damageFlags, nullptr, false, shieldHit, canReturn);
+}
+
+AttackResultType Creature::resolveRangedMiss(const Creature &shooter, const Item &weapon) const {
+    bool shieldHit = false;
+    bool canReturn = false;
+    if (!projectileDefenseEligible(shooter, weapon.damageFlags(), &weapon, true, shieldHit, canReturn)) {
+        return AttackResultType::Invalid;
+    }
+    return shieldHit ? AttackResultType::ShieldHit : AttackResultType::Parried;
+}
+
+AttackResultType Creature::resolveRangedDefense(const Creature &shooter, int damageFlags, int attackTotal) const {
+    bool canReturn = false;
+    if (!canParryRangedWeapon(shooter, damageFlags, canReturn)) return AttackResultType::Invalid;
+    if (_assuredDeflection) {
+        return _assuredReturn ? AttackResultType::Deflected : AttackResultType::Parried;
+    }
+    const auto weapon = getEquippedItem(InventorySlots::rightWeapon);
+    int total = randomInt(1, 20) + getAttackBonusBreakdown(nullptr, weapon.get(), false).baseAttackBonus +
+        getEffectiveAbilityModifier(Ability::Dexterity);
+    if (hasEffectiveFeat(static_cast<FeatType>(24))) total += 6;
+    else if (hasEffectiveFeat(static_cast<FeatType>(1))) total += 3;
+    if (_game.isTSL()) {
+        if (_attributes.hasSpell(static_cast<SpellType>(163))) total += 3;
+        const auto off = getEquippedItem(InventorySlots::leftWeapon);
+        const bool saber = (weapon && weapon->isLightsaber()) || (off && off->isLightsaber());
+        if (saber && hasEffectiveFeat(static_cast<FeatType>(168)))
+            total += (_attributes.getClassLevel(static_cast<ClassType>(11)) + 1) / 2;
+        if (saber) switch (static_cast<int>(_currentForm)) {
+        case 259: total -= 5; break;
+        case 260: total += 4; break;
+        case 261: total -= 4; break;
+        case 262: total += 2; break;
+        case 263: total += 1; break;
+        default: break;
+        }
+        for (int feat = 244; feat >= 240; --feat) {
+            if (shooter.hasEffectiveFeat(static_cast<FeatType>(feat))) {
+                total -= 2 * (feat - 239); break;
+            }
+        }
+    }
+    for (const auto &effect : effects()) {
+        // The defensive consumer reads integer 1, independently of the VM constructor.
+        if (effect.serializedType == 92) total += effect.integerParameter(1);
+        else if (effect.serializedType == 93) total -= effect.integerParameter(1);
+    }
+    if (total < attackTotal) return AttackResultType::Invalid;
+    return canReturn && total >= attackTotal + 6 ? AttackResultType::Deflected : AttackResultType::Parried;
 }
 
 int Creature::getAttackBonus(bool offHand) const {
@@ -2175,251 +2913,290 @@ int Creature::getAttackBonus(bool offHand) const {
     return getAttackBonusBreakdown(nullptr, weapon.get(), offHand).total();
 }
 
-int Creature::getDefense(const Creature *attacker, int damageFlags) const {
+static bool isArmorClassEffect(const EffectInstance &effect) {
+    return effect.type() == EffectType::ACIncrease || effect.type() == EffectType::ACDecrease;
+}
+
+static ArmorClassEffectData armorClassEffectData(const EffectInstance &effect) {
+    return {effect.integerParameter(0), effect.integerParameter(1),
+            effect.integerParameter(2, static_cast<int>(RacialType::All)),
+            effect.integerParameter(3), effect.integerParameter(4),
+            effect.integerParameter(5, kPhysicalDamageTypeFlags),
+            effect.type() == EffectType::ACDecrease};
+}
+
+void Creature::addArmorClassEffect(const EffectInstance &effect) {
+    if (isArmorClassEffect(effect)) _armorClassCache.add(armorClassEffectData(effect), _game.isTSL());
+}
+
+void Creature::removeArmorClassEffect(const EffectInstance &effect) {
+    if (!isArmorClassEffect(effect)) return;
+    const auto removed = armorClassEffectData(effect);
+    const auto maximum = remainingArmorClassMaximum(_armorClassCursor, effects().size(), removed,
+        [&](size_t i) { return effects()[i].serializedType; },
+        [&](size_t i) { return armorClassEffectData(effects()[i]); },
+        [&](size_t i) { return effects()[i].applicationOrder == effect.applicationOrder; });
+    _armorClassCache.remove(removed, _game.isTSL(), maximum);
+}
+
+void Creature::updateArmorClassEffectCursor() {
+    _armorClassCursor.update(effects().size(), [&](size_t i) { return effects()[i].serializedType; });
+}
+
+DefenseBreakdown Creature::getDefenseBreakdown(const Creature *attacker, int damageFlags) const {
     int dexterityModifier = getEffectiveAbilityModifier(Ability::Dexterity);
     auto armor = getEquippedItem(InventorySlots::body);
     int armorDefense = armor ? armor->baseDefense() : 0;
 
+    int armorMaxDexterityBonus = armor
+        ? getEffectiveArmorMaxDexterityBonus(_game.isTSL(), armor->maxDexterityBonus(),
+                                            armor->maxDexterityBonusAdjustment()) : -1;
     if (isDebilitated()) {
         dexterityModifier = std::min(dexterityModifier, 0);
-    } else if (armorDefense > 0 && armor->maxDexterityBonus() >= 0) {
+    } else if (armorDefense > 0 && armorMaxDexterityBonus >= 0) {
         dexterityModifier = std::min(
             dexterityModifier,
-            armor->maxDexterityBonus());
+            armorMaxDexterityBonus);
     }
 
-    std::array<int, kACBonusTypeCount> modifierBonuses {};
-    std::array<int, kACBonusTypeCount> modifierPenalties {};
-
-    for (const auto &applied : effects()) {
-        if (!applied.hasLiveRuntimeSource()) {
-            continue;
-        }
-        if (!applied.appliesVersus(attacker)) {
-            continue;
-        }
-        switch (applied.type()) {
-        case EffectType::ACIncrease: {
-            int effectDamageType = applied.integerParameter(5, kAllDamageTypeFlags);
-            if (damageTypeMatches(effectDamageType, damageFlags)) {
-                addDefenseModifier(
-                    applied.integerParameter(1),
-                    static_cast<ACBonus>(applied.integerParameter(0)),
-                    modifierBonuses);
-            }
-            break;
-        }
-        case EffectType::ACDecrease: {
-            int effectDamageType = applied.integerParameter(5, kAllDamageTypeFlags);
-            if (damageTypeMatches(effectDamageType, damageFlags)) {
-                addDefenseModifier(
-                    applied.integerParameter(1),
-                    static_cast<ACBonus>(applied.integerParameter(0)),
-                    modifierPenalties);
-            }
-            break;
-        }
-        default:
-            break;
-        }
-    }
-
-    for (const auto &[slot, item] : _equipment) {
-        if (!item || !equippedItemPropertiesAreActive(slot)) {
-            continue;
-        }
-
-        for (const auto &property : item->properties()) {
-            if (property.upgradeType != 0) {
-                continue;
-            }
-
-            auto propertyType = static_cast<ItemProperty>(property.propertyName);
-            switch (propertyType) {
-            case ItemProperty::AcBonus:
-            case ItemProperty::AcBonusVsAlignmentGroup:
-            case ItemProperty::AcBonusVsDamageType:
-            case ItemProperty::AcBonusVsRacialGroup: {
-                if (!defensePropertyApplies(
-                        propertyType,
-                        property.subtype,
-                        attacker,
-                        damageFlags)) {
-                    continue;
-                }
-                int value = getCostTableValue(
-                    _services,
-                    kBonusCostTable,
-                    property.costValue,
-                    "value",
-                    0);
-                addDefenseModifier(
-                    value,
-                    item->acBonusType(),
-                    modifierBonuses);
-                break;
-            }
-            case ItemProperty::DecreasedAc: {
-                int value = getCostTableValue(
-                    _services,
-                    kDecreaseCostTable,
-                    property.costValue,
-                    "value",
-                    0);
-                addDefenseModifier(
-                    -value,
-                    static_cast<ACBonus>(property.subtype),
-                    modifierPenalties);
-                break;
-            }
-            default:
-                break;
-            }
-        }
-    }
-
-    int defenseModifier = getDefenseModifier(
-        modifierBonuses,
-        modifierPenalties);
+    ConditionalArmorClass conditional(_armorClassCache);
+    bool attackerSeen = true;
     if (attacker) {
-        int dodgeModifier = std::min(
-            modifierBonuses[static_cast<int>(ACBonus::Dodge)] -
-                modifierPenalties[static_cast<int>(ACBonus::Dodge)],
-            kMaximumDodgeBonus);
-        bool invisible = attacker->isInvisibleTo(*this);
-        bool seen = _perception.sees(attacker->id());
-        if (invisible) {
-            defenseModifier -= dodgeModifier;
-            dexterityModifier = std::min(dexterityModifier, 0);
-        } else if (!seen) {
-            defenseModifier -= dodgeModifier;
-            dexterityModifier = 0;
+        for (size_t i = _armorClassCursor.position; i < effects().size(); ++i) {
+            const auto &effect = effects()[i];
+            if (effect.serializedType != 48 && effect.serializedType != 49) break;
+            if (!isArmorClassEffect(effect) || !effect.hasLiveRuntimeSource()) continue;
+            conditional.add(armorClassEffectData(effect), static_cast<int>(attacker->racialType()),
+                            static_cast<int>(attacker->alignment()), damageFlags);
         }
+        const bool invisible = attacker->isInvisibleTo(*this);
+        const bool seen = _perception.sees(attacker->id());
+        attackerSeen = !invisible && seen;
+        if (invisible) dexterityModifier = std::min(dexterityModifier, 0);
+        else if (!seen) dexterityModifier = 0;
     }
+    const auto ac = armorClassParts(_armorClassCache, conditional, _naturalAC, armorDefense,
+                                 0, attacker != nullptr, attackerSeen);
+    DefenseBreakdown breakdown;
+    breakdown.armor = ac.armour;
+    breakdown.dexterity = dexterityModifier;
+    breakdown.classDefense = _attributes.getAggregateDefenseBonus();
+    if (isAutoBalanceEligible(
+            _game.isTSL(),
+            isPartyMember(),
+            _autoBalanceContext.multiplierSet)) {
+        const AutoBalanceRow &row = _services.game.autoBalance.get(
+            _autoBalanceContext.multiplierSet);
+        breakdown.classDefense += getAutoBalanceLevelBonus(
+            _autoBalanceContext.playerLevelAtSpawn,
+            row.armorClassMultiplier);
+    }
+    breakdown.natural = ac.natural;
+    breakdown.dodgeAndDeflection = armorClassShort(ac.shield + ac.dodgeAndDeflection);
+    breakdown.feat = getDuelingBonus();
+    breakdown.stance = getTotalDefenseBonus(
+        _game.isTSL(),
+        combatStance() == CombatStance::TotalDefense,
+        getHighestTotalDefenseClassLevel(_attributes));
 
-    int defense = 10 +
-                  _attributes.getAggregateDefenseBonus() +
-                  armorDefense +
-                  _naturalAC +
-                  dexterityModifier +
-                  defenseModifier +
-                  getDuelingBonus();
-
-    return defense - (isDebilitated() ? 4 : 0);
+    bool attackerIsCombatTarget = false;
+    if (attacker) {
+        attackerIsCombatTarget =
+            _combatState.attemptedAttackTarget.resolve().get() == attacker ||
+            _combatState.attackTarget.resolve().get() == attacker;
+    }
+    auto rightHandWeapon = getEquippedItem(InventorySlots::rightWeapon);
+    breakdown.form = getLightsaberFormDefenseBonus(
+        _game.isTSL(),
+        rightHandWeapon && rightHandWeapon->isLightsaber(),
+        currentForm(),
+        attackerIsCombatTarget);
+    breakdown.debilitationPenalty = isDebilitated() ? -4 : 0;
+    breakdown.total = armorClassShort(10 + breakdown.armor + breakdown.dexterity +
+        breakdown.classDefense + breakdown.natural + breakdown.dodgeAndDeflection +
+        breakdown.feat + breakdown.stance + breakdown.form + breakdown.debilitationPenalty);
+    return breakdown;
 }
 
 int Creature::getDefense() const {
     return getDefense(nullptr, 0);
 }
 
-int Creature::getFortitudeSave(SavingThrowType savingThrowType) const {
-    int modifier = 0;
-    for (const auto &applied : effects()) {
-        if (!applied.hasLiveRuntimeSource()) {
-            continue;
-        }
-        switch (applied.type()) {
-        case EffectType::SavingThrowIncrease: {
-            if (savingThrowModifierApplies(
-                    applied.integerParameter(1),
-                    static_cast<SavingThrowType>(applied.integerParameter(2)),
-                    kFortitudeSavingThrow,
-                    savingThrowType)) {
-                modifier += applied.integerParameter(0);
-            }
-            break;
-        }
-        case EffectType::SavingThrowDecrease: {
-            if (savingThrowModifierApplies(
-                    applied.integerParameter(1),
-                    static_cast<SavingThrowType>(applied.integerParameter(2)),
-                    kFortitudeSavingThrow,
-                    savingThrowType)) {
-                modifier -= applied.integerParameter(0);
-            }
-            break;
-        }
-        default:
-            break;
+static int conditioningBonus(const Creature &creature) {
+    if (creature.hasEffectiveFeat(FeatType::LightningReflexes)) {
+        return 3;
+    }
+    if (creature.hasEffectiveFeat(FeatType::IronWill)) {
+        return 2;
+    }
+    return creature.hasEffectiveFeat(FeatType::GreatFortitude) ? 1 : 0;
+}
+
+static int getClassSavingThrow(
+    const CreatureAttributes &attributes,
+    int requestedSave) {
+
+    const SavingThrows result = attributes.getAggregateSavingThrows();
+
+    switch (requestedSave) {
+    case kFortitudeSavingThrow:
+        return result.fortitude;
+    case kReflexSavingThrow:
+        return result.reflex;
+    case kWillSavingThrow:
+        return result.will;
+    default:
+        return 0;
+    }
+}
+
+int Creature::getSavingThrowEffectBonus(
+    SavingThrow savingThrow, SavingThrowType savingThrowType, const Object *versus) const {
+    const int save = static_cast<int>(savingThrow);
+
+    const auto *versusCreature = dyn_cast<Creature>(versus);
+    EffectModifierReducer modifierReducer;
+    for (const EffectInstance &applied : effects()) {
+        if (!applied.hasLiveRuntimeSource() || !applied.appliesVersus(versusCreature)) continue;
+        if (applied.type() != EffectType::SavingThrowIncrease &&
+            applied.type() != EffectType::SavingThrowDecrease) continue;
+        int effectSave = applied.integerParameter(1);
+        auto effectType = static_cast<SavingThrowType>(applied.integerParameter(2));
+        if (!savingThrowModifierApplies(effectSave, effectType, save, savingThrowType)) continue;
+        auto source = getEffectSourceKey(applied);
+        int value = applied.integerParameter(0);
+        if (applied.type() == EffectType::SavingThrowIncrease) {
+            modifierReducer.addIncrease(source, 0, value);
+        } else {
+            modifierReducer.addDecrease(source, 0, value);
         }
     }
 
+    std::set<uint64_t> visitedItems;
     for (const auto &[slot, item] : _equipment) {
-        if (!item || !equippedItemPropertiesAreActive(slot)) {
+        if (!item ||
+            slot == InventorySlots::rightWeapon2 ||
+            slot == InventorySlots::leftWeapon2 ||
+            !visitedItems.insert(item->runtimeIncarnation()).second) {
             continue;
         }
 
-        int itemBonus = 0;
-        int itemPenalty = 0;
-        for (const auto &property : item->properties()) {
-            if (property.upgradeType != 0) {
+        EffectSourceKey source {EffectSourceKind::Item, item->runtimeIncarnation()};
+        for (const Item::PropertyEntry &property : item->properties()) {
+            if (!item->isPropertyActive(property)) {
                 continue;
             }
 
-            auto propertyType = static_cast<ItemProperty>(property.propertyName);
+            auto propertyType =
+                static_cast<ItemProperty>(property.propertyName);
             if (!savingThrowPropertyApplies(
                     propertyType,
                     property.subtype,
-                    kFortitudeSavingThrow,
+                    save,
                     savingThrowType)) {
                 continue;
             }
 
-            switch (propertyType) {
-            case ItemProperty::ImprovedSavingThrow:
-            case ItemProperty::ImprovedSavingThrowSpecific: {
-                int value = getCostTableValue(
-                    _services,
-                    kBonusCostTable,
-                    property.costValue,
-                    "value",
-                    0);
-                itemBonus = std::max(itemBonus, value);
-                break;
-            }
-            case ItemProperty::DecreasedSavingThrows:
-            case ItemProperty::DecreasedSavingThrowsSpecific: {
-                int value = getCostTableValue(
-                    _services,
-                    kDecreaseCostTable,
-                    property.costValue,
-                    "value",
-                    0);
-                itemPenalty = std::max(itemPenalty, -value);
-                break;
-            }
-            default:
-                break;
+            int value = getItemPropertyValue(
+                _services,
+                property,
+                "value",
+                0);
+            if (propertyType == ItemProperty::ImprovedSavingThrow ||
+                propertyType == ItemProperty::ImprovedSavingThrowSpecific) {
+                modifierReducer.addIncrease(source, 0, value);
+            } else {
+                modifierReducer.addDecrease(source, 0, value);
             }
         }
-        modifier += itemBonus - itemPenalty;
-    }
-    modifier = std::min(modifier, kMaximumSavingThrowModifier);
-
-    int conditioningBonus = 0;
-    if (hasEffectiveFeat(FeatType::LightningReflexes)) {
-        conditioningBonus = 3;
-    } else if (hasEffectiveFeat(FeatType::IronWill)) {
-        conditioningBonus = 2;
-    } else if (hasEffectiveFeat(FeatType::GreatFortitude)) {
-        conditioningBonus = 1;
     }
 
-    return _attributes.getAggregateSavingThrows().fortitude +
-           getEffectiveAbilityModifier(Ability::Constitution) +
-           _fortBonus +
-           conditioningBonus +
-           modifier;
+    const int survival = getSurvivalSavingThrowBonus(
+        _game.isTSL(), hasEffectiveFeat(FeatType::Survival), currentHitPoints(), maxHitPoints());
+    const int cap = _game.isTSL() ? 60 : 20;
+    return getSavingThrowEffectTotal(_game.isTSL(),
+        modifierReducer.totalIncrease(cap), modifierReducer.totalDecrease(cap), survival);
 }
 
-bool Creature::rollFortitudeSave(
-    int difficultyClass,
-    SavingThrowType savingThrowType) const {
+int Creature::getSavingThrowBase(SavingThrow savingThrow) const {
+    const int save = static_cast<int>(savingThrow);
+    int abilityModifier = 0;
+    int baseBonus = 0;
+    switch (save) {
+    case kFortitudeSavingThrow:
+        abilityModifier =
+            getEffectiveAbilityModifier(Ability::Constitution);
+        baseBonus = _fortBonus;
+        break;
+    case kReflexSavingThrow:
+        abilityModifier = getEffectiveAbilityModifier(Ability::Dexterity);
+        baseBonus = _refBonus;
+        break;
+    case kWillSavingThrow:
+        abilityModifier = getEffectiveAbilityModifier(Ability::Wisdom);
+        baseBonus = _willBonus;
+        break;
+    default:
+        break;
+    }
 
-    return randomInt(1, 20) + getFortitudeSave(savingThrowType) >= difficultyClass;
+    int autoBalanceBonus = 0;
+    if (isAutoBalanceEligible(
+            _game.isTSL(),
+            isPartyMember(),
+            _autoBalanceContext.multiplierSet)) {
+        const AutoBalanceRow &row = _services.game.autoBalance.get(
+            _autoBalanceContext.multiplierSet);
+        autoBalanceBonus = getAutoBalanceLevelBonus(
+            _autoBalanceContext.playerLevelAtSpawn,
+            row.savingThrowMultiplier);
+    }
+
+    const int base = getBaseSavingThrowBonus(getClassSavingThrow(_attributes, save),
+        conditioningBonus(*this), autoBalanceBonus);
+    return getDerivedSavingThrowBonus(base, abilityModifier, baseBonus);
 }
 
-int Creature::getPhysicalDamageBonus(
+int Creature::getSavingThrow(SavingThrow save) const {
+    return getSavingThrowStat(getSavingThrowBase(save),
+        getSavingThrowEffectBonus(save, SavingThrowType::All, nullptr));
+}
+
+SavingThrowBreakdown Creature::getSavingThrowBreakdown(
+    SavingThrow save, SavingThrowType type, const Object *versus) const {
+    const int base = getSavingThrowBase(save);
+    const int effects = getSavingThrowEffectBonus(save, type, versus);
+    const int survival = getSurvivalSavingThrowBonus(
+        _game.isTSL(), hasEffectiveFeat(FeatType::Survival), currentHitPoints(), maxHitPoints());
+    int room = 0;
+    auto module = _game.module();
+    if (_game.isTSL() && module && module->area()) {
+        room = getRoomSavingThrowModifier(true, _goodEvil,
+            module->area()->getRoomForceRating(position()));
+    }
+    return {base, getSavingThrowModifier(_game.isTSL(), effects, room, survival)};
+}
+
+SavingThrowResult Creature::getSavingThrowResult(
+    int total, int dc, SavingThrowType type, const Object *versus) const {
+    return resolveSavingThrow(total, dc, [&] {
+        int userType = -1;
+        if (type == SavingThrowType::Death && spellCast() != SpellType::All) {
+            auto spell = _services.game.spells.get(spellCast());
+            if (spell) userType = spell->userType;
+        }
+        const auto immunity = savingThrowImmunity(type, userType);
+        return immunity && hasEffectImmunity(*immunity, dyn_cast<Creature>(versus));
+    });
+}
+
+SavingThrowResult Creature::rollSavingThrow(
+    SavingThrow save, int dc, SavingThrowType type, const Object *versus) const {
+    const auto breakdown = getSavingThrowBreakdown(save, type, versus);
+    return getSavingThrowResult(randomInt(1, 20) + breakdown.total(), dc, type, versus);
+}
+
+PhysicalDamageBonus Creature::getPhysicalDamageBonus(
     const Item *weapon,
     bool offHand) const {
 
@@ -2430,7 +3207,7 @@ int Creature::getPhysicalDamageBonus(
         if (strengthModifier > 0) {
             int mighty = 0;
             for (const auto &property : weapon->properties()) {
-                if (property.upgradeType != 0 ||
+                if (!weapon->isPropertyActive(property) ||
                     property.propertyName != static_cast<uint16_t>(ItemProperty::Mighty)) {
                     continue;
                 }
@@ -2457,7 +3234,43 @@ int Creature::getPhysicalDamageBonus(
         specialization = 2;
     }
 
-    return abilityModifier + specialization;
+    PhysicalDamageBonus result {abilityModifier, strengthModifier, specialization};
+    if (_game.isTSL() && _furyDamageBonus > 0) {
+        result.furyDamage = _furyDamageBonus;
+    }
+    if (_game.isTSL()) {
+        bool ranged = weapon && weapon->isRanged();
+        result.combatFeatDamage = getCombatDamageFeatBonus(true, ranged,
+            getHighestOwnedFeatRank(*this, FeatType::IncreaseCombatDamage1, 3),
+            getHighestOwnedFeatRank(*this, FeatType::IncreaseMeleeDamage1, 3));
+        result.preciseShotDamage = getPreciseShotDamageBonus(true, ranged,
+            getHighestOwnedFeatRank(*this, FeatType::PreciseShot, 5));
+        auto rightHand = getEquippedItem(InventorySlots::rightWeapon);
+        result.formDamage = getLightsaberFormDamageBonus(true,
+            rightHand && rightHand->isLightsaber(), currentForm());
+        if (!weapon) {
+            // The existing round builder's ordinary empty-hand attack is
+            // type 7. Natural-weapon slot construction is a later owner.
+            result.unarmedDice209 = getHighestOwnedFeatRank(*this, static_cast<FeatType>(209), 3);
+            result.unarmedDice212 = getHighestOwnedFeatRank(*this, static_cast<FeatType>(212), 8);
+        }
+    }
+    return result;
+}
+
+int Creature::getPhysicalDamageAutoBalanceFactor() const {
+    if (!isAutoBalanceEligible(
+            _game.isTSL(),
+            isPartyMember(),
+            _autoBalanceContext.multiplierSet)) {
+        return 1;
+    }
+
+    const AutoBalanceRow &row = _services.game.autoBalance.get(
+        _autoBalanceContext.multiplierSet);
+    return getAutoBalanceDamageFactor(
+        _autoBalanceContext.playerLevelAtSpawn,
+        row.damageMultiplier);
 }
 
 int Creature::getMassiveCriticalDamage(
@@ -2477,7 +3290,7 @@ int Creature::getMassiveCriticalDamage(
     }
 
     for (const auto &property : sourceItem->properties()) {
-        if (property.upgradeType != 0 ||
+        if (!sourceItem->isPropertyActive(property) ||
             property.propertyName != static_cast<uint16_t>(ItemProperty::MassiveCriticals)) {
             continue;
         }
@@ -2496,26 +3309,20 @@ int Creature::getMassiveCriticalDamage(
     return 0;
 }
 
-int Creature::getDamageResistanceFeatBonus() const {
-    int result = 0;
-    if (hasEffectiveFeat(FeatType::ImprovedToughness)) {
-        result += 2;
-    }
-    if (hasEffectiveFeat(FeatType::WookieEndurance)) {
-        result += 2;
-    }
-    return result;
-}
-
 void Creature::addPhysicalDamageModifiers(
     DamagePacket &damage,
+    DamageBreakdown &breakdown,
     const Creature *target,
     const Item *weapon,
     bool offHand,
     int criticalMultiplier) const {
 
-    std::vector<DamageModifier> itemBonuses;
-    std::vector<DamageModifier> itemPenalties;
+    struct SourcedDamageModifier {
+        EffectSourceKey source;
+        DamageModifier modifier;
+    };
+    std::vector<SourcedDamageModifier> itemBonuses;
+    std::vector<SourcedDamageModifier> itemPenalties;
 
     auto handItem = weapon
                         ? std::shared_ptr<Item>()
@@ -2531,7 +3338,7 @@ void Creature::addPhysicalDamageModifiers(
         std::map<int, DamageModifier> penalties;
 
         for (const auto &property : item->properties()) {
-            if (property.upgradeType != 0) {
+            if (!item->isPropertyActive(property)) {
                 continue;
             }
 
@@ -2558,7 +3365,6 @@ void Creature::addPhysicalDamageModifiers(
                     break;
                 }
                 selectDamageModifier(bonuses, *modifier);
-                damage.setPower(static_cast<DamagePower>(modifier->flat));
                 break;
             }
             case ItemProperty::DamageBonus: {
@@ -2607,11 +3413,12 @@ void Creature::addPhysicalDamageModifiers(
             }
         }
 
+        EffectSourceKey source {EffectSourceKind::Item, item->runtimeIncarnation()};
         for (const auto &entry : bonuses) {
-            itemBonuses.push_back(entry.second);
+            itemBonuses.push_back({source, entry.second});
         }
         for (const auto &entry : penalties) {
-            itemPenalties.push_back(entry.second);
+            itemPenalties.push_back({source, entry.second});
         }
     }
 
@@ -2653,23 +3460,29 @@ void Creature::addPhysicalDamageModifiers(
         }
     }
 
+    for (const auto &entry : itemBonuses) {
+        effectModifierReducer.addIncrease(
+            entry.source, static_cast<int>(entry.modifier.type),
+            rollDamageModifier(entry.modifier, criticalMultiplier));
+    }
+    for (const auto &entry : itemPenalties) {
+        effectModifierReducer.addDecrease(
+            entry.source, static_cast<int>(entry.modifier.type),
+            std::abs(rollDamageModifier(entry.modifier, criticalMultiplier)));
+    }
+    auto addDamage = [&](int amount, DamageType type) {
+        if (amount != 0) {
+            damage.add(amount, type);
+            breakdown.addRawDamage(amount, type);
+        }
+    };
     for (const auto &[type, amount] :
          effectModifierReducer.increasesBySubtype(kMaximumDamageEffectModifier)) {
-        damage.add(amount, static_cast<DamageType>(type));
-    }
-    for (const DamageModifier &modifier : itemBonuses) {
-        damage.add(
-            rollDamageModifier(modifier, criticalMultiplier),
-            modifier.type);
+        addDamage(amount, static_cast<DamageType>(type));
     }
     for (const auto &[type, amount] :
          effectModifierReducer.decreasesBySubtype(kMaximumDamageEffectModifier)) {
-        damage.add(-amount, static_cast<DamageType>(type));
-    }
-    for (const DamageModifier &modifier : itemPenalties) {
-        damage.add(
-            rollDamageModifier(modifier, criticalMultiplier),
-            modifier.type);
+        addDamage(-amount, static_cast<DamageType>(type));
     }
 }
 
@@ -2806,8 +3619,10 @@ glm::vec3 Creature::computeSteeringForce(const Uniwalk &uni, const glm::vec3 &ne
 }
 
 bool Creature::navigateTo(const glm::vec3 &dest, bool run, float distance, float dt) {
-    if (_movementRestricted)
+    if (isMovementRestricted()) {
+        setMovementType(MovementType::None);
         return false;
+    }
 
     auto module = _game.module();
     if (!module || !module->area()) {
@@ -3121,20 +3936,27 @@ int Creature::getTwoWeaponAttackPenalty(
         return 0;
     }
 
+    int superiorRank = getHighestOwnedFeatRank(*this,
+        FeatType::SuperiorWeaponFocusTwoWeapon1,
+        3);
+
     if (offHand) {
         if (weapon != offHandWeapon.get()) {
             return 0;
         }
+
+        int penalty = 10;
         if (hasEffectiveFeat(FeatType::AdvancedDoubleWeaponFighting)) {
-            return 2;
+            penalty = 2;
+        } else if (hasEffectiveFeat(FeatType::DoubleWeaponFighting)) {
+            penalty = 4;
+        } else if (hasEffectiveFeat(FeatType::Ambidexterity)) {
+            penalty = 6;
         }
-        if (hasEffectiveFeat(FeatType::DoubleWeaponFighting)) {
-            return 4;
-        }
-        if (hasEffectiveFeat(FeatType::Ambidexterity)) {
-            return 6;
-        }
-        return 10;
+        return penalty - getSuperiorTwoWeaponPenaltyReduction(
+                             _game.isTSL(),
+                             true,
+                             superiorRank);
     }
 
     if (weapon != mainHand.get()) {
@@ -3158,16 +3980,21 @@ int Creature::getTwoWeaponAttackPenalty(
     } else if (hasEffectiveFeat(FeatType::DoubleWeaponFighting)) {
         penalty -= 2;
     }
-    return penalty;
+    return penalty - getSuperiorTwoWeaponPenaltyReduction(
+                         _game.isTSL(),
+                         false,
+                         superiorRank);
 }
 
 int Creature::getDuelingBonus() const {
     auto mainHand = getEquippedItem(InventorySlots::rightWeapon);
-    if (!mainHand || getEquippedItem(InventorySlots::leftWeapon)) {
-        return 0;
-    }
-    if (mainHand->weaponWield() != WeaponWield::SingleSword &&
-        mainHand->weaponWield() != WeaponWield::BlasterPistol) {
+    bool leftHandEquipped = static_cast<bool>(
+        getEquippedItem(InventorySlots::leftWeapon));
+    if (!qualifiesForDueling(
+            _game.isTSL(),
+            static_cast<bool>(mainHand),
+            mainHand ? mainHand->weaponWield() : WeaponWield::None,
+            leftHandEquipped)) {
         return 0;
     }
 
@@ -3528,12 +4355,23 @@ void Creature::deserialize(
 void Creature::deserializeAll(
     const resource::Gff &gff,
     const SerializedIdentityContext &identityContext) {
+    if (_game.isTSL()) {
+        if (gff.has("CurrentForm")) _currentForm = static_cast<CombatForm>(gff.getUint("CurrentForm"));
+        if (gff.has("MultiplierSet")) _autoBalanceContext.multiplierSet = static_cast<uint8_t>(gff.getUint("MultiplierSet"));
+        if (gff.has("PCLevelAtSpawn")) {
+            _autoBalanceContext.playerLevelAtSpawn = static_cast<uint8_t>(gff.getUint("PCLevelAtSpawn"));
+            _autoBalancePlayerLevelAtSpawnSet = true;
+        }
+    }
+
     Object::deserialize(gff, identityContext);
 
-    // Retail reads IsPC before post-processing hit points. A player character
+    // The game reads IsPC before post-processing hit points. A player character
     // remains an incapacitated, resumable runtime object through 0..-9 HP and
     // becomes truly dead only at -10 HP.
     gff.readBool(_isPC, "IsPC");
+    _initiative = !isPC();
+    setStealthMode(gff.getBool("StealthMode", _stealthMode));
     gff.readInt(_assignedPuppet, "AssignedPup");
 
     // index into racialtypes.2da
@@ -3570,6 +4408,14 @@ void Creature::deserializeAll(
 
     gff.readBool(_disarmable, "Disarmable");
     gff.readBool(_noPermDeath, "NoPermDeath");
+    if (identityContext.isSerializedState()) {
+        // LoadCreature uses one for all three absent BYTE fields in both
+        // titles; these are distinct from the constructor's initial flags.
+        _destroyable = _raiseable = _selectableWhenDead = true;
+        gff.readBool(_destroyable, "IsDestroyable");
+        gff.readBool(_raiseable, "IsRaiseable");
+        gff.readBool(_selectableWhenDead, "DeadSelectable");
+    }
     gff.readBool(_notReorienting, "NotReorienting");
     gff.readByte(_bodyVariation, "BodyVariation");
     gff.readByte(_textureVar, "TextureVar");
@@ -3586,6 +4432,10 @@ void Creature::deserializeAll(
     gff.readByte(_naturalAC, "NaturalAC");
     gff.readShort(_forcePoints, "ForcePoints");
     gff.readShort(_currentForce, "CurrentForce");
+    _temporaryHitPointsRestored = gff.readInt(_temporaryHitPoints, "ReoneTempHP");
+    _temporaryForcePointsRestored = gff.readInt(_temporaryForcePoints, "ReoneTempFP");
+    gff.readInt(_bonusForcePoints, "BonusForcePoints");
+    _temporaryForcePoints = narrowSignedResource(_temporaryForcePoints);
     gff.readShort(_refBonus, "refbonus");
     gff.readShort(_willBonus, "willbonus");
     gff.readShort(_fortBonus, "fortbonus");
@@ -3665,6 +4515,12 @@ void Creature::deserializeBodyBag(const resource::Gff &gff) {
 }
 
 void Creature::deserializeAttributes(const resource::Gff &gff) {
+    _levelForcePoints.clear();
+    for (const auto &level : gff.getList("LvlStatList")) {
+        uint8_t force = 0;
+        level->readByte(force, "LvlStatForce");
+        _levelForcePoints.push_back(force);
+    }
     CreatureAttributes &attributes = _attributes;
     {
         uint8_t value;
@@ -3690,6 +4546,14 @@ void Creature::deserializeAttributes(const resource::Gff &gff) {
 
     for (const auto &clazz : gff.getList("ClassList")) {
         deserializeClass(*clazz);
+    }
+    _spellLikeAbilities.clear();
+    for (const auto &record : gff.getList("SpecAbilityList")) {
+        SpellLikeAbility ability;
+        record->readWord(ability.spell, "Spell");
+        record->readByte(ability.flags, "SpellFlags");
+        record->readByte(ability.casterLevel, "SpellCasterLevel");
+        _spellLikeAbilities.push_back(ability);
     }
 
     int skillType = 0;
@@ -3939,6 +4803,587 @@ void Creature::deserializeOwnedItemsAndEquipment(
     if (_appearance != previousAppearance) {
         loadAppearanceProperties();
     }
+}
+
+bool Creature::isPartyMember() const {
+    return _game.party().isMember(*this);
+}
+
+void Creature::applyDamageEffect(
+    int amount,
+    const std::shared_ptr<Object> &damager) {
+
+    if (_dead) {
+        return;
+    }
+
+    if (amount == 0) {
+        runDamagedScript();
+        return;
+    }
+
+    applyHitPointDamage(amount, damager);
+}
+
+int Creature::selectMeleeAttackVariant(bool cinematic) {
+    int variant;
+    if (cinematic) {
+        do {
+            variant = randomInt(0, 4);
+        } while (variant == _lastMeleeAttackVariant);
+    } else {
+        variant = randomInt(0, 1);
+    }
+
+    _lastMeleeAttackVariant = variant;
+    return variant + 1;
+}
+
+int Creature::getDefense(const Creature *attacker, int damageFlags) const {
+    return getDefenseBreakdown(attacker, damageFlags).total;
+}
+
+DamagePower Creature::calculateDamagePower(
+    const Creature *target,
+    const Item *weapon,
+    bool offHand) const {
+
+    int effectBonus = getAttackBonusBreakdown(
+        target,
+        weapon,
+        offHand).effectBonus;
+    return static_cast<DamagePower>(
+        static_cast<uint8_t>(effectBonus));
+}
+
+void Creature::getDamageResistanceFeatBonuses(
+    int damage,
+    DamageResolution &resolution) const {
+
+    int percentageRank = 0;
+    if (_game.isTSL()) {
+        percentageRank = std::max(
+            getHighestOwnedFeatRank(*this, FeatType::IgnorePain1, 3),
+            getHighestOwnedFeatRank(*this, FeatType::InnerStrength1, 3));
+    }
+    auto reduction = getResistanceFeatReduction(_game.isTSL(), damage, percentageRank,
+        hasEffectiveFeat(FeatType::ImprovedToughness),
+        hasEffectiveFeat(FeatType::WookieEndurance),
+        _game.isTSL() && hasEffectiveFeat(static_cast<FeatType>(224)),
+        _game.isTSL() && hasEffectiveFeat(static_cast<FeatType>(225)));
+    resolution.percentageResistanceBonus = reduction.percentage;
+    resolution.improvedToughnessBonus = reduction.improvedToughness;
+    resolution.wookieeEnduranceBonus = reduction.endurance;
+}
+
+float Creature::movementRate(bool applyMobility) const {
+    return getMovementRateFactor(_movementRate, _game.isTSL(), applyMobility,
+        _game.isTSL() && applyMobility && hasEffectiveFeat(FeatType::Mobility));
+}
+
+bool Creature::stateControlsActions() const {
+    return game::stateControlsActions(static_cast<CreatureState>(_effectState));
+}
+
+int Creature::maxForcePoints() const {
+    const bool tsl = _game.isTSL();
+    if (racialType() == RacialType::Droid) return 0;
+    bool jedi = false;
+    bool mastery = false;
+    ClassType lastClass = ClassType::Invalid;
+    for (const auto &[clazz, classLevel] : _attributes.classLevels()) {
+        lastClass = clazz->type();
+        jedi |= isForceUsingClass(lastClass, tsl);
+        mastery |= lastClass == ClassType::JediConsular ||
+            (tsl && (lastClass == ClassType::JediMaster || lastClass == ClassType::SithLord));
+    }
+    const int level = static_cast<uint8_t>(_attributes.getAggregateLevel());
+    int64_t bonuses = hasEffectiveFeat(static_cast<FeatType>(116)) ? 40 : 0;
+    if (tsl) bonuses += _bonusForcePoints;
+    if (mastery && hasEffect(EffectType::PureEvilPowers)) bonuses += 50;
+    const int wisdom = getEffectiveAbilityModifier(Ability::Wisdom);
+    const int charisma = getEffectiveAbilityModifier(Ability::Charisma);
+    if (_isPC && _game.party().controlledNpc() == -1) {
+        // The PC-history branch tests the last class, not aggregate Jedi status.
+        if (!isForceUsingClass(lastClass, tsl)) return 0;
+        const auto signedByte = [](int value) {
+            const int bits = static_cast<uint8_t>(value);
+            return bits < 0x80 ? bits : bits - 0x100;
+        };
+        const int modifier = signedByte(wisdom) + (tsl ? 0 : signedByte(charisma));
+        int64_t total = bonuses;
+        for (int i = 0; i < level; ++i) {
+            // Invalid/truncated histories cannot supply an invented level grant.
+            const int gain = static_cast<size_t>(i) < _levelForcePoints.size() ? _levelForcePoints[i] : 0;
+            if (gain != 0) total += std::max(1, gain + modifier);
+        }
+        // K2 clamps a negative sum before returning the signed word;
+        // K1 returns the low signed word without that additional gate.
+        if (tsl && total < 0) return 0;
+        return narrowSignedResource(total);
+    }
+    if (!jedi) return 0;
+    return forcePointMaximum(_forcePoints, level, wisdom, charisma, tsl, bonuses);
+}
+
+void Creature::setBonusForcePoints(int amount) {
+    if (_game.isTSL()) _bonusForcePoints = amount;
+}
+
+int Creature::adjustedSpellForcePointCost(const Spell &spell) const {
+    float multiplier = 1.0f;
+    if (_isPC && (spell.alignment == 'G' || spell.alignment == 'E')) {
+        const auto adjustments = _services.resource.twoDas.get("forceadjust");
+        if (adjustments)
+            multiplier = adjustments->getFloat(std::clamp<int>(_goodEvil / 10, 0, 10),
+                spell.alignment == 'G' ? "goodcost" : "evilcost", 1.0f);
+    }
+    const auto module = _game.module();
+    const int room = _game.isTSL() && module && module->area()
+        ? module->area()->getRoomForceRating(position()) : 0;
+    return adjustedForcePointCost(spell.forcePointCost, multiplier, _game.isTSL(),
+        _isPC ? getEffectiveAbilityModifier(Ability::Charisma) : 0,
+        _goodEvil, room, _currentForm);
+}
+
+int Creature::spellCasterLevel(const Spell &spell, bool itemOrCheat) const {
+    if (!itemOrCheat) {
+        for (const auto &[clazz, level] : _attributes.classLevels()) {
+            if (!isForceUsingClass(clazz->type(), _game.isTSL())) continue;
+            const auto required = spell.getClassLevelRequirement(clazz->type());
+            if (level > 0 && required && *required >= 0 && *required != 0xff) return level;
+        }
+        return -1;
+    }
+    return std::max(10, 2 * static_cast<int>(spell.innateLevel) - 1);
+}
+
+bool Creature::readySpellLikeAbility(SpellType spell, int &casterLevel) const {
+    for (const auto &ability : _spellLikeAbilities) {
+        if (ability.spell == static_cast<uint16_t>(spell) && ability.flags == 1) {
+            casterLevel = ability.casterLevel;
+            return true;
+        }
+    }
+    return false;
+}
+
+uint32_t Creature::forceItemMask() const {
+    uint32_t mask = 0;
+    for (const auto &[slot, item] : _equipment) {
+        if (item) mask |= item->forceItemMask();
+    }
+    return mask;
+}
+
+bool Creature::consumeSpellLikeAbility(SpellType spell, int &casterLevel) {
+    for (auto &ability : _spellLikeAbilities) {
+        if (ability.spell != static_cast<uint16_t>(spell) || ability.flags != 1) continue;
+        ability.flags = 0;
+        casterLevel = ability.casterLevel;
+        return true;
+    }
+    return false;
+}
+
+int Creature::forceBodyLevel() const {
+    if (_game.isTSL()) {
+        for (const auto &effect : effects())
+            if (effect.serializedType == 110) return effect.integerParameter(0, -1);
+    }
+    return -1;
+}
+
+bool Creature::canPaySpellForcePointCost(const Spell &spell) const {
+    ForcePointPools pools {_currentForce, _temporaryForcePoints, _currentHitPoints, _temporaryHitPoints};
+    return payForcePointCharge(pools, forcePointCharge(adjustedSpellForcePointCost(spell), forceBodyLevel()));
+}
+
+bool Creature::commitSpellForcePointCost(const Spell &spell, int &cost) {
+    cost = adjustedSpellForcePointCost(spell);
+    ForcePointPools pools {_currentForce, _temporaryForcePoints, _currentHitPoints, _temporaryHitPoints};
+    if (!payForcePointCharge(pools, forcePointCharge(cost, forceBodyLevel()))) return false;
+    const int spentTemporaryHitPoints = _temporaryHitPoints - pools.temporaryHitPoints;
+    _currentForce = pools.force;
+    _temporaryForcePoints = pools.temporaryForce;
+    _currentHitPoints = pools.hitPoints;
+    consumeTemporaryHitPoints(spentTemporaryHitPoints);
+    return true;
+}
+
+void Creature::damageForcePoints(int amount) {
+    _currentForce = damagedForcePointPool(_currentForce, _temporaryForcePoints, amount);
+}
+
+void Creature::healForcePoints(int amount) {
+    _currentForce = healedForcePointPool(_currentForce, _temporaryForcePoints, amount, maxForcePoints());
+    if (_game.isTSL()) addForceHealingFeedback(_game, _services, *this, amount);
+}
+
+void Creature::regenerateForcePoints(int amount) {
+    // Generic Heal selector 54 is distinct from direct EffectHealForcePoints.
+    const int current = narrowSignedResource(static_cast<int64_t>(_currentForce) + _temporaryForcePoints);
+    const int maximum = narrowSignedResource(maxForcePoints());
+    int result = current + amount;
+    if (result > maximum) {
+        amount = maximum - current;
+        result = maximum;
+    }
+    _currentForce = narrowSignedResource(result);
+    addForceHealingFeedback(_game, _services, *this, amount);
+}
+
+void Creature::addTemporaryHitPoints(int amount, bool restoring) {
+    if (!restoring || !_temporaryHitPointsRestored)
+        _temporaryHitPoints = narrowSignedResource(_temporaryHitPoints) + amount;
+}
+
+int Creature::consumeTemporaryHitPoints(int amount) {
+    amount = std::max(0, amount);
+    const int remainder = consumeTemporaryResource(_temporaryHitPoints, amount);
+    int spent = amount - remainder;
+    std::vector<EffectId> depleted;
+    // Commit every grant debit before removing packages: removal can execute
+    // callbacks, remove siblings, or add effects and invalidate collection refs.
+    for (auto &effect : _effects) {
+        if (spent == 0) break;
+        if (effect.type() != EffectType::TemporaryHitpoints ||
+            std::find(_removingEffectApplications.begin(), _removingEffectApplications.end(),
+                      effect.applicationOrder) != _removingEffectApplications.end()) continue;
+        const int remaining = std::max(0, effect.integerParameter(0));
+        const int debit = std::min(spent, remaining);
+        if (debit == 0) continue;
+        effect.setIntegerParameter(0, remaining - debit);
+        spent -= debit;
+        if (remaining == debit && std::find(depleted.begin(), depleted.end(), effect.id) == depleted.end())
+            depleted.push_back(effect.id);
+    }
+    for (const auto id : depleted) removeEffectsById(id);
+    return remainder;
+}
+
+void Creature::removeTemporaryHitPoints(int amount) {
+    const bool wasAlive = !_dead && currentHitPoints() > 0;
+    // The getter sign-extends a word, while the pool write is 32-bit.
+    // Saved/mutated records can contain zero or negative remaining grants.
+    _temporaryHitPoints = std::max(0, narrowSignedResource(_temporaryHitPoints) - amount);
+    if (wasAlive && currentHitPoints() <= 0 && !_immortal)
+        (void)applyDeathEffect(nullptr, false);
+}
+
+void Creature::addTemporaryForcePoints(int amount, bool restoring) {
+    if (!restoring || !_temporaryForcePointsRestored)
+        _temporaryForcePoints = narrowSignedResource(static_cast<int64_t>(_temporaryForcePoints) + amount);
+}
+
+void Creature::removeTemporaryForcePoints(int amount) {
+    // Unlike temporary HP, removal subtracts the original grant even if spent.
+    _temporaryForcePoints = narrowSignedResource(static_cast<int64_t>(_temporaryForcePoints) - amount);
+}
+
+void Creature::multiplyMovementRate(float multiplier) {
+    _movementRate = clampMovementRate(_movementRate * multiplier);
+}
+
+void Creature::recomputeMovementRate(uint64_t removingId) {
+    float rate = 1.0f;
+    for (const auto &effect : effects()) {
+        // Removal excludes all records with the removed group ID.
+        if (effect.id == removingId) continue;
+        if (!effect.hasLiveRuntimeSource()) continue;
+        if (effect.serializedType == 28) rate += effect.integerParameter(0) / 100.0f;
+        else if (effect.serializedType == 29) rate -= effect.integerParameter(0) / 100.0f;
+    }
+    _movementRate = clampMovementRate(rate);
+}
+
+void Creature::beginStateImmobilization() {
+    if (!_movementTypeBeforeStateImmobilization) {
+        _movementTypeBeforeStateImmobilization = _movementType;
+    }
+    setMovementType(MovementType::None);
+}
+
+void Creature::restoreMovementAfterState() {
+    if (!_movementTypeBeforeStateImmobilization) {
+        return;
+    }
+
+    MovementType previous = *_movementTypeBeforeStateImmobilization;
+    _movementTypeBeforeStateImmobilization.reset();
+    if (_dead ||
+        _effectState == static_cast<int>(CreatureState::Stun) ||
+        _effectState == static_cast<int>(CreatureState::Paralysis) ||
+        _effectState == static_cast<int>(CreatureState::Sleep)) {
+        setMovementType(MovementType::None);
+        return;
+    }
+    setMovementType(previous);
+}
+
+void Creature::setInternalStateEffect(
+    int state,
+    int ambientState,
+    uint64_t effectId) {
+
+    _effectState = state;
+    _effectAmbientState = ambientState;
+    _internalStateEffectId = effectId;
+    _stateSupportTimer.reset(0.0f);
+    _animDirty = true;
+}
+
+void Creature::clearInternalStateEffect(uint64_t effectId) {
+    if (_internalStateEffectId != effectId) {
+        return;
+    }
+    _internalStateEffectId = 0;
+    _effectState = 0;
+    _effectAmbientState = 0;
+    _activeStateRootId = 0;
+    resumeStateDrivenAnimation();
+    restoreMovementAfterState();
+}
+
+void Creature::addEffectIcon(int iconId) {
+    ++_effectIconCounts[iconId];
+}
+
+void Creature::removeEffectIcon(int iconId) {
+    auto it = _effectIconCounts.find(iconId);
+    if (it == _effectIconCounts.end()) {
+        return;
+    }
+    if (--it->second == 0) {
+        _effectIconCounts.erase(it);
+    }
+}
+
+void Creature::onStateRootApplied(const EffectInstance &pending) {
+    if (pending.integerParameter(0) > _effectState) rebuildStateEffects(&pending);
+}
+
+void Creature::rebuildStateEffects(const EffectInstance *pending, uint64_t removingOrder) {
+    std::optional<EffectInstance> winner;
+    for (const auto &record : effects()) {
+        if (record.applicationOrder == removingOrder || record.serializedType != 8 ||
+            !stateHasConsumer(static_cast<CreatureState>(record.integerParameter(0)))) continue;
+        if (!winner || record.integerParameter(0) > winner->integerParameter(0)) winner = record;
+    }
+    if (pending && (!winner || pending->integerParameter(0) > winner->integerParameter(0))) winner = *pending;
+    const bool restoring = pending == nullptr || pending->restoring;
+    const auto state = winner ? static_cast<CreatureState>(winner->integerParameter(0)) : CreatureState::None;
+    _internalStateEffectId = 0;
+    _effectState = static_cast<int>(state);
+    _effectAmbientState = getStateAmbientCode(state);
+    _activeStateRootId = winner ? winner->id : kUnassignedEffectId;
+    for (size_t index = 0; index < _effects.size();) {
+        const auto record = _effects[index];
+        if (record.serializedType > 9) break;
+        if (record.serializedType != 9) { ++index; continue; }
+        const auto removed = removeEffectsById(record.id);
+        // Apply advances after erasure; restoration consumes the shifted entry.
+        if (!restoring || removed == 0) ++index;
+    }
+    resumeStateDrivenAnimation();
+    if (!winner) { restoreMovementAfterState(); return; }
+    auto internal = makeInternalStateInstance(*winner, restoring);
+    internal.id = _game.allocateEffectId();
+    setInternalStateEffect(static_cast<int>(state), getStateAmbientCode(state), internal.id);
+    _activeStateRootId = winner->id;
+    if (!applyEffect(internal)) clearInternalStateEffect(internal.id);
+}
+
+void Creature::onInternalStateRemoved(EffectId id) {
+    if (_internalStateEffectId == id) _internalStateEffectId = kUnassignedEffectId;
+    _effectAmbientState = getStateAmbientCode(static_cast<CreatureState>(_effectState));
+    resumeStateDrivenAnimation();
+}
+
+void Creature::recomputeAIStateEffects(int pendingMask, uint64_t removingOrder) {
+    int mask = pendingMask;
+    for (const auto &effect : effects()) {
+        if (effect.applicationOrder != removingOrder && effect.serializedType == 23) mask &= effect.integerParameter(0);
+    }
+    _effectAIStateMask = static_cast<uint16_t>(mask);
+    if (!canMove()) setMovementType(MovementType::None);
+}
+
+void Creature::onEffectsRestored() {
+    std::set<const Item *> restoredSources;
+    std::set<const Item *> restoredDisguiseSources;
+    for (const auto &effect : effects()) {
+        if (effect.durationType() != DurationType::Equipped) continue;
+        if (auto source = effect.boundCreator()) {
+            if (auto *item = dyn_cast<Item>(source.get())) {
+                if (isArmorClassEffect(effect)) restoredSources.insert(item);
+                if (effect.serializedType == 62) restoredDisguiseSources.insert(item);
+            }
+        }
+    }
+    std::set<const Item *> visited;
+    for (const auto &[slot, item] : _equipment) {
+        if (!item || !visited.insert(item.get()).second) continue;
+        std::deque<EffectInstance> missing;
+        appendEquippedItemEffects(missing, slot, item, true);
+        for (auto &effect : missing) {
+            const bool restored = effect.serializedType == 62
+                ? restoredDisguiseSources.count(item.get()) != 0
+                : restoredSources.count(item.get()) != 0;
+            if (!restored) applyEffect(std::move(effect));
+        }
+    }
+    // Re-establish caches from the canonical records already restored by the
+    // load coordinator. Never replay saves, initial damage or generated children.
+    recomputeAIStateEffects();
+    const EffectInstance *winner = nullptr;
+    for (const auto &effect : effects()) {
+        if (effect.serializedType == 8 &&
+            (!winner || effect.integerParameter(0) > winner->integerParameter(0))) winner = &effect;
+    }
+    if (!winner) return;
+    const int state = winner->integerParameter(0);
+    for (const auto &effect : effects()) {
+        if (effect.serializedType == 9 && effect.integerParameter(0) == state) {
+            _activeStateRootId = winner->id;
+            setInternalStateEffect(state, getStateAmbientCode(static_cast<CreatureState>(state)), effect.id);
+            if (state == 4 || state == 5 || state == 6) beginStateImmobilization();
+            break;
+        }
+    }
+}
+
+void Creature::resolveDamageShields(Creature &attacker) {
+    auto owner = _game.getObjectById(id());
+    // Advance the live index even when a callback removes the current shield;
+    // appended shields participate in this same walk. Keep no record reference
+    // across either application, since those callbacks may mutate the deque.
+    for (size_t index = 0; index < _effects.size(); ++index) {
+        const auto &shield = _effects[index];
+        if (shield.type() != EffectType::DamageShield || !shield.hasLiveRuntimeSource()) continue;
+        const int amount = shield.integerParameter(0) +
+            rollDamageShieldContribution(_services, shield.integerParameter(1));
+        const int flags = shield.integerParameter(2);
+        auto effect = _game.newEffect<DamageEffect>(amount, flags, DamagePower::Normal);
+        effect->setSaveFacingCreator(owner);
+        attacker.applyEffect(effect, DurationType::Instant);
+        auto visual = _game.newEffect<VisualEffect>(0, false, _services);
+        visual->setSaveFacingCreator(owner);
+        attacker.applyEffect(visual, DurationType::Instant);
+    }
+}
+
+int Creature::getSpellLevel(bool applyNegativeLevels) const {
+    int level = 0;
+    size_t classIndex = 0;
+    for (const auto &[clazz, classLevel] : _attributes.classLevels()) {
+        int drained = 0;
+        if (applyNegativeLevels) for (const auto &effect : effects()) {
+            if (effect.serializedType == 82 && effect.integerParameter(1, -1) == static_cast<int>(classIndex))
+                drained += effect.integerParameter(0);
+        }
+        level += std::max(0, static_cast<int>(static_cast<uint8_t>(classLevel)) -
+            static_cast<int>(static_cast<uint8_t>(drained)));
+        ++classIndex;
+    }
+    const bool balanced = isAutoBalanceEligible(_game.isTSL(), isPartyMember(),
+                                                _autoBalanceContext.multiplierSet);
+    const float multiplier = balanced
+        ? _services.game.autoBalance.get(_autoBalanceContext.multiplierSet).levelMultiplier
+        : 0.0f;
+    const uint8_t globalLevel = balanced && _autoBalanceContext.playerLevelAtSpawn == 0
+        ? static_cast<uint8_t>(_game.getGlobalNumber("G_PC_LEVEL")) : 0;
+    return calculateSpellLevel(level, balanced,
+        _autoBalanceContext.playerLevelAtSpawn, globalLevel, multiplier);
+}
+
+int Creature::getSpellSaveDC(int spellId) const {
+    return calculateSpellSaveDC(_game.isTSL(), spellId, getSpellLevel(),
+        getEffectiveAbilityModifier(Ability::Wisdom), getEffectiveAbilityModifier(Ability::Charisma),
+        hasEffectiveFeat(FeatType::ForceFocusSense), hasEffectiveFeat(FeatType::ForceFocusAdvanced),
+        hasEffectiveFeat(FeatType::ForceFocusMastery));
+}
+
+void Creature::playForceResistedAnimation() {
+    auto body = std::dynamic_pointer_cast<scene::ModelSceneNode>(_sceneNode);
+    if (body) body->playAnimation("fblock", nullptr, scene::AnimationProperties::fromFlags(
+        scene::AnimationFlags::fireForget | scene::AnimationFlags::overlay));
+}
+
+void Creature::beginForcePush(const glm::vec3 &destination, float facing) {
+    clearPath();
+    _forcePushDestination = destination;
+    _forcePushFacing = facing;
+    setMovementType(MovementType::Run);
+}
+
+void Creature::endForcePush() {
+    _forcePushDestination.reset();
+    setMovementType(MovementType::None);
+}
+
+void Creature::updateForcePush(float dt) {
+    if (!_forcePushDestination) return;
+    auto module = _game.module();
+    auto area = module ? module->area() : nullptr;
+    if (!area || isDead()) { endForcePush(); return; }
+    glm::vec2 delta = glm::vec2(*_forcePushDestination) - glm::vec2(position());
+    float distance = glm::length(delta);
+    if (distance == 0.0f) { endForcePush(); return; }
+    float step = std::min(distance, 25.0f * dt);
+    if (step <= 0.0f) return;
+    bool moved = area->moveCreatureByDistance(
+        _game.getObjectById<Creature>(id()), delta / distance, step);
+    setFacing(_forcePushFacing);
+    if (!moved || step == distance) endForcePush();
+    else setMovementType(MovementType::Run);
+}
+
+void Creature::updateStateHeartbeat(float dt) {
+    _stateSupportTimer.update(dt);
+    if (!_stateSupportTimer.elapsed()) return;
+    _stateSupportTimer.reset(randomInt(3000, 4199) / 1000.0f);
+    if (_dead) return;
+    if (!_onHeartbeat.empty()) _game.scriptRunner().run(_onHeartbeat, _id);
+    int row;
+    switch (static_cast<CreatureState>(_effectState)) {
+    case CreatureState::Confusion: row = 3; break;
+    case CreatureState::Fear: row = 2; break;
+    default: return;
+    }
+    auto table = getRequiredTwoDA(_services.resource.twoDas, "statescripts");
+    validateTwoDARow(*table, "statescripts", row);
+    auto script = table->getString(row, "scriptname");
+    if (!script.empty()) _game.scriptRunner().run(script, _id);
+}
+
+Creature::EffectStackCounts Creature::effectStackCounts() const {
+    EffectStackCounts result;
+    if (_effectIconCounts.empty()) {
+        return result;
+    }
+
+    auto effectIcons = getRequiredTwoDA(
+        _services.resource.twoDas,
+        "effecticon");
+
+    for (const auto &[iconId, count] : _effectIconCounts) {
+        if (count <= 0 || iconId < 0 ||
+            iconId >= effectIcons->getRowCount()) {
+            continue;
+        }
+
+        auto good = effectIcons->getBoolOpt(iconId, "good");
+        if (!good) {
+            continue;
+        }
+        if (*good) {
+            ++result.positive;
+        } else {
+            ++result.negative;
+        }
+    }
+    return result;
 }
 
 } // namespace game

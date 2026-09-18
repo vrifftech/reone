@@ -49,7 +49,7 @@ void LevelUpMenu::onGUILoaded() {
                  _controls.BTN_STEPNAME3,
                  _controls.BTN_STEPNAME4,
                  _controls.BTN_STEPNAME5}) {
-            enableK2ButtonBodyFill(button);
+            enableButtonBodyFill(button);
         }
     }
 

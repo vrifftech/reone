@@ -1,3 +1,4 @@
+#include "reone/game/deathexperience.h"
 /*
  * Copyright (c) 2026 The reone project contributors
  *
@@ -65,9 +66,6 @@ static glm::vec2 projectToScreen(
 void FloatingText::addDamage(
     const Object &object, int amount, int adjustedAmount, uint32_t damager) {
 
-    if (_game.isTSL()) {
-        return;
-    }
 
     auto leader = _game.party().getLeader();
     if (!leader) {
@@ -82,7 +80,7 @@ void FloatingText::addDamage(
 }
 
 void FloatingText::addHeal(const Object &object, int amount) {
-    if (_game.isTSL() || !_game.party().isMember(object)) {
+    if (!_game.party().isMember(object) && _game.lastTarget() != object.id()) {
         return;
     }
 
@@ -90,9 +88,6 @@ void FloatingText::addHeal(const Object &object, int amount) {
 }
 
 void FloatingText::addMiss(const Creature &attacker, const Object &target) {
-    if (_game.isTSL()) {
-        return;
-    }
 
     auto leader = _game.party().getLeader();
     if (!leader || attacker.id() != leader->id()) {
@@ -105,7 +100,14 @@ void FloatingText::addMiss(const Creature &attacker, const Object &target) {
         Style::Miss);
 }
 
+void FloatingText::addExperience(const Object &object, int amount) {
+    add(object, ExperienceFloaty::text(_services.resource.strings.getText(ExperienceFloaty::labelStrRef), amount), Style::Experience);
+}
+
 void FloatingText::add(const Object &object, std::string text, Style style) {
+    if (!_game.floatingTextEnabled()) {
+        return;
+    }
     for (Entry &entry : _entries) {
         if (entry.objectId == object.id()) {
             ++entry.stack;
@@ -144,7 +146,7 @@ void FloatingText::add(const Object &object, std::string text, Style style) {
     _entries.push_back({object.id(),
                         std::move(text),
                         style,
-                        kFloatingTextDuration,
+                        style == Style::Experience ? ExperienceFloaty::duration : kFloatingTextDuration,
                         1,
                         std::move(anchorOffset)});
 }
@@ -161,7 +163,7 @@ void FloatingText::update(float dt) {
 }
 
 void FloatingText::render() {
-    if (_game.isTSL() || _entries.empty()) {
+    if (_entries.empty()) {
         return;
     }
     const auto &options = _game.options().graphics;
@@ -262,6 +264,9 @@ void FloatingText::render() {
                                         case Style::Heal:
                                             color = kHealColor;
                                             break;
+                                        case Style::Experience:
+                                            color = glm::vec3(ExperienceFloaty::color[0], ExperienceFloaty::color[1], ExperienceFloaty::color[2]);
+                                            break;
                                         case Style::Miss:
                                             color = kMissColor;
                                             break;
@@ -271,7 +276,7 @@ void FloatingText::render() {
                                         float y = screen.y + entry.anchorOffset->y -
                                                   kFloatingTextOffsetY * layoutScale -
                                                   (entry.stack - 0.5f) * lineHeight;
-                                        float alpha = entry.remaining / kFloatingTextDuration;
+                                        float alpha = entry.remaining / (entry.style == Style::Experience ? ExperienceFloaty::duration : kFloatingTextDuration);
 
                                         _font->render(
                                             entry.text,

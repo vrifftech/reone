@@ -21,8 +21,20 @@ namespace reone {
 
 namespace game {
 
-void MindTrickEffect::applyTo(Object &object) {
-    // TODO: implement
+EffectInstance MindTrickEffect::saveFacingInstance() const {
+    auto record = Effect::saveFacingInstance();
+    record.serializedType = 8;
+    return record;
+}
+
+EffectApplicationResult MindTrickEffect::onApply(Object &object, EffectInstance &instance) {
+    CreatureStateEffect state(CreatureState::MindTrick);
+    return state.onApply(object, instance);
+}
+
+EffectRemovalResult MindTrickEffect::onRemove(Object &object, const EffectInstance &instance) {
+    CreatureStateEffect state(CreatureState::MindTrick);
+    return state.onRemove(object, instance);
 }
 
 } // namespace game

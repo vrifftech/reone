@@ -192,6 +192,9 @@ void MeshSceneNode::updateSaberAnimation(float dt) {
 
 bool MeshSceneNode::shouldRender() const {
     auto mesh = _modelNode.mesh();
+    if (_projectedBeam) {
+        return mesh && mesh->beaming && _projectedBeamTarget;
+    }
     if (!mesh || !mesh->render || _alpha == 0.0f) {
         return false;
     }
@@ -202,6 +205,9 @@ bool MeshSceneNode::shouldRender() const {
 }
 
 bool MeshSceneNode::shouldCastShadows() const {
+    if (_projectedBeam) {
+        return false;
+    }
     std::shared_ptr<ModelNode::TriangleMesh> mesh(_modelNode.mesh());
     if (!mesh) {
         return false;
@@ -216,6 +222,9 @@ bool MeshSceneNode::shouldCastShadows() const {
 }
 
 bool MeshSceneNode::isTransparent() const {
+    if (_projectedBeam) {
+        return true;
+    }
     if (!_nodeTextures.diffuse) {
         return false;
     }
@@ -248,7 +257,237 @@ static bool isReceivingShadows(const ModelSceneNode &model, const MeshSceneNode 
     return model.usage() == ModelUsage::Room;
 }
 
+namespace {
+
+static constexpr float kProjectedBeamDepth = 20.0f;
+static constexpr glm::vec4 kProjectedBeamColor {0.0f, 0.0f, 0.0f, 0.2f};
+
+struct ProjectedBeamEdge {
+    uint16_t from;
+    uint16_t to;
+};
+
+static std::unique_ptr<Mesh> buildProjectedBeamMesh(
+    const std::vector<glm::vec3> &sourceVertices,
+    const std::vector<Mesh::Face> &sourceFaces,
+    const glm::vec3 &targetLocal,
+    bool deformed) {
+
+    if (glm::length2(targetLocal) == 0.0f) {
+        return nullptr;
+    }
+
+    if (sourceVertices.empty() || sourceFaces.empty()) {
+        return nullptr;
+    }
+
+    std::vector<float> faceSides;
+    faceSides.reserve(sourceFaces.size());
+    for (const auto &face : sourceFaces) {
+        for (uint16_t vertexIndex : face.vertices) {
+            if (vertexIndex >= sourceVertices.size()) {
+                throw std::runtime_error(
+                    "K1 projected Beam mesh contains an invalid face index");
+            }
+        }
+
+        glm::vec3 normal = face.normal;
+        glm::vec3 centroid = face.centroid;
+        if (deformed) {
+            const glm::vec3 &a = sourceVertices[face.vertices[0]];
+            const glm::vec3 &b = sourceVertices[face.vertices[1]];
+            const glm::vec3 &c = sourceVertices[face.vertices[2]];
+            normal = glm::cross(b - a, c - a);
+            float normalLength = glm::length(normal);
+            if (normalLength > 0.0f) {
+                normal /= normalLength;
+            }
+            centroid = (a + b + c) / 3.0f;
+        }
+        faceSides.push_back(glm::dot(
+            normal,
+            targetLocal - centroid));
+    }
+
+    std::vector<ProjectedBeamEdge> edges;
+    std::vector<bool> usedVertices(sourceVertices.size(), false);
+    for (size_t faceIndex = 0; faceIndex < sourceFaces.size(); ++faceIndex) {
+        if (faceSides[faceIndex] < 0.0f) {
+            continue;
+        }
+        const auto &face = sourceFaces[faceIndex];
+        for (size_t edgeIndex = 0; edgeIndex < face.vertices.size(); ++edgeIndex) {
+            uint16_t adjacent = face.adjacentFaces[edgeIndex];
+            if (adjacent != 0xffff) {
+                if (adjacent >= faceSides.size()) {
+                    throw std::runtime_error(
+                        "K1 projected Beam mesh contains an invalid adjacent face index");
+                }
+                if (faceSides[faceIndex] * faceSides[adjacent] > 0.0f) {
+                    continue;
+                }
+            }
+
+            uint16_t from = face.vertices[edgeIndex];
+            uint16_t to = face.vertices[(edgeIndex + 1) % face.vertices.size()];
+            if (from >= sourceVertices.size() || to >= sourceVertices.size()) {
+                throw std::runtime_error(
+                    "K1 projected Beam mesh contains an invalid face index");
+            }
+            edges.push_back({from, to});
+            usedVertices[from] = true;
+            usedVertices[to] = true;
+        }
+    }
+    if (edges.empty()) {
+        return nullptr;
+    }
+
+    size_t usedCount = std::count(usedVertices.begin(), usedVertices.end(), true);
+    constexpr size_t kMaxIndexedVertices =
+        static_cast<size_t>(std::numeric_limits<uint16_t>::max()) + 1;
+    if (2 * usedCount + 2 > kMaxIndexedVertices) {
+        throw std::runtime_error(
+            "K1 projected Beam geometry exceeds the 16-bit index range");
+    }
+
+    std::vector<Mesh::Vertex> vertices;
+    vertices.reserve(2 * usedCount + 2);
+    std::vector<uint16_t> nearBySource(sourceVertices.size(), 0xffff);
+    for (size_t i = 0; i < sourceVertices.size(); ++i) {
+        if (!usedVertices[i]) {
+            continue;
+        }
+
+        glm::vec3 direction = sourceVertices[i] - targetLocal;
+        float distance = glm::length(direction);
+        if (distance == 0.0f) {
+            return nullptr;
+        }
+        direction /= distance;
+
+        nearBySource[i] = static_cast<uint16_t>(vertices.size());
+        vertices.push_back(Mesh::VertexBuilder()
+                               .position(sourceVertices[i])
+                               .build());
+        vertices.push_back(Mesh::VertexBuilder()
+                               .position(targetLocal + kProjectedBeamDepth * direction)
+                               .build());
+    }
+
+    uint16_t cap = static_cast<uint16_t>(vertices.size());
+    vertices.push_back(Mesh::VertexBuilder()
+                           .position(glm::vec3(0.0f))
+                           .build());
+    uint16_t sink = static_cast<uint16_t>(vertices.size());
+    vertices.push_back(Mesh::VertexBuilder()
+                           .position(targetLocal -
+                                     kProjectedBeamDepth * glm::normalize(targetLocal))
+                           .build());
+
+    std::vector<Mesh::Face> faces;
+    faces.reserve(4 * edges.size());
+    for (size_t edgeIndex = 0; edgeIndex < edges.size(); ++edgeIndex) {
+        const auto &edge = edges[edgeIndex];
+        uint16_t nearFrom = nearBySource[edge.from];
+        uint16_t farFrom = static_cast<uint16_t>(nearFrom + 1);
+        uint16_t nearTo = nearBySource[edge.to];
+        uint16_t farTo = static_cast<uint16_t>(nearTo + 1);
+
+        std::array<uint16_t, 6> strip;
+        if ((edgeIndex & 1) == 0) {
+            strip = {cap, nearFrom, nearTo, farFrom, farTo, sink};
+        } else {
+            strip = {sink, farTo, farFrom, nearTo, nearFrom, cap};
+        }
+
+        for (size_t i = 0; i < 4; ++i) {
+            if ((i & 1) == 0) {
+                faces.emplace_back(std::array<uint16_t, 3> {
+                    strip[i], strip[i + 1], strip[i + 2]});
+            } else {
+                faces.emplace_back(std::array<uint16_t, 3> {
+                    strip[i + 1], strip[i], strip[i + 2]});
+            }
+        }
+    }
+
+    Mesh::VertexLayout layout;
+    layout.stride = 3 * sizeof(float);
+    layout.offPosition = 0;
+
+    auto projection = std::make_unique<Mesh>(
+        std::move(vertices),
+        std::move(layout),
+        std::move(faces));
+    projection->init();
+    return projection;
+}
+
+} // namespace
+
+void MeshSceneNode::renderProjectedBeam(IRenderPass &pass) {
+    auto modelMesh = _modelNode.mesh();
+    if (!modelMesh || !modelMesh->mesh || !modelMesh->beaming ||
+        !_projectedBeamTarget) {
+        return;
+    }
+
+    glm::vec3 targetLocal = glm::vec3(
+        _absTransformInv * glm::vec4(_projectedBeamTarget->origin(), 1.0f));
+
+    std::vector<glm::vec3> sourceVertices;
+    if (_modelNode.isSkinMesh()) {
+        const auto &vertices = modelMesh->mesh->vertices();
+        auto bones = buildSkinBoneTransforms();
+        sourceVertices.reserve(vertices.size());
+
+        for (const auto &vertex : vertices) {
+            if (!vertex.boneIndices || !vertex.boneWeights) {
+                throw std::runtime_error(
+                    "K1 projected skinned Beam vertex lacks bone data");
+            }
+
+            glm::vec3 position {0.0f};
+            for (size_t i = 0; i < 4; ++i) {
+                int boneIndex = std::max(0, (*vertex.boneIndices)[i]);
+                if (boneIndex >= static_cast<int>(bones.size())) {
+                    throw std::runtime_error(
+                        "K1 projected skinned Beam vertex has an invalid bone index");
+                }
+                position += glm::vec3(
+                                bones[boneIndex] *
+                                glm::vec4(vertex.position, 1.0f)) *
+                            (*vertex.boneWeights)[i];
+            }
+            sourceVertices.push_back(position);
+        }
+    } else {
+        sourceVertices = modelMesh->mesh->vertexCoords();
+    }
+
+    auto projection = buildProjectedBeamMesh(
+        sourceVertices,
+        modelMesh->mesh->faces(),
+        targetLocal,
+        _modelNode.isSkinMesh());
+    if (!projection) {
+        return;
+    }
+
+    pass.drawProjectedBeam(
+        *projection,
+        _absTransform,
+        _absTransformInv,
+        kProjectedBeamColor);
+}
+
 void MeshSceneNode::render(IRenderPass &pass) {
+    if (_projectedBeam) {
+        renderProjectedBeam(pass);
+        return;
+    }
+
     auto mesh = _modelNode.mesh();
     if (!mesh || !_nodeTextures.diffuse) {
         return;
@@ -292,26 +531,43 @@ void MeshSceneNode::render(IRenderPass &pass) {
         material.affectedByFog = true;
     }
     material.faceCulling = _nodeTextures.diffuse->features().decal ? FaceCullMode::None : FaceCullMode::Back;
+    drawWithMaterial(pass, material);
+}
+
+void MeshSceneNode::renderBumpedOutShell(
+    IRenderPass &pass,
+    Texture &texture,
+    float offset) {
+
+    auto mesh = _modelNode.mesh();
+    if (!mesh || !mesh->render || _alpha == 0.0f) {
+        return;
+    }
+
+    Material material;
+    material.type = MaterialType::TransparentModel;
+    material.textures.insert({TextureUnits::mainTex, texture});
+    material.color = glm::vec4(1.0f);
+    material.ambientColor = glm::vec3(1.0f);
+    material.diffuseColor = glm::vec3(1.0f);
+    material.selfIllumColor = glm::vec3(1.0f);
+    material.shellOffset = offset;
+    material.faceCulling = texture.features().decal
+                               ? FaceCullMode::None
+                               : FaceCullMode::Back;
+    drawWithMaterial(pass, material);
+}
+
+void MeshSceneNode::drawWithMaterial(
+    IRenderPass &pass,
+    Material &material) {
+
+    auto mesh = _modelNode.mesh();
+    if (!mesh) {
+        return;
+    }
     if (_modelNode.isSkinMesh()) {
-        const auto &skin = *mesh->skin;
-        auto bones = std::vector<glm::mat4>(kMaxBones, glm::mat4(1.0f));
-        for (size_t i = 0; i < kMaxBones; ++i) {
-            if (i >= skin.boneNodeNumber.size()) {
-                break;
-            }
-            auto nodeNumber = skin.boneNodeNumber[i];
-            if (nodeNumber == 0xffff) {
-                continue;
-            }
-            auto bone = _model.getNodeByNumber(nodeNumber);
-            if (!bone) {
-                continue;
-            }
-            bones[i] = _modelNode.absoluteTransformInverse(); // convert bone transform in model space to bone transform in this model node space
-            bones[i] *= _model.absoluteTransformInverse();    // convert bone transform in world space to bone transform in model space
-            bones[i] *= bone->absoluteTransform();
-            bones[i] *= skin.boneMatrices[skin.boneSerial[i]]; // extract changes to the bone transform in this model node space
-        }
+        auto bones = buildSkinBoneTransforms();
         pass.drawSkinned(*mesh->mesh, material, _absTransform, _absTransformInv, std::move(bones));
     } else if (_modelNode.isDanglymesh()) {
         std::vector<glm::vec4> positions;
@@ -333,6 +589,41 @@ void MeshSceneNode::render(IRenderPass &pass) {
     } else {
         pass.draw(*mesh->mesh, material, _absTransform, _absTransformInv);
     }
+}
+
+std::vector<glm::mat4> MeshSceneNode::buildSkinBoneTransforms() const {
+    auto mesh = _modelNode.mesh();
+    if (!mesh || !mesh->skin) {
+        throw std::runtime_error(
+            "Cannot build skin transforms for a non-skin mesh");
+    }
+
+    const auto &skin = *mesh->skin;
+    auto bones = std::vector<glm::mat4>(kMaxBones, glm::mat4(1.0f));
+    for (size_t i = 0; i < kMaxBones; ++i) {
+        if (i >= skin.boneNodeNumber.size()) {
+            break;
+        }
+        uint16_t nodeNumber = skin.boneNodeNumber[i];
+        if (nodeNumber == 0xffff) {
+            continue;
+        }
+        auto bone = _model.getNodeByNumber(nodeNumber);
+        if (!bone) {
+            continue;
+        }
+        if (i >= skin.boneSerial.size() ||
+            skin.boneSerial[i] >= skin.boneMatrices.size()) {
+            throw std::runtime_error(
+                "K1 skin mesh contains an invalid bone serial");
+        }
+
+        bones[i] = _modelNode.absoluteTransformInverse(); // convert bone transform in model space to bone transform in this model node space
+        bones[i] *= _model.absoluteTransformInverse();    // convert bone transform in world space to bone transform in model space
+        bones[i] *= bone->absoluteTransform();
+        bones[i] *= skin.boneMatrices[skin.boneSerial[i]]; // extract changes to the bone transform in this model node space
+    }
+    return bones;
 }
 
 void MeshSceneNode::renderShadow(IRenderPass &pass) {

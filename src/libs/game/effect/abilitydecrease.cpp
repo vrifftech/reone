@@ -16,13 +16,24 @@
  */
 
 #include "reone/game/effect/abilitydecrease.h"
+#include "reone/game/object/creature.h"
+#include "reone/game/effect/rules.h"
 
 namespace reone {
 
 namespace game {
 
-void AbilityDecreaseEffect::applyTo(Object &object) {
-    // TODO: implement
+EffectApplicationResult AbilityDecreaseEffect::onApply(Object &object, EffectInstance &instance) {
+    // Load mode bypasses only the dead/dying gate. Target, amount,
+    // immunity and plot checks still apply; equipped duration is not a bypass.
+    auto *creature = dyn_cast<Creature>(&object);
+    if (!creature) return EffectApplicationResult::Rejected;
+    auto creator = instance.boundCreator();
+    return (!creature->hasEffectImmunity(ImmunityType::AbilityDecrease,
+                   dyn_cast<Creature>(creator.get())) && admitsAbilityEffect(!instance.restoring && creature->isDead(),
+                                !instance.restoring && creature->isTemporarilyDead(),
+                                instance.integerParameter(1), true, creature->plotFlag()))
+        ? EffectApplicationResult::Retained : EffectApplicationResult::Rejected;
 }
 
 } // namespace game
