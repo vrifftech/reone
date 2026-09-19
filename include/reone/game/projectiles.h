@@ -32,7 +32,7 @@ class TwoDA;
 namespace game {
 
 class Creature;
-class Spell;
+struct Spell;
 class Object;
 class Item;
 class Game;

@@ -161,7 +161,12 @@ void ActionBar::update() {
         slot.actions.clear();
         switch (i) {
         case 0: {
-            // TODO: Force powers.
+            for (SpellType type : leader->attributes().spells()) {
+                auto spell = _services.game.spells.get(type);
+                if (spell && !spell->hostile) {
+                    slot.actions.emplace_back(spell);
+                }
+            }
             break;
         }
         case 1: {

@@ -32,7 +32,7 @@ namespace graphics { class Texture; }
 
 namespace game {
 
-class ServicesView;
+struct ServicesView;
 struct VisualEffectDesc;
 
 class VisualEffect : public CopyableEffect<VisualEffect> {

@@ -32,7 +32,7 @@ namespace game {
 
 class Object;
 class Game;
-class ServicesView;
+struct ServicesView;
 
 /** Identifies an item-on-hit effect subtype. */
 enum class ItemOnHitSubtype : uint16_t {

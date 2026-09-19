@@ -911,7 +911,8 @@ void Combat::finishRound(CombatRound &round) {
     }
     for (auto &entry : round.actions) {
         if (!entry.retired) {
-            entry.retired = true;
+            // Keep the entry associated with the finished round until the
+            // queued action observes that state and completes its cleanup.
             entry.action->retireCombatRound();
         }
     }

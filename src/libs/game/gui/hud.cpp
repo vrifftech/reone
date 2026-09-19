@@ -30,6 +30,7 @@
 #include "reone/resource/provider/audioclips.h"
 #include "reone/system/logutil.h"
 
+#include "reone/game/action/castspellatlocation.h"
 #include "reone/game/action/castspellatobject.h"
 #include "reone/game/action/usefeat.h"
 #include "reone/game/d20/feat.h"
@@ -623,30 +624,40 @@ void HUD::refreshActionQueueItems() const {
     for (int i = 0; i < 4; ++i) {
         Label &item = *queueLabels[i];
         if (i < static_cast<int>(actions.size())) {
-            switch (actions[i]->type()) {
+            Action &displayAction = actions[i]->combatAction();
+            switch (displayAction.type()) {
             case ActionType::AttackObject:
                 item.setBorderFill(g_attackIcon);
                 break;
             case ActionType::UseFeat: {
-                auto featAction = std::static_pointer_cast<UseFeatAction>(actions[i]);
-                std::shared_ptr<Feat> feat(_services.game.feats.get(featAction->feat()));
-                if (feat) {
-                    item.setBorderFill(feat->icon);
-                }
+                auto *featAction = dyn_cast<UseFeatAction>(&displayAction);
+                std::shared_ptr<Feat> feat(
+                    featAction ? _services.game.feats.get(featAction->feat()) : nullptr);
+                item.setBorderFill(feat ? feat->icon : nullptr);
                 break;
             }
             case ActionType::CastSpellAtObject: {
-                auto castSpell = cast<CastSpellAtObjectAction>(actions[i]);
-                if (const auto &spellIcon = castSpell->spell()->icon) {
-                    item.setBorderFill(spellIcon);
-                } else if (auto maybeItem = castSpell->item()) {
-                    item.setBorderFill(maybeItem.value()->icon());
+                auto *castSpell = dyn_cast<CastSpellAtObjectAction>(&displayAction);
+                if (castSpell && castSpell->spell()->icon) {
+                    item.setBorderFill(castSpell->spell()->icon);
+                } else if (castSpell) {
+                    auto maybeItem = castSpell->item();
+                    item.setBorderFill(maybeItem ? maybeItem.value()->icon() : nullptr);
                 } else {
                     item.setBorderFill("");
                 }
                 break;
             }
+            case ActionType::CastSpellAtLocation: {
+                auto *castSpell = dyn_cast<CastSpellAtLocationAction>(&displayAction);
+                item.setBorderFill(
+                    castSpell && castSpell->spell()->icon
+                        ? castSpell->spell()->icon
+                        : std::shared_ptr<graphics::Texture>());
+                break;
+            }
             default:
+                item.setBorderFill("");
                 break;
             }
         } else {
