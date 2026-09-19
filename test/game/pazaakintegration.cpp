@@ -42,7 +42,7 @@ void reone::game::TestGameModule::configurePazaak(
     game._pazaakFirstParticipantSelector = [](size_t) { return Participant::One; };
     game._pazaakPaceAutomaticDraws = false;
     game._pazaakContinuationOverride = std::move(continuation);
-    game._pazaakOpponentDeckOverride = PazaakSession::makeDebugOpponentSideDeck(false);
+    game._pazaakOpponentDeckOverride = PazaakSession::temporaryK1OpponentSideDeck();
     // Own two of every card type the running title stores; entries beyond the
     // title's table stay zero so a save round trip is byte-for-byte stable.
     size_t cardCount = game.isTSL() ? Party::kK2PazaakCardCount : Party::kK1PazaakCardCount;
@@ -562,7 +562,7 @@ TEST(PazaakConsoleCommand, StartsExactlyOnceWithoutSelectionAndPreservesGameData
     EXPECT_EQ(0u, session->opponentId());
     EXPECT_TRUE(session->continuationScript().empty());
     EXPECT_EQ(
-        PazaakSession::makeDebugCollection(false).size(),
+        PazaakSession::temporaryK1TestCollection().size(),
         session->collection().size());
     EXPECT_EQ(creditsBefore, fixture.game.party().gold());
     EXPECT_EQ(inventorySizeBefore, player->items().size());

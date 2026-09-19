@@ -23,7 +23,7 @@ namespace reone {
 namespace game {
 
 struct ContextAction;
-struct ServicesView;
+class ServicesView;
 
 struct ActionSlot {
     std::vector<ContextAction> actions;

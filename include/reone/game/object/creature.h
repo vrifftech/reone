@@ -55,7 +55,7 @@ namespace game {
 constexpr float kDefaultAttackRange = 2.0f;
 
 class DamagePacket;
-struct Spell;
+class Spell;
 class ModuleSnapshotBuilder;
 struct AttackBonusBreakdown;
 struct DefenseBreakdown;

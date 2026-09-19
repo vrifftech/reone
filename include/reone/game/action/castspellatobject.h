@@ -26,7 +26,7 @@ namespace reone {
 
 namespace game {
 class Item;
-struct Spell;
+class Spell;
 
 class CastSpellAtObjectAction : public Action {
 public:

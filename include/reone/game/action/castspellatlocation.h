@@ -25,7 +25,7 @@ namespace reone {
 
 namespace game {
 
-struct Spell;
+class Spell;
 class CastSpellAtLocationAction : public Action {
 public:
     CastSpellAtLocationAction(Game &game, ServicesView &services,

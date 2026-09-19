@@ -38,7 +38,7 @@ class CombatRound;
 class Creature;
 class Object;
 class Game;
-struct Spell;
+class Spell;
 class Location;
 
 struct SpellCastContext {

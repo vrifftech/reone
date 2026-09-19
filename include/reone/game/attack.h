@@ -46,7 +46,7 @@ class IAnimations;
 class Item;
 class Object;
 class ProjectileSpec;
-struct ServicesView;
+class ServicesView;
 struct SavedPhysicalAction;
 
 static constexpr float kAttackDamageDelay = 1.0f;

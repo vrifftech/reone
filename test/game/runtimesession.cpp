@@ -1136,7 +1136,7 @@ TEST(AreaRuntimeRetirement, canonical_boundary_retires_every_area_owned_attachme
     trigger->addTenant(retained);
     TestGameModule::setAreaRuntimePath(*retained, area->pathfinder());
 
-    retained->beginCombatAttack(*outgoing, FeatType::Invalid);
+    retained->beginCombatAttack(outgoing, FeatType::Invalid);
     retained->setAttemptedAttackTarget(outgoing->id());
     retained->setLastHostileActor(outgoing->id());
     retained->setObjectSeen(outgoing, true);

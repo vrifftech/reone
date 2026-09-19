@@ -24,7 +24,7 @@ namespace reone {
 namespace game {
 
 class Item;
-struct Spell;
+class Spell;
 struct GameServices;
 
 class ItemAttributes {
