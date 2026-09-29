@@ -17,10 +17,13 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <tuple>
 #include <utility>
+
+#include "../effect.h"
 
 namespace reone {
 
@@ -45,6 +48,29 @@ struct EffectSourceKey {
 };
 
 EffectSourceKey getEffectSourceKey(const EffectInstance &effect);
+
+// Negative saving-throw modifiers accumulate per source, unlike strongest-only
+// modifier groups. Source capacity and final caps are title-specific.
+class AbilityEffectReducer {
+public:
+    explicit AbilityEffectReducer(bool tsl) : _tsl(tsl) {}
+    void addIncrease(EffectSourceKey source, int amount);
+    void addDecrease(EffectSourceKey source, int amount);
+    int total() const;
+
+private:
+    struct Bucket {
+        EffectSourceKey source;
+        int32_t amount {-1}; // Free-slot sentinel.
+        bool hasSource {false};
+    };
+    using Buckets = std::array<Bucket, 108>;
+    void add(Buckets &buckets, EffectSourceKey source, int amount, bool increase);
+    int total(const Buckets &buckets, int cap) const;
+    bool _tsl;
+    Buckets _increases {};
+    Buckets _decreases {};
+};
 
 class EffectModifierReducer {
 public:

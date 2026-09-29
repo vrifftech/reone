@@ -17,6 +17,9 @@
 
 #pragma once
 
+#include <cstdint>
+#include <memory>
+
 namespace reone {
 
 namespace script {
@@ -24,6 +27,17 @@ namespace script {
 class EngineType : boost::noncopyable {
 public:
     virtual ~EngineType() = default;
+};
+
+/** Engine structures with value-copy semantics at VM boundaries. */
+class CopyableEngineType : public EngineType {
+public:
+    virtual std::shared_ptr<EngineType> cloneForScript() const = 0;
+    virtual uint64_t scriptValueId() const = 0;
+
+protected:
+    CopyableEngineType() = default;
+    CopyableEngineType(const CopyableEngineType &) : EngineType() {}
 };
 
 } // namespace script

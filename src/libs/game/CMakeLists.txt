@@ -70,11 +70,13 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/animations.h
     ${GAME_INCLUDE_DIR}/animationutil.h
     ${GAME_INCLUDE_DIR}/attack.h
+    ${GAME_INCLUDE_DIR}/autobalance.h
     ${GAME_INCLUDE_DIR}/camerastyle.h
     ${GAME_INCLUDE_DIR}/camerastyles.h
     ${GAME_INCLUDE_DIR}/castspell.h
     ${GAME_INCLUDE_DIR}/character.h
     ${GAME_INCLUDE_DIR}/combat.h
+    ${GAME_INCLUDE_DIR}/combattables.h
     ${GAME_INCLUDE_DIR}/contextaction.h
     ${GAME_INCLUDE_DIR}/d20/attributes.h
     ${GAME_INCLUDE_DIR}/d20/class.h
@@ -98,6 +100,7 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/effect/acincrease.h
     ${GAME_INCLUDE_DIR}/effect/areaofeffect.h
     ${GAME_INCLUDE_DIR}/effect/assureddeflection.h
+    ${GAME_INCLUDE_DIR}/effect/assassinate.h
     ${GAME_INCLUDE_DIR}/effect/assuredhit.h
     ${GAME_INCLUDE_DIR}/effect/attackdecrease.h
     ${GAME_INCLUDE_DIR}/effect/attackincrease.h
@@ -107,13 +110,8 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/effect/blind.h
     ${GAME_INCLUDE_DIR}/effect/bonusfeat.h
     ${GAME_INCLUDE_DIR}/effect/bodyfuel.h
-    ${GAME_INCLUDE_DIR}/effect/choke.h
     ${GAME_INCLUDE_DIR}/effect/concealment.h
-    ${GAME_INCLUDE_DIR}/effect/confused.h
-    ${GAME_INCLUDE_DIR}/effect/crush.h
-    ${GAME_INCLUDE_DIR}/effect/cutscenehorrified.h
-    ${GAME_INCLUDE_DIR}/effect/cutsceneparalyze.h
-    ${GAME_INCLUDE_DIR}/effect/cutscenestunned.h
+    ${GAME_INCLUDE_DIR}/effect/creaturestate.h
     ${GAME_INCLUDE_DIR}/effect/damage.h
     ${GAME_INCLUDE_DIR}/effect/damagedecrease.h
     ${GAME_INCLUDE_DIR}/effect/damageforcepoints.h
@@ -124,12 +122,10 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/effect/damageresistance.h
     ${GAME_INCLUDE_DIR}/effect/damageshield.h
     ${GAME_INCLUDE_DIR}/effect/death.h
+    ${GAME_INCLUDE_DIR}/effect/destroyshields.h
     ${GAME_INCLUDE_DIR}/effect/disguise.h
     ${GAME_INCLUDE_DIR}/effect/dispelmagicall.h
     ${GAME_INCLUDE_DIR}/effect/dispelmagicbest.h
-    ${GAME_INCLUDE_DIR}/effect/droidconfused.h
-    ${GAME_INCLUDE_DIR}/effect/droidscramble.h
-    ${GAME_INCLUDE_DIR}/effect/droidstun.h
     ${GAME_INCLUDE_DIR}/effect/entangle.h
     ${GAME_INCLUDE_DIR}/effect/factionmodifier.h
     ${GAME_INCLUDE_DIR}/effect/forcebody.h
@@ -144,19 +140,16 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/effect/forceshield.h
     ${GAME_INCLUDE_DIR}/effect/forcesight.h
     ${GAME_INCLUDE_DIR}/effect/fpregenmodifier.h
-    ${GAME_INCLUDE_DIR}/effect/frightened.h
     ${GAME_INCLUDE_DIR}/effect/fury.h
     ${GAME_INCLUDE_DIR}/effect/haste.h
     ${GAME_INCLUDE_DIR}/effect/heal.h
     ${GAME_INCLUDE_DIR}/effect/healforcepoints.h
     ${GAME_INCLUDE_DIR}/effect/hitpointchangewhendying.h
-    ${GAME_INCLUDE_DIR}/effect/horrified.h
     ${GAME_INCLUDE_DIR}/effect/immunity.h
     ${GAME_INCLUDE_DIR}/effect/invisibility.h
     ${GAME_INCLUDE_DIR}/effect/knockdown.h
     ${GAME_INCLUDE_DIR}/effect/lightsaberthrow.h
     ${GAME_INCLUDE_DIR}/effect/linkeffects.h
-    ${GAME_INCLUDE_DIR}/effect/mindtrick.h
     ${GAME_INCLUDE_DIR}/effect/misschance.h
     ${GAME_INCLUDE_DIR}/effect/modifyattacks.h
     ${GAME_INCLUDE_DIR}/effect/movementspeeddecrease.h
@@ -164,6 +157,7 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/effect/paralyze.h
     ${GAME_INCLUDE_DIR}/effect/poison.h
     ${GAME_INCLUDE_DIR}/effect/psychicstatic.h
+    ${GAME_INCLUDE_DIR}/effect/purealignmentpowers.h
     ${GAME_INCLUDE_DIR}/effect/regenerate.h
     ${GAME_INCLUDE_DIR}/effect/resurrection.h
     ${GAME_INCLUDE_DIR}/effect/savingthrowdecrease.h
@@ -171,8 +165,8 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/effect/seeinvisible.h
     ${GAME_INCLUDE_DIR}/effect/skilldecrease.h
     ${GAME_INCLUDE_DIR}/effect/skillincrease.h
-    ${GAME_INCLUDE_DIR}/effect/sleep.h
     ${GAME_INCLUDE_DIR}/effect/spellimmunity.h
+    ${GAME_INCLUDE_DIR}/effect/sleep.h
     ${GAME_INCLUDE_DIR}/effect/spelllevelabsorption.h
     ${GAME_INCLUDE_DIR}/effect/stunned.h
     ${GAME_INCLUDE_DIR}/effect/temporaryforcepoints.h
@@ -181,13 +175,13 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/effect/trueseeing.h
     ${GAME_INCLUDE_DIR}/effect/visual.h
     ${GAME_INCLUDE_DIR}/effect/vpregenmodifier.h
-    ${GAME_INCLUDE_DIR}/effect/whirlwind.h
     ${GAME_INCLUDE_DIR}/equipmentoperation.h
     ${GAME_INCLUDE_DIR}/equipmentrules.h
     ${GAME_INCLUDE_DIR}/event.h
     ${GAME_INCLUDE_DIR}/runtimeref.h
     ${GAME_INCLUDE_DIR}/footstepsounds.h
     ${GAME_INCLUDE_DIR}/floatingtext.h
+    ${GAME_INCLUDE_DIR}/forcerules.h
     ${GAME_INCLUDE_DIR}/galaxymapstate.h
     ${GAME_INCLUDE_DIR}/game.h
     ${GAME_INCLUDE_DIR}/globalfade.h
@@ -338,6 +332,7 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/pazaak.h
     ${GAME_INCLUDE_DIR}/pazaaksession.h
     ${GAME_INCLUDE_DIR}/pathfinder.h
+    ${GAME_SOURCE_DIR}/physicalcombatrules.h
     ${GAME_INCLUDE_DIR}/player.h
     ${GAME_INCLUDE_DIR}/portrait.h
     ${GAME_INCLUDE_DIR}/portraits.h
@@ -353,6 +348,7 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/script/routines.h
     ${GAME_INCLUDE_DIR}/script/runner.h
     ${GAME_INCLUDE_DIR}/script/savedsituation.h
+    ${GAME_INCLUDE_DIR}/shaperules.h
     ${GAME_INCLUDE_DIR}/surface.h
     ${GAME_INCLUDE_DIR}/surfaces.h
     ${GAME_INCLUDE_DIR}/swooprace.h
@@ -377,7 +373,6 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/action/equipmostdamagingmelee.cpp
     ${GAME_SOURCE_DIR}/action/equipmostdamagingranged.cpp
     ${GAME_SOURCE_DIR}/action/interactobject.cpp
-    ${GAME_SOURCE_DIR}/action.cpp
     ${GAME_SOURCE_DIR}/action/items.cpp
     ${GAME_SOURCE_DIR}/action/movement.cpp
     ${GAME_SOURCE_DIR}/action/usefeat.cpp
@@ -386,9 +381,11 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/animations.cpp
     ${GAME_SOURCE_DIR}/animationutil.cpp
     ${GAME_SOURCE_DIR}/attack.cpp
+    ${GAME_SOURCE_DIR}/autobalance.cpp
     ${GAME_SOURCE_DIR}/camerastyles.cpp
     ${GAME_SOURCE_DIR}/castspell.cpp
     ${GAME_SOURCE_DIR}/combat.cpp
+    ${GAME_SOURCE_DIR}/combattables.cpp
     ${GAME_SOURCE_DIR}/d20/attributes.cpp
     ${GAME_SOURCE_DIR}/d20/class.cpp
     ${GAME_SOURCE_DIR}/d20/classes.cpp
@@ -399,22 +396,12 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/debug.cpp
     ${GAME_SOURCE_DIR}/difficultyoptions.cpp
     ${GAME_SOURCE_DIR}/di/module.cpp
-    ${GAME_SOURCE_DIR}/effect/choke.cpp
     ${GAME_SOURCE_DIR}/effect/creaturestate.cpp
-    ${GAME_SOURCE_DIR}/effect/crush.cpp
-    ${GAME_SOURCE_DIR}/effect/cutscenehorrified.cpp
-    ${GAME_SOURCE_DIR}/effect/cutsceneparalyze.cpp
-    ${GAME_SOURCE_DIR}/effect/cutscenestunned.cpp
     ${GAME_SOURCE_DIR}/effect/damage.cpp
-    ${GAME_SOURCE_DIR}/effect/droidscramble.cpp
-    ${GAME_SOURCE_DIR}/effect/droidstun.cpp
     ${GAME_SOURCE_DIR}/effect/force.cpp
-    ${GAME_SOURCE_DIR}/effect/horrified.cpp
-    ${GAME_SOURCE_DIR}/effect/mindtrick.cpp
     ${GAME_SOURCE_DIR}/effect/modifiers.cpp
     ${GAME_SOURCE_DIR}/effect/poison.cpp
     ${GAME_SOURCE_DIR}/effect/visual.cpp
-    ${GAME_SOURCE_DIR}/effect/whirlwind.cpp
     ${GAME_SOURCE_DIR}/effect.cpp
     ${GAME_SOURCE_DIR}/effect/source.cpp
     ${GAME_SOURCE_DIR}/event.cpp
@@ -522,6 +509,7 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/script/runner.cpp
     ${GAME_SOURCE_DIR}/script/savedsituation.cpp
     ${GAME_SOURCE_DIR}/surfaces.cpp
+    ${GAME_SOURCE_DIR}/talentselection.cpp
     ${GAME_SOURCE_DIR}/swooprace.cpp
     ${GAME_SOURCE_DIR}/transitioncandidate.cpp
     ${GAME_SOURCE_DIR}/turret.cpp
@@ -533,3 +521,7 @@ set_target_properties(game PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DI
 set_target_properties(game PROPERTIES DEBUG_POSTFIX "d")
 target_precompile_headers(game PRIVATE ${CMAKE_SOURCE_DIR}/src/pch.h)
 target_link_libraries(game PRIVATE gui scene resource movie graphics audio script system imgui)
+
+if(MSVC)
+    target_compile_options(game PRIVATE /bigobj)
+endif()

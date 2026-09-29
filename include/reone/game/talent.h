@@ -21,45 +21,49 @@
 
 #include "types.h"
 
+#include <cstdint>
+
 namespace reone {
 
 namespace game {
 
 class Talent : public script::EngineType {
 public:
+    // Normalize selector inputs to the byte domain at value creation.
+    // Callers and runtime storage use ordinary integers.
     Talent(
         TalentType type,
         int value,
-        uint8_t multiClass = 0,
+        int castingClass = 0,
         uint32_t item = 0x7f000000,
         int itemPropertyIndex = -1,
-        uint8_t casterLevel = 0xff,
-        uint8_t metaType = 0xff) :
+        int casterLevel = kUnspecifiedCasterLevel,
+        int metaType = 255) :
         _type(type),
         _value(value),
-        _multiClass(multiClass),
+        _castingClass(static_cast<uint8_t>(castingClass)),
         _item(item),
         _itemPropertyIndex(itemPropertyIndex),
-        _casterLevel(casterLevel),
-        _metaType(metaType) {
+        _casterLevel(static_cast<uint8_t>(casterLevel)),
+        _metaType(static_cast<uint8_t>(metaType)) {
     }
 
     TalentType type() const { return _type; }
     int value() const { return _value; }
-    uint8_t multiClass() const { return _multiClass; }
+    int castingClass() const { return _castingClass; }
     uint32_t item() const { return _item; }
     int itemPropertyIndex() const { return _itemPropertyIndex; }
-    uint8_t casterLevel() const { return _casterLevel; }
-    uint8_t metaType() const { return _metaType; }
+    int casterLevel() const { return _casterLevel; }
+    int metaType() const { return _metaType; }
 
 private:
     TalentType _type;
     int _value;
-    uint8_t _multiClass;
+    int _castingClass;
     uint32_t _item;
     int _itemPropertyIndex;
-    uint8_t _casterLevel;
-    uint8_t _metaType;
+    int _casterLevel;
+    int _metaType;
 };
 
 } // namespace game

@@ -19,12 +19,60 @@
 
 #include "reone/game/d20/class.h"
 
+#include <cstdint>
+
 namespace reone {
 
 namespace game {
 
 static constexpr int kDefaultAbilityScore = 8;
 static constexpr int kDefaultSkillRank = 0;
+
+void CreatureAttributes::addFeat(FeatType type) {
+    if (_feats.insert(type).second) _featOrder.push_back(type);
+}
+
+void CreatureAttributes::removeFeat(FeatType type) {
+    _feats.erase(type);
+    _featOrder.erase(std::remove(_featOrder.begin(), _featOrder.end(), type), _featOrder.end());
+    _spentFeatUses.erase(type);
+}
+
+int CreatureAttributes::spentFeatUses(FeatType type) const {
+    const auto found = _spentFeatUses.find(type);
+    // New tracked feats start with zero spent uses. The sparse map stores a count only after
+    // a use is spent.
+    return found == _spentFeatUses.end() ? 0 : found->second;
+}
+
+void CreatureAttributes::spendFeatUse(FeatType type) {
+    auto &spent = _spentFeatUses[type];
+    // Wrap the increment to an unsigned byte before storing it.
+    // The runtime counter can remain an integer.
+    spent = static_cast<uint8_t>(spent + 1);
+}
+
+void CreatureAttributes::addSpell(SpellType type) {
+    addSpell(type, getEffectiveClass());
+}
+
+void CreatureAttributes::addSpell(SpellType type, ClassType owner) {
+    auto &known = _classSpells[owner];
+    if (std::find(known.begin(), known.end(), type) == known.end()) known.push_back(type);
+    _spells.insert(type);
+}
+
+void CreatureAttributes::removeSpell(SpellType type) {
+    for (auto &[owner, known] : _classSpells)
+        known.erase(std::remove(known.begin(), known.end(), type), known.end());
+    _spells.erase(type);
+}
+
+const std::vector<SpellType> &CreatureAttributes::spellsForClass(ClassType owner) const {
+    static const std::vector<SpellType> empty;
+    const auto found = _classSpells.find(owner);
+    return found == _classSpells.end() ? empty : found->second;
+}
 
 int CreatureAttributes::getDefense() const {
     return 10 +
@@ -38,8 +86,7 @@ int CreatureAttributes::getAbilityScore(Ability ability) const {
 }
 
 int CreatureAttributes::getAbilityModifier(Ability ability) const {
-    int score = getAbilityScore(ability);
-    return score >= 10 ? (score - 10) / 2 : (score - 11) / 2;
+    return getAbilityModifierFromScore(getAbilityScore(ability));
 }
 
 int CreatureAttributes::strength() const {
@@ -108,36 +155,45 @@ int CreatureAttributes::getAggregateHitDie() const {
     return result;
 }
 
-int CreatureAttributes::getPermanentMaxHitPoints(int baseHitPoints) const {
+static int toughnessHitPointsPerLevel(const std::function<bool(FeatType)> &hasVitalityFeat) {
+    if (hasVitalityFeat(FeatType::MasterToughness)) return 2;
+    return hasVitalityFeat(FeatType::Toughness) ? 1 : 0;
+}
+
+int CreatureAttributes::getLevelHistoryMaxHitPoints(const std::function<int(int)> &levelHitDie,
+                                                    int constitutionModifier,
+                                                    const std::function<bool(FeatType)> &hasVitalityFeat) const {
+    const int level = getAggregateLevel();
+    const int toughness = toughnessHitPointsPerLevel(hasVitalityFeat);
+    int result = 0;
+    for (int i = 0; i < level; ++i) {
+        result += std::max(1, levelHitDie(i) + constitutionModifier) + toughness;
+    }
+    return result + (hasVitalityFeat(FeatType::WarVeteran) ? 25 : 0);
+}
+
+int CreatureAttributes::getMaxHitPoints(int baseHitPoints, int constitutionModifier,
+                                        const std::function<bool(FeatType)> &hasVitalityFeat) const {
     const int level = getAggregateLevel();
     if (level <= 0) {
         return std::max(0, baseHitPoints);
     }
 
-    int featHitPointsPerLevel = 0;
-    if (hasFeat(FeatType::MasterToughness)) {
-        featHitPointsPerLevel += 2;
-    } else if (hasFeat(FeatType::Toughness)) {
-        featHitPointsPerLevel += 1;
-    }
+    int featHitPointsPerLevel = toughnessHitPointsPerLevel(hasVitalityFeat);
+    const int maximum = std::max(level, baseHitPoints + constitutionModifier * level);
 
-    if (hasFeat(FeatType::MasterWookieEndurance)) {
+    // War Veteran counts for every level.
+    if (hasVitalityFeat(FeatType::WarVeteran)) {
+        featHitPointsPerLevel += 25;
+    }
+    if (hasVitalityFeat(FeatType::MasterWookieEndurance)) {
         featHitPointsPerLevel += 4;
-    } else if (hasFeat(FeatType::ImprovedWookieEndurance)) {
+    } else if (hasVitalityFeat(FeatType::ImprovedWookieEndurance)) {
         featHitPointsPerLevel += 3;
-    } else if (hasFeat(FeatType::WookieEndurance)) {
+    } else if (hasVitalityFeat(FeatType::WookieEndurance)) {
         featHitPointsPerLevel += 2;
     }
-
-    int result = std::max(
-        level,
-        baseHitPoints +
-            getAbilityModifier(Ability::Constitution) * level);
-    result += featHitPointsPerLevel * level;
-    if (hasFeat(FeatType::WarVeteran)) {
-        result += 25;
-    }
-    return result;
+    return maximum + featHitPointsPerLevel * level;
 }
 
 int CreatureAttributes::getAggregateLevel() const {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2023 The reone project contributors
+ * Copyright (c) 2026 The reone project contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,18 +20,16 @@
 #include "../effect.h"
 
 namespace reone {
-
 namespace game {
 
-class CutsceneHorrifiedEffect : public Effect {
+class AssassinateEffect : public CopyableEffect<AssassinateEffect> {
 public:
-    CutsceneHorrifiedEffect() :
-        Effect(EffectType::CutSceneHorrified) {
+    explicit AssassinateEffect(int rank) : CopyableEffect(EffectType::Assassinate) {
+        setSaveFacingInteger(0, rank);
     }
 
-    void applyTo(Object &object) override;
+    EffectApplicationResult onApply(Object &object, EffectInstance &instance) override;
 };
 
 } // namespace game
-
 } // namespace reone

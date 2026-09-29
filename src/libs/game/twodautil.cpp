@@ -16,6 +16,7 @@
  */
 
 #include "reone/game/twodautil.h"
+#include <cassert>
 
 #include "reone/resource/2da.h"
 #include "reone/resource/exception/notfound.h"
@@ -44,11 +45,35 @@ void validateTwoDARow(
     const std::string &resRef,
     int row) {
 
-    if (row < 0 || row >= table.getRowCount()) {
+    validateTwoDARowIndex(resRef, row, table.getRowCount());
+}
+
+void validateTwoDARowIndex(
+    const std::string &resRef,
+    int row,
+    int rowCount) {
+
+    if (row < 0 || row >= rowCount) {
         throw ValidationException(str(boost::format(
             "%s.2da row out of range: %d/%d") %
-            resRef % row % table.getRowCount()));
+            resRef % row % rowCount));
     }
+}
+
+int readRacialAbilityAdjustment(
+    const TwoDA &table, int row, Ability ability) {
+    static constexpr const char *columns[] = {
+        "stradjust", "dexadjust", "conadjust", "intadjust", "wisadjust", "chaadjust"};
+    const int index = static_cast<int>(ability);
+    assert(index >= 0 && index < 6 && "Invalid racial ability selector");
+    validateTwoDARow(table, "racialtypes", row);
+    if (std::find(table.columns().begin(), table.columns().end(), columns[index]) ==
+        table.columns().end()) {
+        throw ValidationException(std::string("racialtypes.2da missing column: ") + columns[index]);
+    }
+    // Blank integer cells decode as zero.
+    const auto byte = static_cast<uint8_t>(table.getInt(row, columns[index], 0));
+    return byte < 128u ? static_cast<int>(byte) : static_cast<int>(byte) - 256;
 }
 
 } // namespace game

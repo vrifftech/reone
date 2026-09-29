@@ -23,6 +23,8 @@
 #include "reone/system/exception/notimplemented.h"
 
 #include "reone/game/animations.h"
+#include "reone/game/autobalance.h"
+#include "reone/game/combattables.h"
 #include "reone/game/camerastyles.h"
 #include "reone/game/d20/classes.h"
 #include "reone/game/d20/feats.h"
@@ -76,6 +78,24 @@ struct SerializedIdentityContext;
 struct SaveOrchestrationSeams;
 struct SaveResult;
 
+class StubAutoBalance : public IAutoBalance, boost::noncopyable {
+public:
+    const AutoBalanceRow &get(int) const override {
+        return _row;
+    }
+
+private:
+    AutoBalanceRow _row {
+        1.0f,
+        1.0f,
+        1.0f,
+        1.0f,
+        1.0f,
+        0,
+        1.0f,
+    };
+};
+
 class MockCameraStyles : public ICameraStyles, boost::noncopyable {
 public:
     MOCK_METHOD(std::shared_ptr<CameraStyle>, get, (int index), (const override));
@@ -123,7 +143,12 @@ class MockGUISounds : public IGUISounds, boost::noncopyable {
 public:
     MOCK_METHOD(std::shared_ptr<audio::AudioClip>, getOnClick, (), (const override));
     MOCK_METHOD(std::shared_ptr<audio::AudioClip>, getOnEnter, (), (const override));
+    MOCK_METHOD(std::shared_ptr<audio::AudioClip>, getActionAccepted, (), (const override));
+    MOCK_METHOD(std::shared_ptr<audio::AudioClip>, getActionUnavailable, (), (const override));
     MOCK_METHOD(std::shared_ptr<audio::AudioClip>, getOnLevelUpNotify, (), (const override));
+    MOCK_METHOD(std::shared_ptr<audio::AudioClip>, getCheckboxCheck, (), (const override));
+    MOCK_METHOD(std::shared_ptr<audio::AudioClip>, getInventorySelect, (), (const override));
+    MOCK_METHOD(std::shared_ptr<audio::AudioClip>, getInventoryDrop, (), (const override));
 };
 
 class MockPortraits : public IPortraits, boost::noncopyable {
@@ -142,7 +167,6 @@ public:
     MOCK_METHOD(int, getReputation, (Faction sourceFaction, Faction targetFaction), (const override));
     MOCK_METHOD(void, adjustReputation, (Faction sourceFaction, Faction targetFaction, int adjustment), (override));
     MOCK_METHOD(bool, getIsEnemy, (const Creature &source, const Creature &target), (const override));
-    MOCK_METHOD(bool, getIsEnemy, (Faction sourceFaction, Faction targetFaction), (const override));
     MOCK_METHOD(bool, getIsFriend, (const Creature &source, const Creature &target), (const override));
     MOCK_METHOD(bool, getIsNeutral, (const Creature &source, const Creature &target), (const override));
 };
@@ -174,20 +198,26 @@ public:
 class MockProjectiles : public IProjectiles, boost::noncopyable {
 public:
     MOCK_METHOD(void, clear, (), (override));
-    MOCK_METHOD(ProjectileSpec *, get, (ProjectileAttackType attack, CreatureWieldType wield, int appearance), (override));
+    MOCK_METHOD(void, launchLightsaberThrow,
+                (Creature &, const EffectInstance &, Game &, ServicesView &),
+                (override));
+    MOCK_METHOD(void, update, (float, Game &, ServicesView &), (override));
+    MOCK_METHOD(void, retireAreaRuntime, (), (override));
+    MOCK_METHOD(std::optional<ProjectileSpec>, discharge, (int animation, const Creature &attacker), (const override));
 };
 
 class MockAnimations : public IAnimations, boost::noncopyable {
 public:
     MOCK_METHOD(void, clear, (), (override));
     MOCK_METHOD(std::string, getNameById, (uint32_t id), (const override));
-    MOCK_METHOD(std::string, getAttackResult, (std::string attackAnim, CreatureWieldType targetWield, AttackResultType result), (const override));
+    MOCK_METHOD(std::string, getReactionAnimation, (const std::string &attackAnim, CreatureWieldType targetWield, uint16_t reaction), (const override));
     MOCK_METHOD(int, getMeleeImpactTime, (const std::string &attackAnim, size_t attackIndex), (const override));
 };
 
 class MockVisualEffects : public IVisualEffects, boost::noncopyable {
 public:
     MOCK_METHOD(std::optional<const VisualEffectDesc *>, get, (uint32_t id), (const override));
+    MOCK_METHOD(int, hitVisual, (int damageSlot, bool ranged), (const override));
 };
 
 class TestGameModule : boost::noncopyable {
@@ -314,6 +344,8 @@ public:
     static void setSnapshotObjectId(Object &object, uint32_t objectId);
     static void setSnapshotEquipment(
         Creature &creature, int slot, std::shared_ptr<Item> item);
+    /** Record the hit die each of the creature's levels granted. */
+    static void setLevelHitDice(Creature &creature, const std::vector<int> &hitDice);
     // Stand in for a save record that reports the creature as already spawned.
     static void markSpawnScriptFired(Creature &creature);
     static void setSnapshotDoorState(Door &door, DoorState state);
@@ -346,6 +378,7 @@ public:
     static bool hasSaveLoadTransientState(const SaveLoad &saveLoad);
 
     void init() {
+        _autoBalance = std::make_unique<StubAutoBalance>();
         _cameraStyles = std::make_unique<MockCameraStyles>();
         _classes = std::make_unique<MockClasses>();
         _difficultyOptions = std::make_unique<StubDifficultyOptions>();
@@ -360,8 +393,10 @@ public:
         _projectiles = std::make_unique<MockProjectiles>();
         _animations = std::make_unique<MockAnimations>();
         _visualEffects = std::make_unique<MockVisualEffects>();
+        _combatTables = std::make_unique<CombatTables>();
 
         _services = std::make_unique<GameServices>(
+            *_autoBalance,
             *_cameraStyles,
             *_classes,
             *_difficultyOptions,
@@ -375,7 +410,8 @@ public:
             *_surfaces,
             *_projectiles,
             *_animations,
-            *_visualEffects);
+            *_visualEffects,
+            *_combatTables);
     }
 
     GameServices &services() {
@@ -385,8 +421,10 @@ public:
     MockClasses &classes() { return *_classes; }
     MockSpells &spells() { return *_spells; }
     MockPortraits &portraits() { return *_portraits; }
+    CombatTables &combatTables() { return *_combatTables; }
 
 private:
+    std::unique_ptr<StubAutoBalance> _autoBalance;
     std::unique_ptr<MockCameraStyles> _cameraStyles;
     std::unique_ptr<MockClasses> _classes;
     std::unique_ptr<StubDifficultyOptions> _difficultyOptions;
@@ -401,6 +439,7 @@ private:
     std::unique_ptr<MockProjectiles> _projectiles;
     std::unique_ptr<MockAnimations> _animations;
     std::unique_ptr<MockVisualEffects> _visualEffects;
+    std::unique_ptr<CombatTables> _combatTables;
 
     std::unique_ptr<GameServices> _services;
 };

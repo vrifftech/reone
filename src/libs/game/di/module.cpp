@@ -22,6 +22,9 @@ namespace reone {
 namespace game {
 
 void GameModule::init() {
+    _autoBalance = std::make_unique<AutoBalance>(
+        _gameId,
+        _resource.twoDas());
     _cameraStyles = std::make_unique<CameraStyles>(_resource.twoDas());
     _classes = std::make_unique<Classes>(_resource.strings(), _resource.twoDas());
     _difficultyOptions = std::make_unique<DifficultyOptions>(_resource.twoDas());
@@ -36,8 +39,10 @@ void GameModule::init() {
     _projectiles = std::make_unique<Projectiles>(_resource.twoDas());
     _animations = std::make_unique<Animations>(_resource.twoDas());
     _visualEffects = std::make_unique<VisualEffects>(_resource.twoDas(), _resource.audioClips(), _resource.models());
+    _combatTables = std::make_unique<CombatTables>();
 
     _services = std::make_unique<GameServices>(
+        *_autoBalance,
         *_cameraStyles,
         *_classes,
         *_difficultyOptions,
@@ -51,8 +56,10 @@ void GameModule::init() {
         *_surfaces,
         *_projectiles,
         *_animations,
-        *_visualEffects);
+        *_visualEffects,
+        *_combatTables);
 
+    _autoBalance->init();
     _cameraStyles->init();
     _difficultyOptions->init();
     _guiSounds->init();
@@ -62,9 +69,10 @@ void GameModule::init() {
     _skills->init();
     _spells->init();
     _surfaces->init();
-    _projectiles->init();
     _animations->init();
     _visualEffects->init();
+    _projectiles->init();
+    _combatTables->init(_resource.twoDas());
 }
 
 void GameModule::deinit() {
@@ -81,6 +89,7 @@ void GameModule::deinit() {
     _difficultyOptions.reset();
     _classes.reset();
     _cameraStyles.reset();
+    _autoBalance.reset();
 }
 
 } // namespace game

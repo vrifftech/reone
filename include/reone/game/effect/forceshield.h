@@ -17,23 +17,52 @@
 
 #pragma once
 
+#include <optional>
+
+#include "../combattables.h"
 #include "../effect.h"
 
 namespace reone {
 
 namespace game {
 
-class ForceShieldEffect : public Effect {
+struct ForceShieldDefinition {
+    int visual;
+    int damageFlags;
+    int vulnerabilities;
+    int resistance;
+    int amount;
+};
+// The shield's own visual gives way to that of the first of its appearances
+// the creature has.
+inline ForceShieldDefinition forceShieldDefinition(const ForceShieldRow &row, int appearance) {
+    int visual = row.visual;
+    for (size_t index = 0; index < row.appearances.size(); ++index) {
+        if (row.appearances[index] && *row.appearances[index] == appearance) {
+            visual = row.appearanceVisuals[index];
+            break;
+        }
+    }
+    return {visual, row.damageFlags, row.vulnerabilities, row.resistance, row.amount};
+}
+template<class Records>
+inline std::optional<EffectId> replacedForceShield(const Records &records) {
+    for (const auto &record : records) {
+        if (record.serializedType > 107) break;
+        if (record.serializedType != 107) continue;
+        // Return the first Force Shield root's argument, including zero.
+        return record.integerParameter(0) != 0 ? std::optional<EffectId>(record.id) : std::nullopt;
+    }
+    return std::nullopt;
+}
+
+class ForceShieldEffect : public CopyableEffect<ForceShieldEffect> {
 public:
     ForceShieldEffect(int shield) :
-        Effect(EffectType::ForceShield),
-        _shield(shield) {
-    }
+        CopyableEffect(EffectType::ForceShield) { setSaveFacingInteger(0, shield); }
 
-    void applyTo(Object &object) override;
+    EffectApplicationResult onApply(Object &object, EffectInstance &) override;
 
-private:
-    int _shield;
 };
 
 } // namespace game
