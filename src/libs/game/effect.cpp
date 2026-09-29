@@ -16,9 +16,7 @@
  */
 
 #include "reone/game/effect.h"
-
 #include <stdexcept>
-
 #include "reone/game/game.h"
 #include "reone/game/effect/abilitydecrease.h"
 #include "reone/game/effect/abilityincrease.h"
@@ -49,6 +47,7 @@
 #include "reone/resource/gff.h"
 #include "reone/script/variable.h"
 #include "reone/system/logutil.h"
+#include "reone/game/effect/linkeffects.h"
 
 namespace reone {
 
@@ -613,6 +612,16 @@ void EffectInstance::retireAreaRuntimeBindings(
 SavedEffectValue::SavedEffectValue(EffectInstance instance) :
     Effect(instance.type()),
     _instance(std::move(instance)) {
+}
+
+void LinkEffectsEffect::applyTo(Object &object) {
+    // TODO: implement
+}
+
+void LinkEffectsEffect::retireAreaRuntime(
+    const std::set<const Object *> &retainedObjects) {
+    if (_childEffect) _childEffect->retireAreaRuntime(retainedObjects);
+    if (_parentEffect) _parentEffect->retireAreaRuntime(retainedObjects);
 }
 
 } // namespace game
