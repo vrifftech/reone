@@ -394,6 +394,9 @@ Texture &PBRRenderPipeline::render() {
                 *_targets.fbOutput,
                 screenRect, screenRect);
         }
+        applySpeedBlur(*_targets.fbOutput, *_targets.cbOutput, *_targets.fbPing);
+        applyDistortionOverlays(*_targets.fbOutput, *_targets.cbOutput, *_targets.fbPing);
+        applyVideoEffect(*_targets.fbOutput, *_targets.cbOutput, *_targets.fbPing);
 
         // Draw debug elements (lines, points, etc.)
         beginDebugPass();

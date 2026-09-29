@@ -45,6 +45,7 @@ public:
     void playSound(const std::string &resRef, float gain, bool positional, bool loop);
 
     bool isSoundPlaying() const;
+    void stopSound();
 
     int priority() const { return _priority; }
     float maxDistance() const { return _maxDistance; }

@@ -106,26 +106,31 @@ void Control::loadExtent(const resource::generated::GUI_EXTENT &gui) {
     _extent = _authoredExtent;
 }
 
-void Control::loadBorder(const resource::generated::GUI_BORDER &gui) {
+std::shared_ptr<Control::Border> Control::createBorder(const resource::generated::GUI_BORDER &gui) const {
     std::string corner(gui.CORNER);
     std::string edge(gui.EDGE);
     std::string fill(gui.FILL);
 
-    _border = std::make_shared<Border>();
+    auto border = std::make_shared<Border>();
 
     if (!corner.empty() && corner != "0") {
-        _border->corner = _resourceSvc.textures.get(corner, TextureUsage::GUI);
+        border->corner = _resourceSvc.textures.get(corner, TextureUsage::GUI);
     }
     if (!edge.empty() && edge != "0") {
-        _border->edge = _resourceSvc.textures.get(edge, TextureUsage::GUI);
+        border->edge = _resourceSvc.textures.get(edge, TextureUsage::GUI);
     }
     if (!fill.empty() && fill != "0") {
-        _border->fill = _resourceSvc.textures.get(fill, TextureUsage::GUI);
+        border->fill = _resourceSvc.textures.get(fill, TextureUsage::GUI);
     }
 
-    _border->dimension = gui.DIMENSION;
+    border->dimension = gui.DIMENSION;
+    border->color = gui.COLOR;
+    return border;
+}
+
+void Control::loadBorder(const resource::generated::GUI_BORDER &gui) {
+    _border = createBorder(gui);
     _authoredBorderDimension = gui.DIMENSION;
-    _border->color = gui.COLOR;
 }
 
 void Control::loadText(const resource::generated::GUI_TEXT &gui) {
@@ -148,25 +153,8 @@ void Control::updateTextLines() {
 }
 
 void Control::loadHilight(const resource::generated::GUI_BORDER &gui) {
-    std::string corner(gui.CORNER);
-    std::string edge(gui.EDGE);
-    std::string fill(gui.FILL);
-
-    _hilight = std::make_shared<Border>();
-
-    if (!corner.empty() && corner != "0") {
-        _hilight->corner = _resourceSvc.textures.get(corner, TextureUsage::GUI);
-    }
-    if (!edge.empty() && edge != "0") {
-        _hilight->edge = _resourceSvc.textures.get(edge, TextureUsage::GUI);
-    }
-    if (!fill.empty() && fill != "0") {
-        _hilight->fill = _resourceSvc.textures.get(fill, TextureUsage::GUI);
-    }
-
-    _hilight->dimension = gui.DIMENSION;
+    _hilight = createBorder(gui);
     _authoredHilightDimension = gui.DIMENSION;
-    _hilight->color = gui.COLOR;
 }
 
 void Control::updateTransform() {
@@ -427,7 +415,7 @@ void Control::renderText(const std::vector<std::string> &lines,
     getTextPosition(position, static_cast<int>(lines.size()), size, gravity);
 
     glm::vec3 linePosition(0.0f);
-    glm::vec3 color((_selected && _hilight) ? _hilight->color : _text.color);
+    glm::vec4 color((_selected && _hilight) ? _hilight->color : _text.color, _text.opacity);
 
     for (auto &line : lines) {
         linePosition.x = static_cast<float>(position.x + offset.x);

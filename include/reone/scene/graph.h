@@ -74,6 +74,18 @@ public:
 
     virtual void clear() = 0;
 
+    /** The speed blur and its per-frame history weight. */
+    virtual void setSpeedBlur(bool enabled) = 0;
+    virtual void setSpeedBlurRatio(float ratio) = 0;
+    /** Whether the speed blur is on; a graph that renders nothing has none. */
+    virtual bool isSpeedBlurEnabled() const { return false; }
+    /** The video effect laid over the rendered frame, if any; a graph that renders nothing ignores it. */
+    virtual void setVideoEffect(std::optional<VideoEffect> effect) {}
+    /** Whether the video effect turns the scene to Force Sight. */
+    virtual bool isForceSightEnabled() const { return false; }
+    /** The Force Sight glow's pulse, between 0.5 and 1. */
+    virtual float forceSightPulse() const { return 1.0f; }
+
     virtual bool testElevation(const glm::vec3 &position, Collision &outCollision) const = 0;
     virtual bool testLineOfSight(const glm::vec3 &origin, const glm::vec3 &dest, Collision &outCollision) const = 0;
     virtual bool testWalk(const glm::vec3 &origin, const glm::vec3 &dest, const IUser *excludeUser, Collision &outCollision) const = 0;
@@ -183,6 +195,13 @@ public:
 
     void clear() override;
 
+    void setSpeedBlur(bool enabled) override { _speedBlur = enabled; }
+    void setSpeedBlurRatio(float ratio) override { _speedBlurRatio = ratio; }
+    bool isSpeedBlurEnabled() const override { return _speedBlur; }
+    void setVideoEffect(std::optional<VideoEffect> effect) override { _videoEffect = std::move(effect); }
+    bool isForceSightEnabled() const override { return _videoEffect && _videoEffect->forceSight; }
+    float forceSightPulse() const override;
+
     void addRoot(std::shared_ptr<ModelSceneNode> node) override;
     void addRoot(std::shared_ptr<WalkmeshSceneNode> node) override;
     void addRoot(std::shared_ptr<TriggerSceneNode> node) override;
@@ -289,6 +308,13 @@ private:
     resource::ResourceServices &_resourceSvc;
 
     std::unique_ptr<IRenderPipeline> _renderPipeline;
+    bool _speedBlur {false};
+    float _speedBlurRatio {0.75f};
+    std::optional<VideoEffect> _videoEffect;
+    // Milliseconds the graph has been updated for; the Force Sight pulse
+    // follows it.
+    uint32_t _forceSightClock {0};
+    float _forceSightClockRemainder {0.0f};
 
     bool _updateRoots {true};
 
@@ -315,6 +341,7 @@ private:
 
     std::vector<MeshSceneNode *> _opaqueMeshes;
     std::vector<MeshSceneNode *> _transparentMeshes;
+    std::vector<MeshSceneNode *> _shellMeshes;
     std::vector<MeshSceneNode *> _shadowMeshes;
     std::vector<LightSceneNode *> _lights;
     std::vector<EmitterSceneNode *> _emitters;

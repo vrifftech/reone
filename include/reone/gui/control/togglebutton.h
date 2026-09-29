@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include <optional>
+
 #include "button.h"
 
 namespace reone {
@@ -38,9 +40,13 @@ public:
             resourceSvc) {
     }
 
+    void load(const resource::generated::GUI_BASECONTROL &gui, bool protoItem = false) override;
+    void render(const glm::ivec2 &screenSize, const glm::ivec2 &offset, scene::IRenderPass &pass) override;
+
     const glm::vec3 &getBorderColor() const override;
 
     void toggle();
+    void setOn(bool on) { _on = on; }
 
     bool isOn() const { return _on; }
 
@@ -48,7 +54,10 @@ public:
 
 private:
     bool _on {false};
-    glm::vec3 _onColor {1.0f};
+    std::optional<glm::vec3> _onColor;
+    // Frames drawn while on, in place of the border and the hilight.
+    std::shared_ptr<Border> _onBorder;
+    std::shared_ptr<Border> _onHilight;
 };
 
 } // namespace gui

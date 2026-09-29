@@ -17,6 +17,8 @@
 
 #include "reone/graphics/walkmesh.h"
 
+#include <algorithm>
+
 namespace reone {
 
 namespace graphics {
@@ -153,6 +155,44 @@ bool Walkmesh::contains(const glm::vec2 &point) const {
         return false;
     }
     return _rootAabb->value.contains(point);
+}
+
+// Horizontal distance from a point to a segment.
+static float distanceToSegment2D(const glm::vec2 &point, const glm::vec2 &a, const glm::vec2 &b) {
+    const glm::vec2 ab(b - a);
+    const float length2 = glm::dot(ab, ab);
+    const float t = length2 > 0.0f ? glm::clamp(glm::dot(point - a, ab) / length2, 0.0f, 1.0f) : 0.0f;
+    return glm::length(point - (a + t * ab));
+}
+
+bool Walkmesh::hasFaceWithin(
+    const std::set<uint32_t> &materials,
+    const glm::vec3 &point,
+    float radius,
+    float minZ,
+    float maxZ) const {
+    const glm::vec2 p(point);
+    for (size_t index = 0; index < faces.size(); ++index) {
+        if (materials.count(this->materials[index]) == 0) continue;
+        const Face face = getFace(static_cast<uint32_t>(index));
+        const float faceMinZ = std::min({face.vertices[0].z, face.vertices[1].z, face.vertices[2].z});
+        const float faceMaxZ = std::max({face.vertices[0].z, face.vertices[1].z, face.vertices[2].z});
+        if (faceMaxZ < minZ || faceMinZ > maxZ) continue;
+        const glm::vec2 a(face.vertices[0]), b(face.vertices[1]), c(face.vertices[2]);
+        if (std::min({a.x, b.x, c.x}) > p.x + radius || std::max({a.x, b.x, c.x}) < p.x - radius ||
+            std::min({a.y, b.y, c.y}) > p.y + radius || std::max({a.y, b.y, c.y}) < p.y - radius) continue;
+        // Inside the face, or within radius of one of its edges.
+        const auto side = [](const glm::vec2 &u, const glm::vec2 &v, const glm::vec2 &w) {
+            return (v.x - u.x) * (w.y - u.y) - (v.y - u.y) * (w.x - u.x);
+        };
+        const float d0 = side(a, b, p), d1 = side(b, c, p), d2 = side(c, a, p);
+        const bool inside = (d0 >= 0.0f && d1 >= 0.0f && d2 >= 0.0f) || (d0 <= 0.0f && d1 <= 0.0f && d2 <= 0.0f);
+        if (inside || distanceToSegment2D(p, a, b) <= radius || distanceToSegment2D(p, b, c) <= radius ||
+            distanceToSegment2D(p, c, a) <= radius) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void Walkmesh::verify() const {

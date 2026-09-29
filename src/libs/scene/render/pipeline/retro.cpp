@@ -278,6 +278,9 @@ Texture &RetroRenderPipeline::render() {
         if (_passCallbacks.count(RenderPassName::PostProcessing) > 0) {
             _passCallbacks.at(RenderPassName::PostProcessing)(pass);
         }
+        applySpeedBlur(*_targets.output, *_targets.outputColor, *_targets.ping);
+        applyDistortionOverlays(*_targets.output, *_targets.outputColor, *_targets.ping);
+        applyVideoEffect(*_targets.output, *_targets.outputColor, *_targets.ping);
 
         // Draw debug elements (lines, points, etc.)
         _context.bindDrawFramebuffer(*_targets.output, {0});

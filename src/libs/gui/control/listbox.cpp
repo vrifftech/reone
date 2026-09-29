@@ -25,6 +25,7 @@
 #include "reone/gui/control/button.h"
 #include "reone/gui/control/imagebutton.h"
 #include "reone/gui/control/scrollbar.h"
+#include "reone/gui/control/togglebutton.h"
 #include "reone/gui/gui.h"
 #include "reone/resource/gff.h"
 #include "reone/resource/resources.h"
@@ -234,6 +235,9 @@ void ListBox::render(const glm::ivec2 &screenSize,
             _protoItem->setTextColor(*item.textColor);
         }
 
+        auto toggle = item.on ? std::dynamic_pointer_cast<ToggleButton>(_protoItem) : nullptr;
+        if (toggle) toggle->setOn(*item.on);
+
         auto imageButton = std::dynamic_pointer_cast<ImageButton>(_protoItem);
         if (imageButton) {
             imageButton->render(itemOffset, item._textLines, item.iconText, item.iconTexture, item.iconFrame, pass);
@@ -245,6 +249,7 @@ void ListBox::render(const glm::ivec2 &screenSize,
         }
 
         _protoItem->setTextColor(originalTextColor);
+        if (toggle) toggle->setOn(false);
 
         // Round the accumulated authored stride, not every row separately.
         // At fractional layout factors, truncating height and padding for each

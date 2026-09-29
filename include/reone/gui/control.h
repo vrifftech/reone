@@ -105,6 +105,7 @@ public:
         std::shared_ptr<graphics::Font> font;
         glm::vec3 color {1.0f};
         TextAlign align {TextAlign::CenterCenter};
+        float opacity {1.0f};
     };
 
     static ControlType getType(const resource::generated::GUI_BASECONTROL &gui);
@@ -184,6 +185,7 @@ public:
     void setText(Text text);
     void setTextAlignment(TextAlign align);
     void setTextColor(glm::vec3 color);
+    void setTextOpacity(float opacity) { _text.opacity = opacity; }
     void setTextMessage(std::string text);
     void setTextFont(std::shared_ptr<graphics::Font> font);
     void setTextPaddingLeft(int padding) { _textPaddingLeft = padding; }
@@ -307,6 +309,8 @@ protected:
                     scene::IRenderPass &pass);
 
     virtual const glm::vec3 &getBorderColor() const;
+
+    std::shared_ptr<Border> createBorder(const resource::generated::GUI_BORDER &gui) const;
 
 private:
     void loadExtent(const resource::generated::GUI_EXTENT &gui);
