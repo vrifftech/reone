@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include <unordered_map>
+
 #include "reone/game/types.h"
 
 namespace reone {
@@ -36,8 +38,20 @@ public:
     virtual void clear() = 0;
 
     virtual std::string getNameById(uint32_t id) const = 0;
-    virtual std::string getAttackResult(std::string attackAnim, CreatureWieldType targetWield, AttackResultType result) const = 0;
+    /** The target's reaction clip for an attack swing: 10011 dodge, 10012 parry, 10014 damage. */
+    virtual std::string getReactionAnimation(const std::string &attackAnim, CreatureWieldType targetWield, uint16_t reaction) const = 0;
     virtual int getMeleeImpactTime(const std::string &attackAnim, size_t attackIndex) const = 0;
+    /**
+     * The named row is an overlay: queued, it plays as a layer over the loop
+     * and is taken off when its time runs out.
+     */
+    virtual bool isOverlay(const std::string &) const { return false; }
+    /** The row loops. */
+    virtual bool isLoopingById(uint32_t) const { return false; }
+    /** The named row is a parry. */
+    virtual bool isParry(const std::string &) const { return false; }
+    /** The named row puts the equipped items away while it plays. */
+    virtual bool hidesEquippedItems(const std::string &) const { return false; }
 };
 
 class Animations : public IAnimations {
@@ -49,13 +63,21 @@ public:
     void clear() override;
 
     std::string getNameById(uint32_t id) const override;
-    std::string getAttackResult(std::string attackAnim, CreatureWieldType targetWield, AttackResultType result) const override;
+    std::string getReactionAnimation(const std::string &attackAnim, CreatureWieldType targetWield, uint16_t reaction) const override;
     int getMeleeImpactTime(const std::string &attackAnim, size_t attackIndex) const override;
+    bool isOverlay(const std::string &name) const override;
+    bool isLoopingById(uint32_t id) const override;
+    bool isParry(const std::string &name) const override;
+    bool hidesEquippedItems(const std::string &name) const override;
 
 private:
     struct Anim {
         std::string name;
         bool attack {false};
+        bool overlay {false};
+        bool looping {false};
+        bool parry {false};
+        bool hidesEquippedItems {false};
     };
 
     static constexpr uint32_t kNoAnim = std::numeric_limits<uint32_t>::max();
@@ -67,14 +89,18 @@ private:
     };
 
     void parseAnims(resource::TwoDA &animDa);
+    const Anim *findByName(const std::string &name) const;
     void parseCombatAnim(resource::TwoDA &combatAnimDa);
 
     using AttackResultMap = std::map<std::pair<std::string, CreatureWieldType>, AttackResult>;
 
     resource::ITwoDAs &_twoDas;
     std::vector<Anim> _anims;
+    // The first row of each lower-case name.
+    std::unordered_map<std::string, size_t> _animIndexByName;
     AttackResultMap _attackResults;
     std::map<std::string, std::vector<int>> _meleeImpactTimes;
+    bool _combatAnimationsLoaded {false};
 };
 
 } // namespace game

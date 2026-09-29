@@ -21,9 +21,11 @@
 #include "reone/game/effect.h"
 #include "reone/game/event.h"
 #include "reone/game/game.h"
+#include "reone/game/projectiles.h"
 #include "reone/game/location.h"
 #include "reone/game/talent.h"
 #include "reone/game/object/area.h"
+#include "reone/game/object/areaofeffect.h"
 #include "reone/game/object/camera/static.h"
 #include "reone/game/object/creature.h"
 #include "reone/game/object/door.h"
@@ -75,7 +77,7 @@ std::shared_ptr<Gff> emptyRecord(uint32_t type) {
  * Whether an area object owns an identity in the module's saved object
  * namespace.
  *
- * Retail keeps placeable cameras out of CGameObjectArray, so they never
+ * The game keeps placeable cameras out of the server object table, so they never
  * receive a server ObjectId: a GIT CameraList entry carries CameraID,
  * Position, Orientation, Pitch, Height, FieldOfView and MicRange and nothing
  * else, in both games, and no script routine can resolve a camera as an
@@ -197,16 +199,16 @@ std::shared_ptr<Gff> effectToGff(
     const Game *game = nullptr) {
     uint32_t expiryDay = effect.expiryDay;
     uint32_t expiryTime = effect.expiryTime;
-    if (effect.durationType() == DurationType::Temporary && effect.remainingDuration) {
-        // A Game is still needed to read the canonical clock. Mod_MinPerHour
-        // no longer enters the conversion: it only sets the day length that
-        // splits the absolute expiry into the retail day/time pair.
+    if (effect.durationType() == DurationType::Temporary && effect.remainingDuration &&
+        effect.expiryOrigin == EffectExpiryOrigin::RuntimeCountdown) {
+        // Only a pending relative lifetime is anchored here. Retained and
+        // loaded absolute deadlines already belong to the canonical clock;
+        // the conversion uses its configured day length.
         if (!game) {
             throw ValidationException("temporary effect lacks a game-time conversion context");
         }
-        uint64_t delta = static_cast<uint64_t>(std::llround(
-            std::max(0.0f, *effect.remainingDuration) * 1000.0));
-        uint64_t expiry = game->worldTimeMilliseconds() + delta;
+        uint64_t expiry = getEffectExpiryMilliseconds(game->worldTimeMilliseconds(),
+            *effect.remainingDuration, static_cast<uint32_t>(game->millisecondsPerWorldDay()));
         uint64_t millisecondsPerDay = game->millisecondsPerWorldDay();
         expiryDay = static_cast<uint32_t>(expiry / millisecondsPerDay);
         expiryTime = static_cast<uint32_t>(expiry % millisecondsPerDay);
@@ -214,45 +216,10 @@ std::shared_ptr<Gff> effectToGff(
         throw ValidationException("temporary effect lacks save-facing expiry provenance");
     }
 
-    uint16_t retailType = effect.retailType;
-    if (retailType == 0 && effect.effect) {
-        retailType = static_cast<uint16_t>(effect.effect->type());
-    }
-    auto result = Gff::Builder().type(2)
-        .field(Gff::Field::newDword64("Id", effect.id))
-        .field(Gff::Field::newWord("Type", retailType))
-        .field(Gff::Field::newWord("SubType", effect.subType))
-        .field(Gff::Field::newFloat("Duration", effect.duration))
-        .field(Gff::Field::newByte("SkipOnLoad", effect.skipOnLoad))
-        .field(Gff::Field::newDword("ExpireDay", expiryDay))
-        .field(Gff::Field::newDword("ExpireTime", expiryTime))
-        .field(Gff::Field::newDword("CreatorId", effect.creatorId))
-        .field(Gff::Field::newDword("SpellId", effect.spellId))
-        .field(Gff::Field::newInt("IsExposed", effect.exposed))
-        .field(Gff::Field::newInt("NumIntegers", static_cast<int32_t>(effect.integerParameters.size())))
-        .build();
-
-    std::vector<std::shared_ptr<Gff>> ints;
-    for (int32_t value : effect.integerParameters) {
-        ints.push_back(Gff::Builder().type(3).field(Gff::Field::newInt("Value", value)).build());
-    }
-    std::vector<std::shared_ptr<Gff>> floats;
-    for (float value : effect.floatParameters) {
-        floats.push_back(Gff::Builder().type(4).field(Gff::Field::newFloat("Value", value)).build());
-    }
-    std::vector<std::shared_ptr<Gff>> strings;
-    for (const auto &value : effect.stringParameters) {
-        strings.push_back(Gff::Builder().type(5).field(Gff::Field::newCExoString("Value", value)).build());
-    }
-    std::vector<std::shared_ptr<Gff>> objects;
-    for (uint32_t value : effect.objectParameters) {
-        objects.push_back(Gff::Builder().type(6).field(Gff::Field::newDword("Value", value)).build());
-    }
-    put(*result, Gff::Field::newList("IntList", std::move(ints)));
-    put(*result, Gff::Field::newList("FloatList", std::move(floats)));
-    put(*result, Gff::Field::newList("StringList", std::move(strings)));
-    put(*result, Gff::Field::newList("ObjectList", std::move(objects)));
-    return result;
+    auto record = effect;
+    record.expiryDay = expiryDay;
+    record.expiryTime = expiryTime;
+    return record.toGff();
 }
 
 std::shared_ptr<Gff> scriptEventToGff(const SavedScriptEvent &event) {
@@ -373,6 +340,10 @@ std::shared_ptr<Gff> actionToGff(
         .field(Gff::Field::newWord("NumParams", static_cast<uint16_t>(action.parameters.size())))
         .build();
     putUnsupported(*result, action.unsupportedFields);
+    if (action.cast) put(*result, Gff::Field::newStruct("CastState", action.cast->toGff()));
+    if (action.scheduled) put(*result, Gff::Field::newByte("Scheduled", 1));
+    if (action.round) put(*result, Gff::Field::newStruct("RoundState", action.round->toGff()));
+    if (action.physical) put(*result, Gff::Field::newStruct("PhysicalState", action.physical->toGff()));
     std::vector<std::shared_ptr<Gff>> parameters;
     for (const auto &parameter : action.parameters) {
         auto record = Gff::Builder().type(1)
@@ -401,7 +372,7 @@ std::shared_ptr<Gff> eventToGff(
     std::shared_ptr<Gff> data;
     if (auto value = std::get_if<UnsupportedSavedPayload>(&event.payload)) data = savedStructToGff(value->data);
     else if (auto value = std::get_if<SerializedScriptSituation>(&event.payload)) data = situationToGff(*value, game);
-    else if (auto value = std::get_if<EffectInstance>(&event.payload)) data = effectToGff(*value, game);
+    else if (auto value = std::get_if<EffectInstance>(&event.payload)) data = value->toGff();
     else if (auto value = std::get_if<SavedBytePayload>(&event.payload)) data = Gff::Builder().type(0x9999).field(Gff::Field::newByte("Value", value->value)).build();
     else if (auto value = std::get_if<SavedIntPayload>(&event.payload)) data = Gff::Builder().type(0x3333).field(Gff::Field::newInt("Value", value->value)).build();
     else if (auto value = std::get_if<SavedScriptEvent>(&event.payload)) data = scriptEventToGff(*value);
@@ -414,9 +385,7 @@ std::shared_ptr<Gff> eventToGff(
         .field(Gff::Field::newDword("Value", value->target.id)).build();
     else if (auto value = std::get_if<SavedCombatAttack>(&event.payload)) {
         data = savedStructToGff(value->data);
-        put(*data, Gff::Field::newDword(
-                       "ReactObject", value->reactionObject.id));
-        put(*data, Gff::Field::newDword("AmmoItem", value->ammoItem.id));
+        value->writeFields(*data);
     } else if (auto value = std::get_if<SavedFeedbackMessage>(&event.payload)) {
         data = savedStructToGff(value->data);
         auto objects = data->getList("ObjectIDList");
@@ -430,18 +399,15 @@ std::shared_ptr<Gff> eventToGff(
         }
         put(*data, Gff::Field::newList(
                        "ObjectIDList", std::move(objects)));
+        // A saving-throw message names its saver by its seventh integer.
+        if (!value->saver.isInvalid()) {
+            auto integers = data->getList("IntList");
+            put(*integers.at(6), Gff::Field::newInt("IntegerValue", static_cast<int32_t>(value->saver.id)));
+            put(*data, Gff::Field::newList("IntList", std::move(integers)));
+        }
     }
-    else if (auto value = std::get_if<SavedSpellImpact>(&event.payload)) data = Gff::Builder().type(0x6666)
-        .field(Gff::Field::newInt("SpellId", value->spellId))
-        .field(Gff::Field::newDword("CasterId", value->caster.id))
-        .field(Gff::Field::newDword("TargetId", value->target.id))
-        .field(Gff::Field::newDword("AreaId", value->area.id))
-        .field(Gff::Field::newDword("ItemId", value->item.id))
-        .field(Gff::Field::newCExoString("Script", value->script))
-        .field(Gff::Field::newFloat("TargetPosX", value->targetPosition.x))
-        .field(Gff::Field::newFloat("TargetPosY", value->targetPosition.y))
-        .field(Gff::Field::newFloat("TargetPosZ", value->targetPosition.z))
-        .field(Gff::Field::newInt("FinalForceCost", value->finalForceCost)).build();
+    else if (auto value = std::get_if<SavedWeaponImpact>(&event.payload)) data = value->toGff();
+    else if (auto value = std::get_if<SavedSpellImpact>(&event.payload)) data = value->toGff();
     if (data) put(*result, Gff::Field::newStruct("EventData", std::move(data)));
     return result;
 }
@@ -490,7 +456,7 @@ void ModuleObjectIdContext::retainObject(
     }
     uint32_t id = identity->id;
     if (partyIdentity && id >= kSavedRuntimeInvalidObjectId) {
-        if (id > 0x7fffffffu || !_reservedPartyIds.insert(id).second) {
+        if (id > kSavedRuntimeMaxCharacterObjectId || !_characterIds.insert(id).second) {
             throw ValidationException(
                 "saved party creature uses an invalid or duplicate reserved ID");
         }
@@ -511,8 +477,8 @@ void ModuleObjectIdContext::allocateObject(
     if (_objectIds.count(&object) != 0) return;
     const uint32_t preferred = object.id();
     if (partyIdentity && preferred > kSavedRuntimeInvalidObjectId &&
-        preferred <= 0x7fffffffu &&
-        _reservedPartyIds.insert(preferred).second) {
+        preferred <= kSavedRuntimeMaxCharacterObjectId &&
+        _characterIds.insert(preferred).second) {
         _objectIds.emplace(&object, preferred);
         return;
     }
@@ -559,11 +525,18 @@ uint32_t ModuleObjectIdContext::nextId(uint32_t retainedCursor) const {
     return next;
 }
 
+uint32_t ModuleObjectIdContext::nextCharacterId(uint32_t retainedCursor) const {
+    // The character cursor descends: it stays below every character identity
+    // held by the graph, as placing a saved character lowers it on load.
+    if (_characterIds.empty()) return retainedCursor;
+    return std::min(retainedCursor, *_characterIds.begin() - 1);
+}
+
 ModuleObjectIdContext ModuleSnapshotBuilder::buildObjectIdContext(
     const Module &module, const Area &area) const {
     ModuleObjectIdContext ids(
         SerializedIdentityContext::moduleGraph(_saveGroup));
-    // Retail creates the structural Module before loading the owned IFO/GIT
+    // The game creates the structural Module before loading the owned IFO/GIT
     // graph. Slot 0 is consequently a contextual reference target, not an
     // ObjectId persisted by an owned Module record.
     ids.assignContextObject(module, kSavedRuntimeModuleObjectId);
@@ -706,7 +679,7 @@ std::optional<SerializedScriptSituation> exportScriptSituation(
         case script::VariableType::Location: {
             auto location = std::dynamic_pointer_cast<Location>(value.engineType);
             if (!value.engineType) {
-                // Retail K1 normalizes an uninitialized VM location to a
+                // K1 normalizes an uninitialized VM location to a
                 // discriminator-18 structure whose six components are zero.
                 saved.type = static_cast<int8_t>(SavedVmStackType::Location);
                 saved.payload = SavedLocationValue {};
@@ -730,11 +703,11 @@ std::optional<SerializedScriptSituation> exportScriptSituation(
             saved.payload = SavedTalentValue {
                 talent->value(),
                 static_cast<int32_t>(talent->type()),
-                talent->multiClass(),
+                static_cast<uint8_t>(talent->castingClass()),
                 SavedObjectReference::fromRuntimeId(talent->item()),
                 talent->itemPropertyIndex(),
-                talent->casterLevel(),
-                talent->metaType()};
+                static_cast<uint8_t>(talent->casterLevel()),
+                static_cast<uint8_t>(talent->metaType())};
             break;
         }
         default:
@@ -811,6 +784,53 @@ void ModuleSnapshotBuilder::writeObjectState(
     }
     put(record, Gff::Field::newList("ActionList", std::move(actions)));
 
+    auto scheduled = _game.combat().saveScheduled(object);
+    auto previousRound = record.findStruct("CombatRoundData");
+    const auto *roundCreature = dyn_cast<Creature>(&object);
+    const bool weaponIneffectiveReported = roundCreature && roundCreature->weaponIneffectiveReported();
+    // The hold an engagement put on a creature owning no round is its round's pause.
+    const auto hold = _game.combat().savedOwnerHold(object);
+    if (!scheduled.empty() || previousRound || weaponIneffectiveReported || hold) {
+        auto round = previousRound ? previousRound->deepCopy() : Gff::Builder().type(0xcada).build();
+        std::vector<std::shared_ptr<Gff>> entries;
+        for (auto &action : scheduled) {
+            auto entry = Gff::Builder().type(0xdaea).build();
+            putUnsupported(*entry, action.unsupportedFields);
+            put(*entry, Gff::Field::newInt("ActionTimer", action.timer));
+            put(*entry, Gff::Field::newWord("Animation", action.animation));
+            put(*entry, Gff::Field::newInt("AnimationTime", action.animationTime));
+            put(*entry, Gff::Field::newInt("NumAttacks", action.numAttacks));
+            put(*entry, Gff::Field::newByte("ActionType", action.type));
+            put(*entry, Gff::Field::newDword("Target", serializedReferenceId(action.target, ids)));
+            put(*entry, Gff::Field::newByte("Retargettable", action.retargettable));
+            put(*entry, Gff::Field::newDword("InventorySlot", action.inventorySlot));
+            put(*entry, Gff::Field::newDword("TargetRepository", serializedReferenceId(action.repository, ids)));
+            put(*entry, Gff::Field::newByte("Applied", action.applied));
+            put(*entry, Gff::Field::newFloat("PauseRemaining", action.remainingPause));
+            if (action.command) {
+                normalizeActionReferences(*action.command, ids);
+                put(*entry, Gff::Field::newStruct("Command", actionToGff(*action.command, &_game)));
+            }
+            entries.push_back(std::move(entry));
+        }
+        put(*round, Gff::Field::newInt("Timer", static_cast<int>(_game.combat().scheduledTime(object) * 1000.0f)));
+        put(*round, Gff::Field::newList("SchedActionList", std::move(entries)));
+        if (roundCreature) put(*round, Gff::Field::newByte("WeaponSucks", weaponIneffectiveReported ? 1 : 0));
+        const auto *holder = hold && hold->pausedBy ? hold->pausedBy.get() : nullptr;
+        put(*round, Gff::Field::newByte("RoundPaused", hold ? 1 : 0));
+        put(*round, Gff::Field::newDword("RoundPausedBy",
+            holder && ids.contains(*holder) ? ids.objectId(*holder) : kSavedRuntimeInvalidObjectId));
+        put(*round, Gff::Field::newInt("PauseTimer",
+            hold ? static_cast<int>(std::lround(hold->remaining * 1000.0f)) : 0));
+        put(record, Gff::Field::newStruct("CombatRoundData", std::move(round)));
+    }
+
+    if (auto spell = object._spellScriptContext.save([&](const Object &referenced) {
+            return ids.contains(referenced) ? ids.objectId(referenced) : kSavedRuntimeInvalidObjectId;
+        })) {
+        put(record, Gff::Field::newStruct("SpellContext", std::move(spell)));
+    }
+
     static const std::array<std::string, 8> references {
         "AreaId", "CreatorId", "LastAttacker",
         "LastHostileActor", "LastPerceived", "MasterID", "OwnerId", "TargetId"};
@@ -862,6 +882,7 @@ uint32_t ModuleSnapshotBuilder::serializedReferenceId(
     const SavedObjectReference &reference,
     const ModuleObjectIdContext &ids) const {
     if (reference.isInvalid()) return kSavedRuntimeInvalidObjectId;
+    if (reference.isRawValue()) return reference.id;
     auto bound = reference.boundObject();
     if (bound) {
         return ids.contains(*bound)
@@ -941,9 +962,31 @@ void ModuleSnapshotBuilder::normalizeSituationReferences(
 void ModuleSnapshotBuilder::normalizeActionReferences(
     SavedActionRecord &action,
     const ModuleObjectIdContext &ids) const {
+    if (action.cast) {
+        action.cast->target.id = serializedReferenceId(action.cast->target, ids);
+        action.cast->item.id = serializedReferenceId(action.cast->item, ids);
+    }
+    if (action.round) {
+        action.round->pauseOwner.id = serializedReferenceId(action.round->pauseOwner, ids);
+        action.round->master.id = serializedReferenceId(action.round->master, ids);
+        action.round->engaged.id = serializedReferenceId(action.round->engaged, ids);
+    }
+    if (action.physical) {
+        for (auto &source : action.physical->sources) source.id = serializedReferenceId(source, ids);
+        for (auto &list : action.physical->targetEffects)
+            for (auto &effect : list) effect = normalizeEffectReferences(std::move(effect), ids);
+        for (auto &history : action.physical->histories) {
+            history.reactionObject.id = serializedReferenceId(history.reactionObject, ids);
+            history.ammoItem.id = serializedReferenceId(history.ammoItem, ids);
+        }
+        if (auto &record = action.physical->roundRecord) {
+            record->reactionObject.id = serializedReferenceId(record->reactionObject, ids);
+            record->ammoItem.id = serializedReferenceId(record->ammoItem, ids);
+        }
+    }
     for (size_t index = 0; index < action.parameters.size(); ++index) {
         auto &parameter = action.parameters[index];
-        // Retail stores PlayAnimation's animation identifier in its generic
+        // The game stores PlayAnimation's animation identifier in its generic
         // type-3/DWORD slot. It is not an object reference.
         if (action.actionId == 6 && index == 0) continue;
         if (auto reference = std::get_if<SavedObjectReference>(&parameter.payload)) {
@@ -963,6 +1006,8 @@ void ModuleSnapshotBuilder::normalizeEventReferences(
         normalizeSituationReferences(*situation, ids);
     } else if (auto effect = std::get_if<EffectInstance>(&event.payload)) {
         *effect = normalizeEffectReferences(std::move(*effect), ids);
+    } else if (auto hit = std::get_if<SavedWeaponImpact>(&event.payload)) {
+        hit->source.id = serializedReferenceId(hit->source, ids);
     } else if (auto spell = std::get_if<SavedSpellImpact>(&event.payload)) {
         spell->caster.id = serializedReferenceId(spell->caster, ids);
         spell->target.id = serializedReferenceId(spell->target, ids);
@@ -984,62 +1029,7 @@ void ModuleSnapshotBuilder::normalizeEventReferences(
         for (auto &reference : feedback->objects) {
             reference.id = serializedReferenceId(reference, ids);
         }
-    }
-}
-
-void ModuleSnapshotBuilder::appendRuntimeDelayedEvents(
-    std::vector<SavedEventRecord> &events,
-    const Object &owner,
-    const ModuleObjectIdContext &ids) const {
-    for (size_t index = 0; index < owner._delayed.size(); ++index) {
-        const auto &delayed = owner._delayed[index];
-        if (!delayed.action || delayed.action->isCompleted() ||
-            delayed.action->isCancelled()) {
-            continue;
-        }
-
-        auto savedAction = delayed.action->saveFacingState();
-        if (!savedAction || savedAction->actionId != 37 ||
-            savedAction->parameters.size() != 1) {
-            std::ostringstream message;
-            message << "live delayed action has no retail timed-event representation"
-                    << ": ownerId=" << owner.id()
-                    << " ownerType=" << static_cast<int>(owner.type())
-                    << " ownerTag=\"" << owner.tag() << '"'
-                    << " delayedIndex=" << index
-                    << " actionType=" << static_cast<int>(delayed.action->type());
-            throw ValidationException(message.str());
-        }
-        auto situation = std::get_if<SerializedScriptSituation>(
-            &savedAction->parameters.front().payload);
-        if (!situation) {
-            throw ValidationException(
-                "live delayed DoCommand action lacks a script situation"
-                ": ownerId=" + std::to_string(owner.id()) +
-                " delayedIndex=" + std::to_string(index));
-        }
-
-        // Object::_delayed counts stable-frame simulation seconds and the
-        // canonical clock counts world milliseconds, so the two share a unit.
-        // EventQueue stores an absolute timestamp as a day/time pair, split
-        // here at the serialization boundary. Snapshotting reads but never
-        // resets the live Timer.
-        const double remainingSeconds = delayed.timer
-                                            ? std::max(0.0f, delayed.timer->remaining())
-                                            : 0.0f;
-        const uint64_t absolute = _game._worldTimeMilliseconds +
-            static_cast<uint64_t>(std::floor(remainingSeconds * 1000.0));
-        const uint64_t millisecondsPerDay = _game.millisecondsPerWorldDay();
-
-        SavedEventRecord event;
-        event.day = static_cast<uint32_t>(absolute / millisecondsPerDay);
-        event.time = static_cast<uint32_t>(absolute % millisecondsPerDay);
-        event.object = SavedObjectReference::fromRuntimeId(owner.id());
-        event.caller = SavedObjectReference::fromRuntimeId(owner.id());
-        event.eventId = static_cast<uint32_t>(SavedEventType::Timed);
-        event.payload = *situation;
-        normalizeEventReferences(event, ids);
-        events.push_back(std::move(event));
+        if (!feedback->saver.isInvalid()) feedback->saver.id = serializedReferenceId(feedback->saver, ids);
     }
 }
 
@@ -1062,16 +1052,22 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writeItem(
         removeSaveField(*result, "ObjectId");
     }
     put(*result, Gff::Field::newInt("BaseItem", item._baseItem));
+    put(*result, Gff::Field::newCExoLocString("LocalizedName", item._localizedName.id(), item._localizedName.str()));
+    put(*result, Gff::Field::newCExoLocString("Description", item._description.id(), item._description.str()));
+    put(*result, Gff::Field::newCExoLocString("DescIdentified", item._descIdentified.id(), item._descIdentified.str()));
     put(*result, Gff::Field::newByte("Charges", item._charges));
-    put(*result, Gff::Field::newDword("Cost", item._cost));
+    put(*result, Gff::Field::newByte("MaxCharges", item._maxCharges));
+    put(*result, Gff::Field::newDword("Cost", item.cost(_game.baseItemCostMultiplier(item.baseItemType()))));
     put(*result, Gff::Field::newDword("AddCost", item._addCost));
     put(*result, Gff::Field::newByte("Stolen", item._stolen));
     put(*result, Gff::Field::newWord("StackSize", item._stackSize));
+    put(*result, Gff::Field::newDword("Upgrades", item._upgrades));
     put(*result, Gff::Field::newByte("Identified", item._identified));
     put(*result, Gff::Field::newByte("ModelVariation", item._modelVariation));
     put(*result, Gff::Field::newByte("BodyVariation", item._bodyVariation));
     put(*result, Gff::Field::newByte("TextureVar", item._textureVariation));
     put(*result, Gff::Field::newByte("Dropable", item._dropable));
+    put(*result, Gff::Field::newByte("NonEquippable", item._nonEquippable));
     std::vector<std::shared_ptr<Gff>> properties;
     for (const auto &property : item._properties) {
         properties.push_back(Gff::Builder().type(0)
@@ -1082,7 +1078,11 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writeItem(
             .field(Gff::Field::newByte("Param1Value", property.paramValue))
             .field(Gff::Field::newWord("PropertyName", property.propertyName))
             .field(Gff::Field::newWord("Subtype", property.subtype))
-            .field(Gff::Field::newByte("UpgradeType", property.upgradeType)).build());
+            .field(Gff::Field::newByte("UpgradeType", property.upgradeType))
+            .field(Gff::Field::newByte("UsesPerDay", property.usesPerDay))
+            .field(Gff::Field::newByte("Useable", property.usable))
+            .field(Gff::Field::newDword("UsedDay", property.usedDay))
+            .field(Gff::Field::newDword("UsedTime", property.usedTime)).build());
     }
     put(*result, Gff::Field::newList("PropertiesList", std::move(properties)));
     return result;
@@ -1128,32 +1128,86 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writeCreature(
     put(*result, Gff::Field::newFloat("YOrientation", direction.y));
     put(*result, Gff::Field::newFloat("ZOrientation", direction.z));
     put(*result, Gff::Field::newByte("IsPC", creature._isPC));
+    put(*result, Gff::Field::newInt("PlayerCreated", creature._playerCreated));
+    put(*result, Gff::Field::newByte("StealthMode", creature._stealthMode));
     if (_game.isTSL()) {
         put(*result, Gff::Field::newInt(
             "AssignedPup", creature._assignedPuppet));
     }
     put(*result, Gff::Field::newWord("FactionID", static_cast<uint16_t>(creature._faction)));
     put(*result, Gff::Field::newWord("Appearance_Type", creature._appearance));
+    put(*result, Gff::Field::newByte("PM_IsDisguised", creature._disguised));
+    if (creature._disguised) {
+        put(*result, Gff::Field::newWord("PM_Appearance", creature._appearanceBeforeDisguise));
+    }
     put(*result, Gff::Field::newByte("Gender", static_cast<uint8_t>(creature._gender)));
     put(*result, Gff::Field::newShort("HitPoints", creature._hitPoints));
-    put(*result, Gff::Field::newShort("MaxHitPoints", creature._maxHitPoints));
+    put(*result, Gff::Field::newShort("MaxHitPoints", creature.maxHitPoints()));
     put(*result, Gff::Field::newShort(
         "CurrentHitPoints", creature.serializedCurrentHitPoints()));
     put(*result, Gff::Field::newByte("Dead", creature._dead));
     put(*result, Gff::Field::newShort("ForcePoints", creature._forcePoints));
-    put(*result, Gff::Field::newShort("CurrentForce", creature._currentForce));
+    put(*result, Gff::Field::newShort("CurrentForce", creature.serializedCurrentForce()));
+    put(*result, Gff::Field::newShort("MaxForcePoints", creature.maxForcePoints()));
+    if (_game.isTSL())
+        put(*result, Gff::Field::newChar("FuryDamageBonus", creature._furyDamageBonus));
+    // The level history is kept for a player character while no companion is
+    // controlled in the player character's place. The player character
+    // waiting for control back keeps the history it had when it gave control
+    // up.
+    if (creature._isPC &&
+        (_game.party().controlledNpc() == kNpcPlayer || &creature == _game.party().actualPlayer().get())) {
+        const auto oldLevels = result->getList("LvlStatList");
+        std::vector<std::shared_ptr<Gff>> levels;
+        for (size_t i = 0; i < creature._levelStats.size(); ++i) {
+            auto level = i < oldLevels.size() ? oldLevels[i]->deepCopy() : emptyRecord(0);
+            put(*level, Gff::Field::newByte("LvlStatHitDie", creature._levelStats[i].hitDie));
+            put(*level, Gff::Field::newByte("LvlStatForce", creature._levelStats[i].forcePoints));
+            levels.push_back(std::move(level));
+        }
+        put(*result, Gff::Field::newList("LvlStatList", std::move(levels)));
+    } else {
+        removeSaveField(*result, "LvlStatList");
+    }
+    put(*result, Gff::Field::newInt("TemporaryHP", creature._temporaryHitPoints));
+    put(*result, Gff::Field::newInt("TemporaryFP", creature._temporaryForcePoints));
+    if (_game.isTSL())
+        put(*result, Gff::Field::newInt("BonusForcePoints", creature._bonusForcePoints));
     put(*result, Gff::Field::newDword("Experience", creature._xp));
+    put(*result, Gff::Field::newInt("JoiningXP", creature._joiningXP));
     put(*result, Gff::Field::newByte("GoodEvil", creature._goodEvil));
     put(*result, Gff::Field::newByte("Race", static_cast<uint8_t>(creature._race)));
     put(*result, Gff::Field::newByte("SubraceIndex", static_cast<uint8_t>(creature._subrace)));
     put(*result, Gff::Field::newByte("Disarmable", creature._disarmable));
     put(*result, Gff::Field::newByte("NoPermDeath", creature._noPermDeath));
+    put(*result, Gff::Field::newByte("IsDestroyable", creature._destroyable));
+    put(*result, Gff::Field::newByte("IsRaiseable", creature._raiseable));
+    put(*result, Gff::Field::newByte("DeadSelectable", creature._selectableWhenDead));
     put(*result, Gff::Field::newByte("NotReorienting", creature._notReorienting));
     put(*result, Gff::Field::newByte("BodyVariation", creature._bodyVariation));
     put(*result, Gff::Field::newByte("TextureVar", creature._textureVar));
     put(*result, Gff::Field::newByte("PartyInteract", creature._partyInteract));
+    // The ambient state and the pose the creature was last given: dead, a
+    // damage flinch, ready in combat state, the injured pause of a round pause
+    // end, else pause.
+    put(*result, Gff::Field::newByte("AmbientAnimState", static_cast<uint8_t>(creature._effectAmbientState)));
+    put(*result, Gff::Field::newInt("Animation",
+        creature._dead ? 10008 : creature._damageFlinchHeld ? 10302 : creature._combatState.active ? 10001 :
+        creature._injuredPause ? 10092 : 10000));
     put(*result, Gff::Field::newByte(
         "CreatnScrptFird", creature._spawnScriptFired));
+    if (_game.isTSL()) {
+        put(*result, Gff::Field::newDword(
+            "CurrentForm", static_cast<uint32_t>(creature._currentForm)));
+        put(*result, Gff::Field::newByte(
+            "MultiplierSet", creature._autoBalanceContext.multiplierSet));
+        if (creature._autoBalancePlayerLevelAtSpawnSet) {
+            put(*result, Gff::Field::newByte(
+                "PCLevelAtSpawn", creature._autoBalanceContext.playerLevelAtSpawn));
+        } else {
+            removeSaveField(*result, "PCLevelAtSpawn");
+        }
+    }
     put(*result, Gff::Field::newByte(
         "MovementRate", static_cast<uint8_t>(std::clamp(creature._walkRate, 0, 255))));
     put(*result, Gff::Field::newByte("Listening", creature._isListening));
@@ -1162,9 +1216,9 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writeCreature(
     put(*result, Gff::Field::newShort("willbonus", creature._willBonus));
     put(*result, Gff::Field::newShort("fortbonus", creature._fortBonus));
     put(*result, Gff::Field::newFloat("ChallengeRating", creature._challengeRating));
+    put(*result, Gff::Field::newInt("AIState", static_cast<int>(creature._aiStyle)));
     put(*result, Gff::Field::newWord("SoundSetFile", creature._soundSetId));
     put(*result, Gff::Field::newByte("BodyBag", creature._bodyBagId));
-    put(*result, Gff::Field::newByte("PerceptionRange", creature._perceptionId));
 
     put(*result, Gff::Field::newByte("Str", creature._attributes.strength()));
     put(*result, Gff::Field::newByte("Dex", creature._attributes.dexterity()));
@@ -1190,7 +1244,7 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writeCreature(
             static_cast<uint16_t>(feat->getUint("Feat")), feat->deepCopy());
     }
     std::vector<std::shared_ptr<Gff>> feats;
-    for (auto feat : creature._attributes.feats()) {
+    for (auto feat : creature._attributes.featOrder()) {
         auto type = static_cast<uint16_t>(feat);
         auto found = oldFeats.find(type);
         auto featRecord = found != oldFeats.end()
@@ -1205,7 +1259,6 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writeCreature(
         oldClasses.emplace(clazz->getInt("Class"), clazz->deepCopy());
     }
     std::vector<std::shared_ptr<Gff>> classes;
-    bool firstClass = true;
     for (const auto &[clazz, level] : creature._attributes.classLevels()) {
         if (!clazz) continue;
         auto classType = static_cast<int32_t>(clazz->type());
@@ -1216,18 +1269,26 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writeCreature(
         put(*classRecord, Gff::Field::newInt("Class", classType));
         put(*classRecord, Gff::Field::newShort("ClassLevel", level));
         std::vector<std::shared_ptr<Gff>> spells;
-        if (firstClass) {
-            for (auto spell : creature._attributes.spells()) {
-                spells.push_back(Gff::Builder().type(3)
-                    .field(Gff::Field::newWord(
-                        "Spell", static_cast<uint16_t>(spell))).build());
-            }
+        for (auto spell : creature._attributes.spellsForClass(clazz->type())) {
+            spells.push_back(Gff::Builder().type(3)
+                .field(Gff::Field::newWord(
+                    "Spell", static_cast<uint16_t>(spell))).build());
         }
         put(*classRecord, Gff::Field::newList("KnownList0", std::move(spells)));
         classes.push_back(std::move(classRecord));
-        firstClass = false;
     }
     put(*result, Gff::Field::newList("ClassList", std::move(classes)));
+    const auto oldAbilities = result->getList("SpecAbilityList");
+    std::vector<std::shared_ptr<Gff>> abilities;
+    for (size_t i = 0; i < creature._spellLikeAbilities.size(); ++i) {
+        const auto &ability = creature._spellLikeAbilities[i];
+        auto record = i < oldAbilities.size() ? oldAbilities[i]->deepCopy() : emptyRecord(4);
+        put(*record, Gff::Field::newWord("Spell", static_cast<uint16_t>(ability.spell)));
+        put(*record, Gff::Field::newByte("SpellFlags", static_cast<uint8_t>(ability.flags)));
+        put(*record, Gff::Field::newByte("SpellCasterLevel", static_cast<uint8_t>(ability.casterLevel)));
+        abilities.push_back(std::move(record));
+    }
+    put(*result, Gff::Field::newList("SpecAbilityList", std::move(abilities)));
 
     put(*result, Gff::Field::newResRef("ScriptHeartbeat", creature._onHeartbeat));
     put(*result, Gff::Field::newResRef("ScriptUserDefine", creature._onUserDefined));
@@ -1277,6 +1338,9 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writeCreature(
     for (const auto &[id, reference] : creature._perception.heard) {
         if (reference.resolve()) perceived.insert(id);
     }
+    for (const auto &[id, reference] : creature._perception.invisible) {
+        if (reference.resolve()) perceived.insert(id);
+    }
     std::vector<std::shared_ptr<Gff>> perceptions;
     for (uint32_t id : perceived) {
         auto objectIt = _game._objectById.find(id);
@@ -1290,7 +1354,8 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writeCreature(
         uint8_t data = static_cast<uint8_t>(
             perception->getUint("PerceptionData") & ~0x3u);
         if (creature._perception.sees(id)) data |= 0x1;
-        if (creature._perception.hears(id)) data |= 0x2;
+        // The invisible mark is written into the heard bit.
+        if (creature._perception.hears(id) || creature._perception.isInvisible(id)) data |= 0x2;
         put(*perception, Gff::Field::newDword("ObjectId", savedId));
         put(*perception, Gff::Field::newByte("PerceptionData", data));
         perceptions.push_back(std::move(perception));
@@ -1302,23 +1367,30 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writeCreature(
 std::shared_ptr<Gff> ModuleSnapshotBuilder::writeDoor(
     const Door &door, const ModuleObjectIdContext &ids) const {
     auto result = objectBase(door, ResType::Utd, 8);
+    // Write current Plot state. Remove an input-only Invulnerable value from the
+    // resource shadow so it cannot override Plot on the next load.
+    removeSaveField(*result, "Invulnerable");
     writeObjectState(*result, door, ids);
+    put(*result, Gff::Field::newByte("Static", door._static));
     putTransform(*result, door, true);
     put(*result, Gff::Field::newDword("Appearance", door._appearance));
     put(*result, Gff::Field::newByte("GenericType", door._genericType));
+    put(*result, Gff::Field::newDword("Faction", static_cast<uint32_t>(door._faction)));
     put(*result, Gff::Field::newByte("OpenState", static_cast<uint8_t>(door._state)));
     put(*result, Gff::Field::newByte("Locked", door._locked));
     put(*result, Gff::Field::newByte("Lockable", door._lockable));
     put(*result, Gff::Field::newShort("HP", door._hitPoints));
     put(*result, Gff::Field::newShort("CurrentHP", door._currentHitPoints));
-    put(*result, Gff::Field::newByte("Dead", door._dead));
+    put(*result, Gff::Field::newByte("Dead", door.isDead()));
     put(*result, Gff::Field::newByte("TrapFlag", door._trapFlag));
     put(*result, Gff::Field::newByte("TrapType", door._trapType));
     put(*result, Gff::Field::newByte("TrapDisarmable", door._trapDisarmable));
     put(*result, Gff::Field::newByte("TrapDetectable", door._trapDetectable));
-    put(*result, Gff::Field::newByte("DisarmDC", door._disarmDC));
-    put(*result, Gff::Field::newByte("TrapDetectDC", door._trapDetectDC));
+    // Saved DCs are the difficulty-shifted values, so they shift again on every save.
+    put(*result, Gff::Field::newByte("DisarmDC", static_cast<uint8_t>(door.trapDisarmDC())));
+    put(*result, Gff::Field::newByte("TrapDetectDC", static_cast<uint8_t>(door.trapDetectDC())));
     put(*result, Gff::Field::newByte("TrapOneShot", door._trapOneShot));
+    if (_game.isTSL()) put(*result, Gff::Field::newInt("OwnerDemolitions", door._ownerDemolitionsSkill));
     put(*result, Gff::Field::newByte("KeyRequired", door._keyRequired));
     put(*result, Gff::Field::newByte("AutoRemoveKey", door._autoRemoveKey));
     put(*result, Gff::Field::newByte("OpenLockDC", door._openLockDC));
@@ -1336,21 +1408,50 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writePlaceable(
     auto result = objectBase(placeable, ResType::Utp, 9);
     writeObjectState(*result, placeable, ids);
     putTransform(*result, placeable, true);
+    put(*result, Gff::Field::newInt("Animation", placeable._animation));
     put(*result, Gff::Field::newByte("Open", placeable._open));
+    put(*result, Gff::Field::newDword("Faction", static_cast<uint32_t>(placeable._faction)));
     put(*result, Gff::Field::newByte("Locked", placeable._locked));
     put(*result, Gff::Field::newByte("Lockable", placeable._lockable));
     put(*result, Gff::Field::newShort("HP", placeable._hitPoints));
     put(*result, Gff::Field::newShort("CurrentHP", placeable._currentHitPoints));
-    put(*result, Gff::Field::newByte("Dead", placeable._dead));
+    put(*result, Gff::Field::newByte("Dead", placeable.isDead()));
     put(*result, Gff::Field::newByte("Useable", placeable._usable));
     put(*result, Gff::Field::newByte("HasInventory", placeable._hasInventory));
     put(*result, Gff::Field::newByte("TrapFlag", placeable._trapFlag));
     put(*result, Gff::Field::newByte("TrapType", placeable._trapType));
     put(*result, Gff::Field::newByte("TrapDisarmable", placeable._trapDisarmable));
     put(*result, Gff::Field::newByte("TrapDetectable", placeable._trapDetectable));
-    put(*result, Gff::Field::newByte("DisarmDC", placeable._disarmDC));
-    put(*result, Gff::Field::newByte("TrapDetectDC", placeable._trapDetectDC));
+    // Saved DCs are the difficulty-shifted values, so they shift again on every save.
+    put(*result, Gff::Field::newByte("DisarmDC", static_cast<uint8_t>(placeable.trapDisarmDC())));
+    put(*result, Gff::Field::newByte("TrapDetectDC", static_cast<uint8_t>(placeable.trapDetectDC())));
     put(*result, Gff::Field::newByte("TrapOneShot", placeable._trapOneShot));
+    if (_game.isTSL()) put(*result, Gff::Field::newInt("OwnerDemolitions", placeable._ownerDemolitionsSkill));
+    // A portrait ID naming a row is saved in place of the portrait resref.
+    if (placeable._portraitId != Placeable::kNoPortraitId) {
+        put(*result, Gff::Field::newWord("PortraitId", placeable._portraitId));
+    } else {
+        put(*result, Gff::Field::newResRef("Portrait", placeable._portrait));
+    }
+    // A body bag is made at runtime with no blueprint, so it carries all of
+    // its own fields.
+    if (placeable._isBodyBag) {
+        put(*result, Gff::Field::newDword("Appearance", placeable._appearance));
+        put(*result, Gff::Field::newCExoLocString("LocName", placeable._locName.id(), placeable._locName.str()));
+        put(*result, Gff::Field::newCExoLocString("Description", placeable._description.id(), placeable._description.str()));
+        put(*result, Gff::Field::newByte("OpenLockDC", placeable._openLockDC));
+        put(*result, Gff::Field::newByte("Hardness", placeable._hardness));
+        put(*result, Gff::Field::newByte("Fort", placeable._fort));
+        put(*result, Gff::Field::newByte("Will", placeable._will));
+        put(*result, Gff::Field::newByte("Ref", placeable._ref));
+        put(*result, Gff::Field::newByte("Static", placeable._static));
+        put(*result, Gff::Field::newByte("PartyInteract", placeable._partyInteract));
+        put(*result, Gff::Field::newByte("BodyBag", placeable._bodyBagId));
+        put(*result, Gff::Field::newByte("DieWhenEmpty", placeable._dieWhenEmpty));
+        put(*result, Gff::Field::newByte("IsBodyBag", placeable._isBodyBag));
+        put(*result, Gff::Field::newByte("IsBodyBagVisible", placeable._isBodyBagVisible));
+        put(*result, Gff::Field::newByte("IsCorpse", placeable._isCorpse));
+    }
     std::vector<std::shared_ptr<Gff>> items;
     for (const auto &item : placeable._items) if (item) items.push_back(
         writeItem(*item, 0, ids.objectId(*item), &ids));
@@ -1372,7 +1473,10 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writeTrigger(
     put(*result, Gff::Field::newByte("TrapDisarmable", trigger._trapDisarmable));
     put(*result, Gff::Field::newByte("TrapDetectable", trigger._trapDetectable));
     put(*result, Gff::Field::newInt("Type", trigger._triggerType));
+    put(*result, Gff::Field::newDword("Faction", static_cast<uint32_t>(trigger._faction)));
     put(*result, Gff::Field::newByte("SetByPlayerParty", trigger._setByPlayerParty));
+    put(*result, Gff::Field::newDword("CreatorId", serializedReferenceId(trigger._creator, ids)));
+    if (_game.isTSL()) put(*result, Gff::Field::newInt("OwnerDemolitions", trigger._ownerDemolitionsSkill));
     std::vector<std::shared_ptr<Gff>> geometry;
     for (const auto &point : trigger._geometry) {
         geometry.push_back(Gff::Builder().type(3)
@@ -1414,8 +1518,11 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writeEncounter(
     put(*result, Gff::Field::newByte("Exhausted", state.exhausted));
     put(*result, Gff::Field::newDword("HeartbeatDay", state.heartbeatDay));
     put(*result, Gff::Field::newDword("HeartbeatTime", state.heartbeatTime));
-    put(*result, Gff::Field::newDword("LastEntered", state.lastEntered));
-    put(*result, Gff::Field::newDword("LastLeft", state.lastLeft));
+    auto savedId = [&](const std::shared_ptr<Object> &object) {
+        return object && ids.contains(*object) ? ids.objectId(*object) : kSavedRuntimeInvalidObjectId;
+    };
+    put(*result, Gff::Field::newDword("LastEntered", savedId(encounter.lastEntered())));
+    put(*result, Gff::Field::newDword("LastLeft", savedId(encounter.lastLeft())));
     put(*result, Gff::Field::newDword("LastSpawnDay", state.lastSpawnDay));
     put(*result, Gff::Field::newDword("LastSpawnTime", state.lastSpawnTime));
     put(*result, Gff::Field::newInt("NumberSpawned", state.numberSpawned));
@@ -1440,9 +1547,17 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writeEncounter(
             .field(Gff::Field::newDword("Appearance", creature._appearance))
             .field(Gff::Field::newFloat("CR", creature._cr))
             .field(Gff::Field::newResRef("ResRef", creature._resRef))
-            .field(Gff::Field::newByte("SingleSpawn", creature._singleSpawn)).build());
+            .field(Gff::Field::newByte("SingleSpawn", creature._singleSpawn))
+            .field(Gff::Field::newInt("GuaranteedCount", creature._guaranteedCount)).build());
     }
     put(*result, Gff::Field::newList("CreatureList", std::move(creatures)));
+    std::vector<std::shared_ptr<Gff>> pendingSpawns;
+    for (const auto &entry : encounter._pendingSpawns) {
+        pendingSpawns.push_back(Gff::Builder().type(0)
+            .field(Gff::Field::newResRef("SpawnResRef", entry.resRef))
+            .field(Gff::Field::newFloat("SpawnCR", entry.challengeRating)).build());
+    }
+    put(*result, Gff::Field::newList("SpawnList", std::move(pendingSpawns)));
     std::vector<std::shared_ptr<Gff>> geometry;
     for (const auto &point : encounter._geometry) {
         geometry.push_back(Gff::Builder().type(0)
@@ -1460,6 +1575,48 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writeEncounter(
             .field(Gff::Field::newFloat("Orientation", point.orientation)).build());
     }
     put(*result, Gff::Field::newList("SpawnPointList", std::move(spawnPoints)));
+    return result;
+}
+
+std::shared_ptr<Gff> ModuleSnapshotBuilder::writeAreaOfEffect(
+    const AreaOfEffect &areaOfEffect, const ModuleObjectIdContext &ids) const {
+    auto result = objectBase(areaOfEffect, ResType::Invalid, AreaOfEffect::kSaveStructType);
+    writeObjectState(*result, areaOfEffect, ids);
+    auto savedId = [&](const std::shared_ptr<Object> &object) {
+        return object && ids.contains(*object) ? ids.objectId(*object) : kSavedRuntimeInvalidObjectId;
+    };
+    put(*result, Gff::Field::newInt("AreaEffectId", areaOfEffect._areaEffectId));
+    put(*result, Gff::Field::newDword("SpellId", areaOfEffect.effectSpellId()));
+    put(*result, Gff::Field::newByte("Shape", static_cast<uint8_t>(areaOfEffect._shape)));
+    put(*result, Gff::Field::newByte("MetaMagicType", static_cast<uint8_t>(areaOfEffect._metaMagic)));
+    put(*result, Gff::Field::newInt("SpellSaveDC", areaOfEffect._spellSaveDC));
+    put(*result, Gff::Field::newInt("SpellLevel", areaOfEffect._spellLevel));
+    if (areaOfEffect._shape == AreaOfEffect::Shape::Rectangle) {
+        put(*result, Gff::Field::newFloat("Length", areaOfEffect._length));
+        put(*result, Gff::Field::newFloat("Width", areaOfEffect._width));
+    } else {
+        put(*result, Gff::Field::newFloat("Radius", areaOfEffect._radius));
+    }
+    put(*result, Gff::Field::newDword("LinkedToObject", savedId(areaOfEffect.carrier())));
+    put(*result, Gff::Field::newDword("LastEntered", savedId(areaOfEffect.lastEntered())));
+    put(*result, Gff::Field::newDword("LastLeft", savedId(areaOfEffect.lastLeft())));
+    put(*result, Gff::Field::newDword("Duration",
+        static_cast<uint32_t>(std::max(0.0f, areaOfEffect._remainingDuration) * 1000.0f)));
+    put(*result, Gff::Field::newByte("DurationType", static_cast<uint8_t>(areaOfEffect._durationType)));
+    put(*result, Gff::Field::newDword("LastHrtbtDay", areaOfEffect._heartbeatDay));
+    put(*result, Gff::Field::newDword("LastHrtbtTime", areaOfEffect._heartbeatTime));
+    put(*result, Gff::Field::newCExoString("OnHeartbeat", areaOfEffect.getOnHeartbeat()));
+    put(*result, Gff::Field::newCExoString("OnUserDefined", areaOfEffect.getOnUserDefined()));
+    put(*result, Gff::Field::newCExoString("OnObjEnter", areaOfEffect._onEnter));
+    put(*result, Gff::Field::newCExoString("OnObjExit", areaOfEffect._onExit));
+    const auto &position = areaOfEffect.position();
+    put(*result, Gff::Field::newFloat("PositionX", position.x));
+    put(*result, Gff::Field::newFloat("PositionY", position.y));
+    put(*result, Gff::Field::newFloat("PositionZ", position.z));
+    const float facing = scriptFacingFromObject(areaOfEffect.getFacing());
+    put(*result, Gff::Field::newFloat("OrientationX", std::cos(facing)));
+    put(*result, Gff::Field::newFloat("OrientationY", std::sin(facing)));
+    put(*result, Gff::Field::newFloat("OrientationZ", 0.0f));
     return result;
 }
 
@@ -1557,6 +1714,8 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::buildAre(const Area &area) const {
     }
     put(*result, Gff::Field::newCExoString("Tag", area._tag));
     put(*result, Gff::Field::newByte("Unescapable", area._unescapable));
+    put(*result, Gff::Field::newByte("RestrictMode", area._playerRestrictMode));
+    put(*result, Gff::Field::newByte("TransPending", area._transitionPending));
     put(*result, Gff::Field::newByte("StealthXPEnabled", area._stealthXPEnabled));
     put(*result, Gff::Field::newDword("StealthXPMax", static_cast<uint32_t>(std::max(0, area._maxStealthXP))));
     put(*result, Gff::Field::newDword("StealthXPCurrent", static_cast<uint32_t>(std::max(0, area._currentStealthXP))));
@@ -1583,10 +1742,25 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::buildGit(
     // shadow originated in an installed template GIT.
     put(*result, Gff::Field::newByte("UseTemplates", 0));
 
+    // The area properties carry the music and ambient sound settings; what is
+    // playing is not saved.
+    auto previousProperties = result->findStruct("AreaProperties");
+    auto properties = previousProperties ? previousProperties->deepCopy() : Gff::Builder().type(100).build();
+    const auto &audio = area._ambientAudio;
+    put(*properties, Gff::Field::newInt("MusicDelay", audio.musicDelay));
+    put(*properties, Gff::Field::newInt("MusicDay", audio.musicDay));
+    put(*properties, Gff::Field::newInt("MusicNight", audio.musicNight));
+    put(*properties, Gff::Field::newInt("MusicBattle", audio.musicBattle));
+    put(*properties, Gff::Field::newInt("AmbientSndDay", audio.ambientSoundDay));
+    put(*properties, Gff::Field::newInt("AmbientSndNight", audio.ambientSoundNight));
+    put(*properties, Gff::Field::newInt("AmbientSndDayVol", audio.ambientSoundDayVolume));
+    put(*properties, Gff::Field::newInt("AmbientSndNitVol", audio.ambientSoundNightVolume));
+    put(*result, Gff::Field::newStruct("AreaProperties", std::move(properties)));
+
     std::map<std::string, std::vector<std::shared_ptr<Gff>>> lists {
         {"Creature List", {}}, {"Door List", {}}, {"Placeable List", {}},
         {"TriggerList", {}}, {"Encounter List", {}}, {"StoreList", {}},
-        {"WaypointList", {}}, {"SoundList", {}}, {"List", {}}};
+        {"WaypointList", {}}, {"SoundList", {}}, {"List", {}}, {"AreaEffectList", {}}};
     lists["CameraList"] = {};
     for (const auto &object : area._objects) {
         if (!object || area._objectsToDestroy.count(object->id()) != 0) continue;
@@ -1643,7 +1817,9 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::buildGit(
             break;
         }
         case ObjectType::AreaOfEffect:
-            throw ValidationException("live area-of-effect objects have no E3d save representation");
+            lists["AreaEffectList"].push_back(
+                writeAreaOfEffect(*static_cast<AreaOfEffect *>(object.get()), ids));
+            break;
         default:
             throw ValidationException("active area contains an unsupported save object type");
         }
@@ -1651,9 +1827,6 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::buildGit(
     for (auto &[label, list] : lists) {
         put(*result, Gff::Field::newList(label, std::move(list)));
     }
-    // E2 has no published runtime AreaEffectList representation. Keeping an
-    // authored/shadow list here would resurrect state absent from the graph.
-    removeSaveField(*result, "AreaEffectList");
     return result;
 }
 
@@ -1676,20 +1849,13 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::buildIfo(
     put(*result, Gff::Field::newCExoString("Mod_Tag", module._tag.empty() ? module._name : module._tag));
     put(*result, Gff::Field::newResRef("Mod_Entry_Area", area._name));
     put(*result, Gff::Field::newDword("Mod_Area", ids.objectId(area)));
-    // A short-lived local A2 draft wrote this private extension. It is not a
-    // retail field and the contextual Module target needs no on-disk carrier.
-    removeSaveField(*result, "ReoneModObjId");
     put(*result, Gff::Field::newFloat("Mod_Entry_X", module._info.entryPosition.x));
     put(*result, Gff::Field::newFloat("Mod_Entry_Y", module._info.entryPosition.y));
     put(*result, Gff::Field::newFloat("Mod_Entry_Z", module._info.entryPosition.z));
     put(*result, Gff::Field::newFloat("Mod_Entry_Dir_X", -std::sin(module._info.entryFacing)));
     put(*result, Gff::Field::newFloat("Mod_Entry_Dir_Y", std::cos(module._info.entryFacing)));
-    // Split the canonical clock into the retail pair. Records written here are
+    // Split the canonical clock into the day/time pair. Records written here are
     // therefore always normalized: Mod_PauseTime is below one day length.
-    // Remove fields emitted by the short-lived Reone naming mistake so a
-    // shadow merge cannot leave two competing clock representations.
-    removeSaveField(*result, "Mod_CalendarDay");
-    removeSaveField(*result, "Mod_TimeOfDay");
     put(*result, Gff::Field::newDword("Mod_PauseDay", _game.worldTimeDay()));
     put(*result, Gff::Field::newDword("Mod_PauseTime", _game.worldTimeOfDay()));
     put(*result, Gff::Field::newByte("Mod_MinPerHour", _game._minutesPerHour));
@@ -1701,13 +1867,27 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::buildIfo(
         .field(Gff::Field::newDword("ObjectId", ids.objectId(area))).build();
     put(*result, Gff::Field::newList("Mod_Area_list", {areaEntry}));
 
+    // Four allocation cursors: ordinary identities count up from the bottom of
+    // the namespace, character identities count down from its ceiling, each
+    // for local and for external objects. An absent retained cursor is the
+    // initial value of a module never saved before.
     uint32_t shadowNext = result->getUint("Mod_NextObjId0", 2);
     put(*result, Gff::Field::newDword(
         "Mod_NextObjId0", ids.nextId(shadowNext)));
+    uint32_t shadowNextCharacter = result->getUint(
+        "Mod_NextCharId0", kSavedRuntimeMaxCharacterObjectId);
+    put(*result, Gff::Field::newDword(
+        "Mod_NextCharId0", ids.nextCharacterId(shadowNextCharacter)));
+    // External identities name objects owned by another simulation. A saved
+    // module graph holds none, so both external cursors keep their initial
+    // values.
+    put(*result, Gff::Field::newDword("Mod_NextObjId1", 0));
+    put(*result, Gff::Field::newDword(
+        "Mod_NextCharId1", kSavedRuntimeMaxCharacterObjectId));
 
     std::vector<std::shared_ptr<Gff>> tokens;
     for (const auto &[number, value] : _game._customTokens) {
-        if (number < 0) continue;
+        if (number <= Game::kLastReservedCustomToken) continue;
         tokens.push_back(Gff::Builder().type(7)
             .field(Gff::Field::newDword("Mod_TokensNumber", static_cast<uint32_t>(number)))
             .field(Gff::Field::newCExoString("Mod_TokensValue", value)).build());
@@ -1716,22 +1896,6 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::buildIfo(
 
     std::vector<std::shared_ptr<Gff>> events;
     std::vector<SavedEventRecord> eventSnapshot = module.saveEventSnapshot();
-    std::set<const Object *> delayedOwners;
-    auto appendOwner = [&](const std::shared_ptr<Object> &owner) {
-        if (owner && delayedOwners.insert(owner.get()).second) {
-            appendRuntimeDelayedEvents(eventSnapshot, *owner, ids);
-        }
-    };
-    appendOwner(_game._module);
-    appendOwner(module._area);
-    for (const auto &object : area._objects) {
-        if (object && area._objectsToDestroy.count(object->id()) == 0) {
-            appendOwner(object);
-        }
-    }
-    appendOwner(_game._party.player());
-    appendOwner(_game._party.actualPlayer());
-    for (const auto &creature : module._limboCreatures) appendOwner(creature);
     std::stable_sort(
         eventSnapshot.begin(), eventSnapshot.end(),
         [](const SavedEventRecord &left, const SavedEventRecord &right) {
@@ -1742,6 +1906,17 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::buildIfo(
         events.push_back(eventToGff(event, &_game));
     }
     put(*result, Gff::Field::newList("EventQueue", std::move(events)));
+    std::vector<std::shared_ptr<Gff>> projectiles;
+    for (auto state : _game._services.game.projectiles.savePresentations()) {
+        state.caster.id = serializedReferenceId(state.caster, ids);
+        state.weapon.id = serializedReferenceId(state.weapon, ids);
+        for (auto &leg : state.legs) {
+            leg.source.id = serializedReferenceId(leg.source, ids);
+            leg.target.id = serializedReferenceId(leg.target, ids);
+        }
+        projectiles.push_back(state.toGff());
+    }
+    put(*result, Gff::Field::newList("ProjectileState", std::move(projectiles)));
 
     auto modulePlayer = _game._party.player();
     if (!modulePlayer) throw ValidationException("module has no controlled player creature");
@@ -1850,7 +2025,10 @@ void ModuleSnapshotBuilder::validate(const SavedModuleSnapshot &snapshot) const 
         throw ValidationException("IFO active-area identity is inconsistent");
     }
     uint32_t nextId = ifo->getUint("Mod_NextObjId0");
+    uint32_t nextCharacterId = ifo->getUint("Mod_NextCharId0");
     if (nextId < 2 || nextId >= kSavedRuntimeInvalidObjectId ||
+        nextCharacterId <= kSavedRuntimeInvalidObjectId ||
+        nextCharacterId > kSavedRuntimeMaxCharacterObjectId ||
         ifo->getUint64("Mod_Effect_NxtId") == kUnassignedEffectId) {
         throw ValidationException("IFO runtime cursors are invalid");
     }
@@ -1866,7 +2044,8 @@ void ModuleSnapshotBuilder::validate(const SavedModuleSnapshot &snapshot) const 
                                                          const char *kind) {
         if (id < kSavedRuntimeInvalidObjectId) {
             addOrdinaryId(id, kind);
-        } else if (id == kSavedRuntimeInvalidObjectId || id > 0x7fffffffu ||
+        } else if (id == kSavedRuntimeInvalidObjectId ||
+                   id > kSavedRuntimeMaxCharacterObjectId ||
                    !reservedPartyIds.insert(id).second) {
             throw ValidationException(std::string(kind) +
                                       " has an invalid or duplicate reserved ID");
@@ -1887,9 +2066,10 @@ void ModuleSnapshotBuilder::validate(const SavedModuleSnapshot &snapshot) const 
 
     addOrdinaryId(ifo->getUint("Mod_Area", kSavedRuntimeInvalidObjectId),
                   "saved area");
-    static const std::array<const char *, 9> authoritativeLists {
+    static const std::array<const char *, 10> authoritativeLists {
         "Creature List", "Door List", "Placeable List", "TriggerList",
-        "Encounter List", "StoreList", "WaypointList", "SoundList", "List"};
+        "Encounter List", "StoreList", "WaypointList", "SoundList", "List",
+        "AreaEffectList"};
     for (const char *label : authoritativeLists) {
         for (const auto &object : git->getList(label)) {
             addOrdinaryId(object->getUint("ObjectId", kSavedRuntimeInvalidObjectId),
@@ -1920,6 +2100,10 @@ void ModuleSnapshotBuilder::validate(const SavedModuleSnapshot &snapshot) const 
     if (!ordinaryIds.empty() && nextId <= *ordinaryIds.rbegin()) {
         throw ValidationException(
             "Mod_NextObjId0 does not advance beyond the ordinary saved object graph");
+    }
+    if (!reservedPartyIds.empty() && nextCharacterId >= *reservedPartyIds.begin()) {
+        throw ValidationException(
+            "Mod_NextCharId0 does not descend below the character saved object graph");
     }
     (void)are;
 }

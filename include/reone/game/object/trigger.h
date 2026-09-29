@@ -23,8 +23,13 @@
 
 namespace reone {
 
+namespace scene {
+class ModelSceneNode;
+}
+
 namespace game {
 
+class Creature;
 class Door;
 
 class Trigger : public Object {
@@ -54,12 +59,17 @@ public:
     }
 
     void loadFromBlueprint(const std::string &resRef);
+    Faction faction() const { return _faction; }
+    void setFaction(Faction faction) { _faction = faction; }
+
     void deserialize(
         const resource::Gff &gff,
         const SerializedIdentityContext &identityContext);
     void configureLinkedDoorTransition(const std::shared_ptr<Door> &door);
 
     void update(float dt) override;
+    void resolveSavedReferences(
+        const std::function<std::shared_ptr<Object>(uint32_t)> &resolver) override;
 
     void addTenant(const std::shared_ptr<Object> &object);
 
@@ -73,6 +83,8 @@ public:
     bool isTenant(const std::shared_ptr<Object> &object) const;
     bool isActive() const;
     bool isLinkedDoorTransition() const { return _linkedDoorTransition; }
+    /** Whether the trigger's type makes it an area transition. */
+    bool isAreaTransition() const { return _triggerType == 1; }
     bool acceptsTransitionActivator(const std::shared_ptr<Object> &activator) const;
     bool detachLinkedDoorTransition(const Door &door);
 
@@ -85,6 +97,57 @@ public:
 
     const std::string &getOnEnter() const { return _onEnter; }
     const std::string &getOnExit() const { return _onExit; }
+
+    // Traps
+
+    bool isTrap() const { return _isTrap; }
+    bool isTrapped() const { return _isTrap; }
+    bool trapDisarmable() const { return _trapDisarmable; }
+    bool trapDetectable() const { return _trapDetectable; }
+    bool trapOneShot() const { return _trapOneShot; }
+    uint8_t trapBaseType() const { return _trapType; }
+    const std::string &trapKeyTag() const { return _keyName; }
+    int trapDetectDC() const;
+    int trapDisarmDC() const;
+    TrapDetection &trapDetection() { return _trapDetection; }
+    const TrapDetection &trapDetection() const { return _trapDetection; }
+    /** A trap is hostile to a creature it regards at 89 or less that is not of its faction. */
+    bool isTrapHostileTo(const Creature &creature) const;
+    /** Point of this trigger nearest to a position: the trap radius, or the polygon outline. */
+    glm::vec3 nearestPoint(const glm::vec3 &from) const;
+    std::shared_ptr<scene::ModelSceneNode> trapModel() const { return _trapModel; }
+    glm::vec3 getSelectablePosition() const override;
+
+    /** The creature that set this trap, or none. */
+    std::shared_ptr<Creature> trapCreator() const;
+    /** The creator's identity as recorded, whether or not it still exists. */
+    uint32_t trapCreatorId() const;
+    bool isSetByPlayerParty() const { return _setByPlayerParty; }
+    int ownerDemolitionsSkill() const { return _ownerDemolitionsSkill; }
+    /**
+     * Make this trigger a mine: a 4 m square around the position, with the
+     * type's script and name, the given DCs and its creator's side.
+     */
+    void initMine(
+        int trapType,
+        const glm::vec3 &position,
+        const std::shared_ptr<Object> &creator,
+        Faction faction,
+        int detectDC,
+        int disarmDC,
+        int ownerDemolitionsSkill);
+    /** A mine standing for a trapped door or placeable: neither seen nor disarmed on its own. */
+    void hideLinkedMine() {
+        _trapDetectable = false;
+        _trapDisarmable = false;
+    }
+    /** A creature steps on the trap. Forced firing skips the standing test. */
+    void fireMine(const std::shared_ptr<Creature> &creature, bool force);
+    bool canFireMineOn(const Creature &creature, bool force) const;
+    /** The trap is disarmed by the caller: its disarm script runs. */
+    void disarmTrap(const Object &caller);
+
+    // END Traps
 
     const std::string &linkedToModule() const { return _linkedToModule; }
     const std::string &linkedTo() const { return _linkedTo; }
@@ -119,6 +182,15 @@ private:
     std::vector<glm::vec3> _geometry;
     // END Serializable
 
+    bool _isTrap {false};
+    SavedObjectReference _creator;
+    int _ownerDemolitionsSkill {0};
+    int _trapDetectDCMod {0};
+    int _trapDisarmDCMod {0};
+    TrapDetection _trapDetection;
+    std::shared_ptr<scene::ModelSceneNode> _trapModel;
+    bool _trapShown {false};
+
     std::set<std::shared_ptr<Object>> _tenants;
     RuntimeObjectRef<Door> _linkedDoor;
     bool _linkedDoorTransition {false};
@@ -130,6 +202,9 @@ private:
         const resource::Gff &gff,
         const SerializedIdentityContext &identityContext);
     void loadAppearance();
+    void loadTrapModel();
+    void updateTrapPresentation();
+    void setTrapCreator(const std::shared_ptr<Object> &creator);
 
     void syncDebugVisual();
 };

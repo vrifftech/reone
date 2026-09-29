@@ -28,8 +28,9 @@ namespace {
 
 class SaveTestObject : public Object {
 public:
+    // A generic object: it does not claim a concrete type whose class it is not.
     SaveTestObject(uint32_t id, Game &game, ServicesView &services) :
-        Object(id, ObjectType::Creature, kSceneMain, game, services) {
+        Object(id, ObjectType::Invalid, kSceneMain, game, services) {
     }
 
     void tickEffects(float dt) { updateEffects(dt); }
@@ -457,12 +458,15 @@ TEST(EffectSaveProvenance, loaded_and_runtime_expiry_follow_live_collection) {
     ASSERT_EQ(object->saveEffectSnapshot().size(), 1);
     EXPECT_EQ(
         object->saveEffectSnapshot()[0].expiryOrigin,
-        EffectExpiryOrigin::RuntimeCountdown);
+        EffectExpiryOrigin::RuntimeAbsoluteGameTime);
+    // Temporary effects expire on the world clock.
+    TestGameModule::advanceWorldTime(game, 3.0f);
     object->tickEffects(3.0f);
     auto snapshot = object->saveEffectSnapshot();
     EXPECT_FLOAT_EQ(snapshot[0].duration, 10.0f);
     EXPECT_FLOAT_EQ(*snapshot[0].remainingDuration, 7.0f);
-    object->tickEffects(7.0f);
+    TestGameModule::advanceWorldTime(game, 7.01f);
+    object->tickEffects(7.01f);
     EXPECT_TRUE(object->saveEffectSnapshot().empty());
 }
 
@@ -633,7 +637,7 @@ TEST(EventSaveProvenance, loaded_delivery_cancellation_new_and_session_replaceme
                               target->id(),
                               savedEffect(DurationType::Permanent)),
                           savedEvent(
-                              static_cast<uint32_t>(SavedEventType::DestroyObject),
+                              static_cast<uint32_t>(SavedEventType::Unlock),
                               target->id())}))
                      .build();
     moduleA->deserializeSavedEventQueue(

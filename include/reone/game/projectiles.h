@@ -17,7 +17,12 @@
 
 #pragma once
 
+#include <optional>
+#include <string>
+#include <unordered_map>
+
 #include "reone/game/types.h"
+#include "reone/game/savedruntime.h"
 
 namespace reone {
 
@@ -31,25 +36,70 @@ class TwoDA;
 namespace game {
 
 class Creature;
+struct Spell;
+class Object;
+class Item;
+class Game;
+struct ServicesView;
+struct EffectInstance;
 
-enum class ProjectileAttackType {
-    Basic = 1,
-    Rapid = 2,
-    Sniper = 3,
-    Power = 4,
+/**
+ * One weapondischarge.2da row: the discharge times of an attack animation, in
+ * milliseconds from its start, and the hand of each discharge (0 right, 1 left).
+ */
+struct ProjectileSpec {
+    struct Shot {
+        int timeMilliseconds {0};
+        int hand {0};
+    };
+    std::vector<Shot> shots;
+    // Raw hits column. The physical attack round takes its hit shots from the
+    // attack count; only the cutscene presentation sequence reads this value.
+    int hits {0};
 };
 
-struct ProjectileSpec {
-    std::vector<std::pair<float, int>> projectiles;
-    uint32_t misses;
+/**
+ * One discharge sent to clients: the bolt leaves \p hand (0 right bullet hook,
+ * 1 left, 2 the source's impact node) and reaches \p endpoint after
+ * \p delayMilliseconds. \p special selects the power-blast shot sound.
+ */
+struct SafeProjectileShot {
+    AttackResultType result {AttackResultType::Miss};
+    glm::vec3 endpoint {0.0f};
+    uint32_t delayMilliseconds {0};
+    int hand {0};
+    bool special {false};
+    uint32_t missedByMilliseconds {0};
 };
 
 class IProjectiles {
 public:
     virtual ~IProjectiles() = default;
     virtual void clear() = 0;
-    virtual ProjectileSpec *get(ProjectileAttackType attack, CreatureWieldType wield, int appearance) = 0;
+    virtual void launchLightsaberThrow(Creature &, const EffectInstance &, Game &, ServicesView &) = 0;
+    virtual void update(float, Game &, ServicesView &) = 0;
+    virtual void retireAreaRuntime() = 0;
+    // Presentation hooks remain optional for headless providers.
+    virtual uint64_t beginSpell(Object &, Object *, const glm::vec3 &, const Spell &,
+                               ProjectilePathType, Game &, ServicesView &) { return 0; }
+    virtual void releaseSpell(uint64_t, float, Game &, ServicesView &) {}
+    virtual void cancelSpell(uint64_t) {}
+    virtual bool blocksRangedParry(const Creature &) const { return false; }
+    /** The creature's thrown lightsaber now in flight is taken away. */
+    virtual void dropThrownLightsaber(const Creature &) {}
+    virtual void launchSafeProjectile(Creature &, Object &, const Item &,
+                                      const SafeProjectileShot &, Game &, ServicesView &) {}
+    virtual std::vector<SavedProjectile> savePresentations() const { return {}; }
+    virtual void restorePresentations(std::vector<SavedProjectile>, Game &, ServicesView &) {}
+    /** Discharge row of \p animation (an animations.2da index) for \p attacker. */
+    virtual std::optional<ProjectileSpec> discharge(int animation, const Creature &attacker) const = 0;
 };
+
+/**
+ * animations.2da index of the physical ranged attack animation for a combat
+ * attack type (feat) and wield type. Creature-model attackers use their own row.
+ */
+int rangedAttackAnimation(uint16_t attackType, CreatureWieldType wield, bool creatureModel);
 
 class Projectiles : public IProjectiles {
 public:
@@ -58,25 +108,41 @@ public:
 
     void init();
     void clear() override;
+    void launchLightsaberThrow(Creature &, const EffectInstance &, Game &, ServicesView &) override;
+    void update(float dt, Game &, ServicesView &) override;
+    void retireAreaRuntime() override;
+    uint64_t beginSpell(Object &, Object *, const glm::vec3 &, const Spell &,
+                        ProjectilePathType, Game &, ServicesView &) override;
+    void releaseSpell(uint64_t, float, Game &, ServicesView &) override;
+    void cancelSpell(uint64_t) override;
+    bool blocksRangedParry(const Creature &) const override;
+    void dropThrownLightsaber(const Creature &) override;
+    void launchSafeProjectile(Creature &, Object &, const Item &,
+                              const SafeProjectileShot &, Game &, ServicesView &) override;
+    std::vector<SavedProjectile> savePresentations() const override;
+    void restorePresentations(std::vector<SavedProjectile>, Game &, ServicesView &) override;
 
-    ProjectileSpec *get(ProjectileAttackType attack, CreatureWieldType wield, int appearance) override;
+    std::optional<ProjectileSpec> discharge(int animation, const Creature &attacker) const override;
 
 private:
-    void parseHumanoidWeaponDischarge(resource::TwoDA &weaponDa);
+    struct ActiveProjectile;
+    void attachPresentation(ActiveProjectile &, Game &, ServicesView &, bool restoring);
+    void startLeg(ActiveProjectile &, Game &, ServicesView &, bool restoring = false);
+    std::vector<std::shared_ptr<ActiveProjectile>> _active;
+    uint64_t _nextPresentationId {1};
+    // Successive burst projectiles set out to alternate sides.
+    bool _burstWentLeft {false};
 
-    void parseDroidWeaponDischarge(resource::TwoDA &weaponDa,
-                                   resource::TwoDA &droidDa,
-                                   resource::TwoDA &animDa);
+    // weapondischarge.2da by lower-case label; a row without shots has no spec.
+    struct Discharge {
+        bool droid {false};
+        std::optional<ProjectileSpec> spec;
+    };
+    std::unordered_map<std::string, Discharge> _discharges;
+    // droiddischarge.2da: race, then animation label, to label prefix.
+    std::unordered_map<std::string, std::unordered_map<std::string, std::string>> _droidPrefixes;
 
     resource::TwoDAs &_twoDas;
-
-    std::map<std::pair<CreatureWieldType, ProjectileAttackType>,
-             ProjectileSpec>
-        _humanoids;
-
-    std::map<std::pair<int, ProjectileAttackType>,
-             ProjectileSpec>
-        _droids;
 };
 
 } // namespace game

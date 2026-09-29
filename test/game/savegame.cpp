@@ -274,7 +274,7 @@ struct SaveFixture : Test {
         TestGameModule::configureSaveOrchestration(*game, std::move(seams));
     }
 
-    test::TmpDir root {"reone_e3g_save_orchestration"};
+    test::TmpDir root {"reone_save_coordinator_save_orchestration"};
     TestEngine engine;
     NiceMock<scene::MockSceneGraph> sceneGraph;
     StubConsole console;
@@ -426,7 +426,7 @@ TEST_F(SaveFixture, loose_passthrough_comes_only_from_the_current_source_slot) {
     std::filesystem::create_directories(source / "nested");
     test::detail::writeFile(source / "retail-extra.bin", "source-extra");
     test::detail::writeFile(source / "Screen.tga", "managed-screen");
-    test::detail::writeFile(source / ".reone-staging", "transaction-junk");
+    test::detail::writeFile(source / ".save-staging", "transaction-junk");
     test::detail::writeFile(source / "nested" / "ignored.bin", "nested");
     sourceSlot = SaveSlotDescriptor {source, source / "SAVEGAME.sav"};
 
@@ -789,6 +789,9 @@ TEST_F(SaveFixture, deferred_save_precedes_transition_snapshot_in_the_same_updat
         return result;
     };
     TestGameModule::configureSaveOrchestration(*game, std::move(seams));
+    // A standing party: a fallen one would start the death sequence.
+    player->setMaxHitPoints(10);
+    player->setCurrentHitPoints(10);
     ASSERT_EQ(SaveStatus::Accepted, game->requestAutoSave().status);
     game->scheduleModuleTransition("module_b", "");
 
@@ -830,7 +833,7 @@ namespace {
 // The load transaction is part of the shared Game lifecycle, so both games
 // must observe the same commit boundary.
 struct LoadTransactionFixture : TestWithParam<GameID> {
-    test::TmpDir root {"reone_e3g_load_transaction"};
+    test::TmpDir root {"reone_save_coordinator_load_transaction"};
     TestEngine engine;
     NiceMock<scene::MockSceneGraph> sceneGraph;
     StubConsole console;
@@ -1471,6 +1474,8 @@ TEST_P(LoadTransactionFixture, retailShapedTemplateAutosaveRestoresAPlayableFres
     auto spawned = Gff::Builder()
                        .field(Gff::Field::newCExoString("Tag", "fresh_spawn"))
                        .field(Gff::Field::newResRef(
+                           "TemplateResRef", "fresh_spawn"))
+                       .field(Gff::Field::newResRef(
                            "ScriptSpawn", "spawn_probe"))
                        .field(Gff::Field::newDword(
                            "Appearance_Type", 0))
@@ -1499,6 +1504,10 @@ TEST_P(LoadTransactionFixture, retailShapedTemplateAutosaveRestoresAPlayableFres
                          .field(Gff::Field::newList(
                              "WaypointList", {startWaypoint}))
                          .build();
+    // An instance placed from a template needs its template; an empty one is
+    // enough, the instance's own fields overlay it.
+    ON_CALL(engine.resourceModule().gffs(), get("fresh_spawn", ResType::Utc))
+        .WillByDefault(Return(Gff::Builder().build()));
 
     auto &director = engine.resourceModule().director();
     EXPECT_CALL(director, prepareGameLoad(_))

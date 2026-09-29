@@ -15,6 +15,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include "reone/game/game.h"
 #include "reone/game/script/routine/argutil.h"
 #include "reone/game/script/routine/context.h"
 #include "reone/game/script/routines.h"
@@ -57,12 +58,14 @@ static Variable SWMG_GetLateralAccelerationPerSecond(const std::vector<Variable>
 static Variable SWMG_SetSpeedBlurEffect(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Load
     auto bEnabled = getInt(args, 0);
-    auto fRatio = getFloatOrElse(args, 1, 0.75f);
 
     // Transform
 
     // Execute
-    throw RoutineNotImplementedException("SWMG_SetSpeedBlurEffect");
+    // A given ratio is set first; the blur then follows bEnabled.
+    if (args.size() > 1) ctx.game.setSpeedBlurRatio(getFloat(args, 1));
+    ctx.game.setSpeedBlur(bEnabled != 0);
+    return Variable::ofNull();
 }
 
 static Variable SWMG_GetLastEvent(const std::vector<Variable> &args, const RoutineContext &ctx) {

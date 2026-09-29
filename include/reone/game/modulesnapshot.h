@@ -23,6 +23,7 @@ class Item;
 class Object;
 class Module;
 class Area;
+class AreaOfEffect;
 class Creature;
 class Door;
 class Placeable;
@@ -80,11 +81,12 @@ public:
     uint32_t objectId(const Object &object) const;
     bool contains(const Object &object) const;
     uint32_t nextId(uint32_t retainedCursor) const;
+    uint32_t nextCharacterId(uint32_t retainedCursor) const;
 
 private:
     SerializedIdentityContext _outputIdentityContext;
     std::set<uint32_t> _used;
-    std::set<uint32_t> _reservedPartyIds;
+    std::set<uint32_t> _characterIds;
     std::map<const Object *, uint32_t> _objectIds;
 };
 
@@ -145,6 +147,8 @@ private:
         const Trigger &trigger, const ModuleObjectIdContext &ids) const;
     std::shared_ptr<resource::Gff> writeEncounter(
         const Encounter &encounter, const ModuleObjectIdContext &ids) const;
+    std::shared_ptr<resource::Gff> writeAreaOfEffect(
+        const AreaOfEffect &areaOfEffect, const ModuleObjectIdContext &ids) const;
     std::shared_ptr<resource::Gff> writeStore(
         const Store &store, const ModuleObjectIdContext &ids) const;
     std::shared_ptr<resource::Gff> writeWaypoint(
@@ -164,10 +168,6 @@ private:
         SavedActionRecord &action, const ModuleObjectIdContext &ids) const;
     void normalizeEventReferences(
         SavedEventRecord &event, const ModuleObjectIdContext &ids) const;
-    void appendRuntimeDelayedEvents(
-        std::vector<SavedEventRecord> &events,
-        const Object &owner,
-        const ModuleObjectIdContext &ids) const;
     void validate(const SavedModuleSnapshot &snapshot) const;
 };
 

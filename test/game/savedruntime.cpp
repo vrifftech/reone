@@ -253,7 +253,7 @@ TEST(SavedAction, should_preserve_retail_fields_parameter_types_and_order) {
     EXPECT_EQ(queue.actions[1].executionSupport(), SavedExecutionSupport::RepresentableButUnsupported);
 }
 
-TEST(SavedAction, should_convert_only_a_proven_supported_reone_action) {
+TEST(SavedAction, should_convert_only_a_supported_action) {
     TestEngine &engine = testEngine();
     StubConsole console;
     Game game(GameID::KotOR, "", engine.options(), engine.services(), console);
@@ -680,8 +680,9 @@ TEST(SavedAction, play_animation_rejects_malformed_parameter_shapes) {
     record.parameters[1].payload = std::numeric_limits<float>::quiet_NaN();
     EXPECT_FALSE(record.toRuntimeAction(game));
     record.parameters[1].payload = 1.0f;
+    // Any animation constant the command queues is restored.
     record.parameters[0].payload = SavedObjectReference {42};
-    EXPECT_FALSE(record.toRuntimeAction(game));
+    EXPECT_TRUE(record.toRuntimeAction(game));
     record.parameters[0].payload = SavedObjectReference {100};
     record.parameters[0].type = 1;
     EXPECT_EQ(record.executionSupport(), SavedExecutionSupport::RepresentableButUnsupported);
@@ -886,7 +887,7 @@ TEST(SavedAction, move_to_location_imports_ordinary_pending_and_active_forced_ti
     ASSERT_TRUE(active);
     EXPECT_TRUE(active->isForced());
     EXPECT_TRUE(active->forcedState().active);
-    // The retail pair is composed into an absolute deadline on restore.
+    // Compose the saved day/time pair into an absolute deadline on restore.
     EXPECT_EQ(active->forcedState().expiryMilliseconds,
               7ull * game.millisecondsPerWorldDay() + 12345ull);
     auto reexported = active->saveFacingState();
@@ -992,9 +993,8 @@ TEST(SavedAction, active_forced_move_preserves_absolute_world_time) {
 }
 
 TEST(SavedAction, forced_move_deadline_round_trips_across_a_day_boundary) {
-    // The runtime holds one absolute deadline; the retail record holds a
-    // day/time pair. Splitting on save and composing on load must be lossless
-    // even when the deadline sits on the far side of a day boundary.
+    // Split the absolute deadline into a saved day/time pair and reconstruct it
+    // without loss, including deadlines beyond a day boundary.
     for (GameID id : {GameID::KotOR, GameID::TSL}) {
         TestEngine &engine = testEngine();
         StubConsole console;
@@ -1241,7 +1241,14 @@ TEST(SavedRuntimePublication, move_to_object_waits_for_publication_and_preserves
 }
 
 TEST(SavedRuntimePublication, should_separate_parse_bind_and_idempotent_publication) {
-    TestEngine &engine = testEngine();
+    TestEngine engine;
+    engine.init();
+    // Attack and defense include the racial ability adjustments.
+    ON_CALL(engine.resourceModule().twoDas(), get("racialtypes"))
+        .WillByDefault(Return(std::shared_ptr<resource::TwoDA>(resource::TwoDA::Builder()
+            .columns({"stradjust", "dexadjust", "conadjust", "intadjust", "wisadjust", "chaadjust"})
+            .row({"0", "0", "0", "0", "0", "0"})
+            .build())));
     StubConsole console;
     Game game(GameID::KotOR, "", engine.options(), engine.services(), console);
     NiceMock<scene::MockSceneGraph> sceneGraph;
@@ -1316,7 +1323,9 @@ TEST(SavedRuntimePublication, detached_state_never_binds_through_module_graph) {
 
     ASSERT_EQ(detached->savedEffects().size(), 1u);
     EXPECT_FALSE(detached->savedEffects().front().boundCreator());
-    EXPECT_TRUE(detached->effects().empty());
+    // A saved effect is always restored; an unresolved creator stays empty.
+    ASSERT_EQ(detached->effects().size(), 1u);
+    EXPECT_FALSE(detached->effects().front().boundCreator());
     EXPECT_TRUE(detached->actions().empty());
     EXPECT_NE(game.getObjectBySavedId(77u), nullptr);
 }
@@ -1376,7 +1385,7 @@ TEST(SavedRuntimePublication, should_publish_supported_events_without_dispatchin
                      .field(Gff::Field::newList(
                          "EventQueue",
                          {event(5, 4, 100, minimalEffect()),
-                          event(11, 4, 101),
+                          event(12, 4, 101),
                           event(18, 4, 102)}))
                      .build();
     module->deserializeSavedEventQueue(
@@ -1384,7 +1393,9 @@ TEST(SavedRuntimePublication, should_publish_supported_events_without_dispatchin
     module->bindSavedEventQueue();
     module->publishSavedEventQueue();
 
-    ASSERT_EQ(module->savedEventQueue().events.size(), 3);
+    // The runtime diagnostic view contains pending records only. The parsed
+    // codec still exposes the discarded input; it no longer occupies live storage.
+    ASSERT_EQ(module->savedEventQueue().events.size(), 2);
     EXPECT_EQ(module->pendingSavedEventCount(), 2);
     EXPECT_TRUE(module->effects().empty());
 
@@ -1395,18 +1406,23 @@ TEST(SavedRuntimePublication, should_publish_supported_events_without_dispatchin
     EXPECT_EQ(module->pendingSavedEventCount(), 1);
     ASSERT_EQ(module->effects().size(), 1);
     EXPECT_EQ(module->effects().front().id, 10);
+    ASSERT_EQ(module->savedEventQueue().events.size(), 1);
     EXPECT_EQ(
-        module->savedEventQueue().events[1].executionSupport(),
+        module->savedEventQueue().events[0].executionSupport(),
         SavedExecutionSupport::RepresentableButUnsupported);
-    EXPECT_EQ(
-        module->savedEventQueue().events[2].executionSupport(),
-        SavedExecutionSupport::RetailDiscards);
+    const auto parsed = SavedEventQueue::fromGff(*queue, savedRuntimeIdentityContext());
+    ASSERT_EQ(parsed.events.size(), 3);
+    EXPECT_EQ(parsed.events[2].executionSupport(), SavedExecutionSupport::Discarded);
+    // Cancellation uses the original handle, not this compact view's offset.
+    EXPECT_FALSE(module->cancelSaveEvent(0));
+    EXPECT_TRUE(module->cancelSaveEvent(1));
+    EXPECT_TRUE(module->savedEventQueue().events.empty());
 
     EffectInstance expiring;
     expiring.subType = static_cast<uint16_t>(DurationType::Temporary);
+    expiring.expiryOrigin = EffectExpiryOrigin::LoadedAbsoluteGameTime;
     expiring.expiryDay = 4;
-    // Five real seconds after the current world time of 100. World-time
-    // milliseconds are real milliseconds, as in CWorldTimer.
+    // Five real seconds after world time 100, expressed in milliseconds.
     expiring.expiryTime = 5100;
     auto remaining = game.remainingEffectDuration(expiring);
     ASSERT_TRUE(remaining);
@@ -1563,7 +1579,7 @@ TEST(SavedEventQueue, should_preserve_K1_and_K2_records_absolute_time_payload_an
     EXPECT_TRUE(std::holds_alternative<SerializedScriptSituation>(queue.events[0].payload));
     EXPECT_TRUE(std::holds_alternative<EffectInstance>(queue.events[1].payload));
     EXPECT_TRUE(std::holds_alternative<std::monostate>(queue.events[2].payload));
-    EXPECT_EQ(queue.events[3].executionSupport(), SavedExecutionSupport::RetailDiscards);
+    EXPECT_EQ(queue.events[3].executionSupport(), SavedExecutionSupport::Discarded);
     EXPECT_FALSE(queue.events[3].shouldRestore());
     EXPECT_TRUE(std::holds_alternative<UnsupportedSavedPayload>(queue.events[4].payload));
     EXPECT_FALSE(queue.events[4].shouldRestore());

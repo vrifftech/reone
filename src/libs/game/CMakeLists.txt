@@ -21,22 +21,16 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/action.h
     ${GAME_INCLUDE_DIR}/action/attackobject.h
     ${GAME_INCLUDE_DIR}/action/barkstring.h
-    ${GAME_INCLUDE_DIR}/action/castfakespellatlocation.h
-    ${GAME_INCLUDE_DIR}/action/castfakespellatobject.h
     ${GAME_INCLUDE_DIR}/action/castspellatlocation.h
     ${GAME_INCLUDE_DIR}/action/castspellatobject.h
     ${GAME_INCLUDE_DIR}/action/closedoor.h
-    ${GAME_INCLUDE_DIR}/action/cutsceneattack.h
     ${GAME_INCLUDE_DIR}/action/docommand.h
     ${GAME_INCLUDE_DIR}/action/equipitem.h
-    ${GAME_INCLUDE_DIR}/action/equipmostdamagingmelee.h
-    ${GAME_INCLUDE_DIR}/action/equipmostdamagingranged.h
     ${GAME_INCLUDE_DIR}/action/equipmosteffectivearmor.h
     ${GAME_INCLUDE_DIR}/action/follow.h
     ${GAME_INCLUDE_DIR}/action/followleader.h
     ${GAME_INCLUDE_DIR}/action/followowner.h
     ${GAME_INCLUDE_DIR}/action/giveitem.h
-    ${GAME_INCLUDE_DIR}/action/interactobject.h
     ${GAME_INCLUDE_DIR}/action/jumptolocation.h
     ${GAME_INCLUDE_DIR}/action/jumptoobject.h
     ${GAME_INCLUDE_DIR}/action/lockobject.h
@@ -310,6 +304,7 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/savewidesnapshot.h
     ${GAME_INCLUDE_DIR}/object.h
     ${GAME_INCLUDE_DIR}/object/area.h
+    ${GAME_INCLUDE_DIR}/object/areaofeffect.h
     ${GAME_INCLUDE_DIR}/object/camera.h
     ${GAME_INCLUDE_DIR}/object/camera/animated.h
     ${GAME_INCLUDE_DIR}/object/camera/dialog.h
@@ -361,18 +356,14 @@ set(GAME_HEADERS
 
 set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/menupresentation.cpp
+    ${GAME_SOURCE_DIR}/temporarydeath.cpp
     ${GAME_SOURCE_DIR}/action.cpp
     ${GAME_SOURCE_DIR}/action/attackobject.cpp
-    ${GAME_SOURCE_DIR}/action/castfakespellatlocation.cpp
-    ${GAME_SOURCE_DIR}/action/castfakespellatobject.cpp
+    ${GAME_SOURCE_DIR}/action/castspellatlocation.cpp
     ${GAME_SOURCE_DIR}/action/castspellatobject.cpp
     ${GAME_SOURCE_DIR}/action/commands.cpp
     ${GAME_SOURCE_DIR}/action/conversation.cpp
-    ${GAME_SOURCE_DIR}/action/cutsceneattack.cpp
     ${GAME_SOURCE_DIR}/action/doors.cpp
-    ${GAME_SOURCE_DIR}/action/equipmostdamagingmelee.cpp
-    ${GAME_SOURCE_DIR}/action/equipmostdamagingranged.cpp
-    ${GAME_SOURCE_DIR}/action/interactobject.cpp
     ${GAME_SOURCE_DIR}/action/items.cpp
     ${GAME_SOURCE_DIR}/action/movement.cpp
     ${GAME_SOURCE_DIR}/action/usefeat.cpp
@@ -472,6 +463,7 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/savewidesnapshot.cpp
     ${GAME_SOURCE_DIR}/object.cpp
     ${GAME_SOURCE_DIR}/object/area.cpp
+    ${GAME_SOURCE_DIR}/object/areaofeffect.cpp
     ${GAME_SOURCE_DIR}/object/camera.cpp
     ${GAME_SOURCE_DIR}/object/camera/animated.cpp
     ${GAME_SOURCE_DIR}/object/camera/dialog.cpp
