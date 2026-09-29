@@ -30,6 +30,9 @@
 
 #include "reone/game/di/services.h"
 #include "reone/game/game.h"
+#include "reone/game/object/area.h"
+#include "reone/game/object/creature.h"
+#include "reone/game/object/placeable.h"
 #include "reone/game/script/runner.h"
 
 using namespace reone::audio;
@@ -43,6 +46,16 @@ namespace reone {
 namespace game {
 
 static constexpr float kDefaultEntryDuration = 3.0f;
+
+// Camera shots: the placed camera and same-pair angles, the animated shot
+// range, and the video effect values a shot can carry besides a row.
+static constexpr int kPlacedCameraAngle = 6;
+static constexpr int kSamePairCameraAngle = 5;
+static constexpr int kFirstCameraAnimation = 1000;
+static constexpr int kLastCameraAnimation = 1727;
+static constexpr int kNoShotVideoEffect = -1;
+static constexpr int kKeepShotVideoEffect = -2;
+static constexpr int kSecurityCameraVideoEffect = 0;
 
 static bool g_allEntriesSkippable = false;
 
@@ -80,7 +93,7 @@ bool Conversation::isCurrent(uint64_t generation) const {
 }
 
 void Conversation::start(const std::shared_ptr<Dialog> &dialog, const std::shared_ptr<Object> &owner,
-                          GlobalFade::DialogTicket admission) {
+                          GlobalFade::DialogTicket admission, const std::shared_ptr<Object> &listener) {
     if (!admission) {
         admission = _game.globalFade().admitDialog(/*replace=*/true);
     }
@@ -94,18 +107,18 @@ void Conversation::start(const std::shared_ptr<Dialog> &dialog, const std::share
         if (!isCurrent(generation)) {
             return;
         }
-        if (auto oldOwner = _owner.resolve()) {
-            oldOwner->setIsInConversation(false);
-        }
+        releaseDialogParticipants(_owner.resolve());
     }
     debug("Start " + dialog->resRef, LogChannel::Conversation);
 
     _paused = false;
     _dialog = dialog;
     _owner = owner;
+    _partner = listener;
 
     if (owner) {
-        owner->setIsInConversation(true);
+        attachDialogParticipant(owner);
+        attachDialogParticipant(listener);
     }
 
     loadConversationBackground();
@@ -113,6 +126,45 @@ void Conversation::start(const std::shared_ptr<Dialog> &dialog, const std::share
     onStart();
     if (isCurrent(generation)) {
         loadStartEntry();
+    }
+}
+
+bool Conversation::attachDialogParticipant(const std::shared_ptr<Object> &object) {
+    const auto dialogOwner = _owner.resolve();
+    if (!object || !dialogOwner) return false;
+    const auto previous = object->dialogOwner();
+    // Do not take a speaker away from a dialog that still owns it.
+    if (previous && previous != dialogOwner && previous->dialogOwner() == previous) return false;
+    object->setDialogOwner(dialogOwner);
+    object->setIsInConversation(true);
+    const auto found = std::find_if(_dialogParticipants.begin(), _dialogParticipants.end(),
+        [&](const auto &ref) { return ref.resolve() == object; });
+    if (found == _dialogParticipants.end()) _dialogParticipants.emplace_back(object);
+    return true;
+}
+
+void Conversation::releaseDialogParticipants(const std::shared_ptr<Object> &dialogOwner) {
+    auto participants = std::move(_dialogParticipants);
+    _dialogParticipants.clear();
+    for (const auto &reference : participants) {
+        if (const auto object = reference.resolve(); object && object->dialogOwner() == dialogOwner) {
+            object->setDialogOwner(nullptr);
+            object->setIsInConversation(false);
+        }
+    }
+}
+
+void Conversation::runAreaEndDialogScripts(const std::shared_ptr<Object> &dialogOwner) {
+    auto *area = dialogOwner ? dialogOwner->spatialArea() : nullptr;
+    if (!area) return;
+    // RunEndConversationScript(owner, 0) visits the area's creature/placeable
+    // handlers, not only the speaker. Snapshot handles across script mutation.
+    std::vector<RuntimeObjectRef<Object>> objects;
+    for (const auto &object : area->objects()) objects.emplace_back(object);
+    for (const auto &reference : objects) {
+        const auto object = reference.resolve();
+        if (auto creature = std::dynamic_pointer_cast<Creature>(object)) creature->runEndDialogScript();
+        else if (auto placeable = std::dynamic_pointer_cast<Placeable>(object)) placeable->runEndDialogScript();
     }
 }
 
@@ -245,6 +297,8 @@ void Conversation::finish() {
     auto ownerRef = _owner;
     _game.globalFade().finishDialog(_fadeDialog);
     _fadeDialog.reset();
+    // A conversation ending takes the video effect away.
+    _game.disableVideoEffect();
     _paused = false;
     _entryEnded = true;
     onFinish();
@@ -258,19 +312,18 @@ void Conversation::finish() {
     if (_game.currentScreen() == Game::Screen::Conversation) {
         _game.openInGame();
     }
+    // A conversation a companion handed on returns control to it.
+    _game.finishPostDialogCharacterSwitch();
 
     // Run EndConversation script
     if (auto owner = ownerRef.resolve()) {
         if (!dialog->endScript.empty()) {
             _game.scriptRunner().run(dialog->endScript, owner->id());
         }
+        runAreaEndDialogScripts(owner);
     }
 
-    if (_generation == generation) {
-        if (auto owner = ownerRef.resolve()) {
-            owner->setIsInConversation(false);
-        }
-    }
+    if (_generation == generation) releaseDialogParticipants(ownerRef.resolve());
 }
 
 void Conversation::onFinish() {
@@ -280,6 +333,7 @@ void Conversation::cleanupForModuleTransition() {
     auto generation = ++_generation;
     _game.globalFade().finishDialog(_fadeDialog);
     _fadeDialog.reset();
+    _game.disableVideoEffect();
     _paused = false;
     _entryEnded = true;
     if (!_dialog) {
@@ -291,11 +345,7 @@ void Conversation::cleanupForModuleTransition() {
     }
     _lipAnimation.reset();
     onFinish();
-    if (_generation == generation) {
-        if (auto owner = _owner.resolve()) {
-            owner->setIsInConversation(false);
-        }
-    }
+    if (_generation == generation) releaseDialogParticipants(_owner.resolve());
 }
 
 void Conversation::loadEntry(int index, bool start) {
@@ -303,6 +353,10 @@ void Conversation::loadEntry(int index, bool start) {
     auto dialog = _dialog; // retain nodes across callbacks, including conditions
     debug("Load entry " + std::to_string(index), LogChannel::Conversation);
     _currentEntry = &_dialog->getEntry(index);
+    if (!_currentEntry->speaker.empty()) {
+        if (auto owner = _owner.resolve(); owner && owner->spatialArea())
+            attachDialogParticipant(owner->spatialArea()->getObjectByTag(_currentEntry->speaker));
+    }
 
     applyStatusSummaryEntries(*_currentEntry);
 
@@ -337,6 +391,7 @@ void Conversation::loadEntry(int index, bool start) {
         pickReply(0);
         return;
     }
+    if (!oneLiner) logEntryLine(entryText);
 
     scheduleEndOfEntry();
     onLoadEntry();
@@ -360,6 +415,8 @@ void Conversation::loadEntry(int index, bool start) {
         return;
     }
 
+    applyShotVideoEffect();
+
     if (_autoSkip) {
         if (std::optional<bool> skip = _autoSkip->trySkipEntry()) {
             if (skip.value() && !_paused) {
@@ -370,6 +427,53 @@ void Conversation::loadEntry(int index, bool start) {
 }
 
 void Conversation::onLoadEntry() {
+}
+
+// The shown entry's camera shot sets the video effect.
+//  - A computer conversation takes it only from a placed camera (angle 6),
+//    where no effect of its own means the security camera look (row 0).
+//    KotOR leaves the effect as it is for -2.
+//  - A cinematic conversation leaves it as it is for an animated shot and
+//    for a shot that keeps the previous pair (angle 5). Otherwise TSL shows
+//    the entry's effect or, without one, takes the effect away unless a
+//    script holds it; KotOR shows the entry's effect on a placed camera and
+//    takes the effect away on any other shot.
+void Conversation::applyShotVideoEffect() {
+    const Dialog::EntryReply &entry = *_currentEntry;
+    const int effect = entry.camVidEffect;
+    const bool none = effect == kNoShotVideoEffect || effect == kKeepShotVideoEffect;
+    const bool placed = entry.cameraAngle == kPlacedCameraAngle;
+    const bool tsl = _game.isTSL();
+    if (_dialog->conversationType == ConversationType::Computer) {
+        if (!placed) return;
+        if (effect == kNoShotVideoEffect) {
+            _game.enableVideoEffect(kSecurityCameraVideoEffect);
+        } else if (tsl || effect != kKeepShotVideoEffect) {
+            _game.enableVideoEffect(effect);
+        }
+        return;
+    }
+    if (isAnimatedCameraShot() || keepsPreviousSpeakerPair()) return;
+    if (tsl) {
+        if (!none) {
+            _game.enableVideoEffect(effect);
+        } else if (!_game.isVideoEffectHeldByScript()) {
+            _game.disableVideoEffect();
+        }
+    } else if (!placed) {
+        _game.disableVideoEffect();
+    } else if (!none) {
+        _game.enableVideoEffect(effect);
+    }
+}
+
+bool Conversation::isAnimatedCameraShot() const {
+    const int animation = _currentEntry->cameraAnimation;
+    return !_dialog->cameraModel.empty() && animation >= kFirstCameraAnimation && animation <= kLastCameraAnimation;
+}
+
+bool Conversation::keepsPreviousSpeakerPair() const {
+    return _currentEntry->cameraAngle == kSamePairCameraAngle;
 }
 
 void Conversation::loadVoiceOver() {
@@ -402,15 +506,11 @@ void Conversation::loadVoiceOver() {
     }
 }
 
-static std::string getCameraAnimationName(int ordinal) {
-    return str(boost::format("cut%03dw") % (ordinal - 1200 + 1));
-}
-
 void Conversation::scheduleEndOfEntry() {
     float duration = kDefaultEntryDuration;
 
     if (_cameraModel && (_currentEntry->waitFlags & Dialog::WaitFlags::waitAnimFinish)) {
-        std::string animName(getCameraAnimationName(_currentEntry->cameraAnimation));
+        std::string animName(AnimatedCamera::getShotClipName(_currentEntry->cameraAnimation));
         std::shared_ptr<Animation> animation(_cameraModel->getAnimation(animName));
         if (animation) {
             duration = animation->length();
@@ -424,6 +524,17 @@ void Conversation::scheduleEndOfEntry() {
     _entryEnded = false;
     _entryDuration = duration;
     _endEntryTimer.reset(duration);
+}
+
+// A reply as listed and logged: its tokens resolved and, in TSL, its leading
+// and trailing spaces trimmed.
+static std::string getParsedReplyText(const Dialog::EntryReply &reply, const Game &game) {
+    std::string text(game.substituteCustomTokens(reply.text));
+    if (game.isTSL()) {
+        text.erase(0, text.find_first_not_of(' '));
+        text.erase(text.find_last_not_of(' ') + 1);
+    }
+    return text;
 }
 
 void Conversation::loadReplies() {
@@ -440,20 +551,31 @@ void Conversation::loadReplies() {
         }
     }
 
-    // If there is only one empty reply, pick it automatically when the current entry ends
-    _autoPickFirstReply = _replies.size() == 1ll && _replies.front()->text.empty();
+    // A sole reply whose text resolves to nothing is taken when the entry ends.
+    _autoPickFirstReply = _replies.size() == 1ll && getParsedReplyText(*_replies.front(), _game).empty();
 
     refreshReplies();
 }
 
+// A reply as listed: numbered by its place among the replies, or, in KotOR,
+// "-" from the tenth on. A reply whose text resolves to nothing is not listed
+// and gets an empty line, which keeps the numbers of the others.
 static std::string getReplyText(const Dialog::EntryReply &reply, int index, const Game &game) {
-    return str(boost::format("%d. %s") % (index + 1) % (reply.text.empty() ? "[empty]" : game.substituteCustomTokens(reply.text)));
+    static constexpr int kLastNumberedK1Reply = 8;
+    std::string text(getParsedReplyText(reply, game));
+    if (text.empty()) return text;
+    if (!game.isTSL() && index > kLastNumberedK1Reply) return "-. " + text;
+    return str(boost::format("%d. %s") % (index + 1) % text);
 }
 
 void Conversation::refreshReplies() {
+    // TSL lists up to 30 replies, KotOR up to 20.
+    static constexpr size_t kMaxListedRepliesTSL = 30;
+    static constexpr size_t kMaxListedRepliesK1 = 20;
     std::vector<std::string> lines;
     if (!_autoPickFirstReply) {
-        for (size_t i = 0; i < _replies.size(); ++i) {
+        const size_t listed = std::min(_replies.size(), _game.isTSL() ? kMaxListedRepliesTSL : kMaxListedRepliesK1);
+        for (size_t i = 0; i < listed; ++i) {
             lines.push_back(getReplyText(*_replies[i], static_cast<int>(i), _game));
         }
     }
@@ -464,6 +586,11 @@ void Conversation::pickReply(int index) {
     auto generation = _generation;
     debug("Pick reply " + std::to_string(index), LogChannel::Conversation);
     const Dialog::EntryReply &reply = *_replies[index];
+
+    // The chosen reply goes to the dialog list under the party leader's name.
+    if (auto leader = _game.party().getLeader()) {
+        _game.messageLog().addDialog(leader->name(), getParsedReplyText(reply, _game));
+    }
 
     applyStatusSummaryEntries(reply);
 
@@ -516,6 +643,18 @@ bool Conversation::handleMouseButtonDown(const input::MouseButtonEvent &event) {
 
 bool Conversation::isSkippableEntry() const {
     return g_allEntriesSkippable || (_dialog->isSkippable() && !_paused);
+}
+
+// An entry shown in the conversation goes to the dialog list under its
+// speaker's name: the object its speaker tag names, or else the owner.
+void Conversation::logEntryLine(const std::string &text) {
+    auto owner = _owner.resolve();
+    std::shared_ptr<Object> speaker;
+    if (!_currentEntry->speaker.empty() && owner && owner->spatialArea()) {
+        speaker = owner->spatialArea()->getObjectByTag(_currentEntry->speaker);
+    }
+    if (!speaker) speaker = owner;
+    if (speaker) _game.messageLog().addDialog(speaker->name(), text);
 }
 
 bool Conversation::isNonPresentationalEntry() const {
@@ -601,8 +740,7 @@ void Conversation::update(float dt) {
 }
 
 CameraType Conversation::getCamera(int &cameraId) const {
-    std::string cameraModel(_dialog->cameraModel);
-    if (!cameraModel.empty()) {
+    if (isAnimatedCameraShot()) {
         return CameraType::Animated;
     }
     if (_currentEntry->cameraId != 0) {
@@ -610,6 +748,22 @@ CameraType Conversation::getCamera(int &cameraId) const {
         return CameraType::Static;
     }
     return CameraType::Dialog;
+}
+
+void Conversation::stopParticipant(const Object &object) {
+    const auto dialogOwner = _owner.resolve();
+    if (!_dialog || _entryEnded || !dialogOwner || object.dialogOwner() != dialogOwner) return;
+    if (&object == dialogOwner.get()) {
+        finish();
+        return;
+    }
+    auto found = std::find_if(_dialogParticipants.begin(), _dialogParticipants.end(),
+        [&](const auto &ref) { return ref.resolve().get() == &object; });
+    if (found == _dialogParticipants.end()) return;
+    const auto participant = found->resolve();
+    _dialogParticipants.erase(found);
+    participant->setDialogOwner(nullptr);
+    participant->setIsInConversation(false);
 }
 
 void Conversation::pause() {

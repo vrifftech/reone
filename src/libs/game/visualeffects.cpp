@@ -22,52 +22,64 @@
 #include "reone/resource/provider/models.h"
 #include "reone/system/logutil.h"
 
+#include <boost/algorithm/string/predicate.hpp>
+
 using namespace reone::resource;
 
 namespace reone {
 
 namespace game {
 
-// Effects are identified by string labels in the .2da, but used as integers
-// in scripts. It appears that they are only mapped in nwscript.nss, so we
-// have to hardcode them.
-static std::unordered_map<std::string, uint32_t> workaroundLabels() {
-    std::unordered_map<std::string, uint32_t> labels;
-
-    labels["VFX_FNF_GRENADE_FRAGMENTATION"] = 3003;
-    labels["VFX_FNF_GRENADE_STUN"] = 3004;
-    labels["VFX_FNF_GRENADE_THERMAL_DETONATOR"] = 3005;
-    labels["VFX_FNF_GRENADE_POISON"] = 3006;
-    labels["VFX_FNF_GRENADE_SONIC"] = 3007;
-    labels["VFX_FNF_GRENADE_ADHESIVE"] = 3008;
-    labels["VFX_FNF_GRENADE_CRYOBAN"] = 3009;
-    labels["VFX_FNF_GRENADE_PLASMA"] = 3010;
-    labels["VFX_FNF_GRENADE_ION"] = 3011;
-
-    return labels;
-}
-
 static void parseEffects(const resource::TwoDA &twoDa,
                          resource::Models &models,
                          resource::AudioClips &audioClips,
                          std::map<uint32_t, VisualEffectDesc> &effects) {
-    std::unordered_map<std::string, uint32_t> labels = workaroundLabels();
-
     for (int row = 0; row < twoDa.getRowCount(); ++row) {
         VisualEffectDesc desc;
         desc.label = twoDa.getString(row, "label");
-        desc.impRootMNode = models.get(twoDa.getString(row, "imp_root_m_node"));
+        const std::string rootHuge = twoDa.getString(row, "imp_root_h_node");
+        const std::string rootLarge = twoDa.getString(row, "imp_root_l_node");
+        const std::string rootMedium = twoDa.getString(row, "imp_root_m_node");
+        desc.rootHugeModel = models.get(rootHuge);
+        desc.rootLargeModel = models.get(rootLarge);
+        desc.rootMediumModel = models.get(rootMedium);
+        desc.impactModel = models.get(twoDa.getString(row, "imp_impact_node"));
+        desc.headModel = models.get(twoDa.getString(row, "imp_headcon_node"));
+        desc.orientationOff = twoDa.getInt(row, "orientationoff", 0) != 0;
+        for (const char *column : {"imp_headcon_node", "imp_impact_node", "imp_root_m_node",
+                                   "imp_root_s_node", "imp_root_l_node", "imp_root_h_node"}) {
+            const std::string model = twoDa.getString(row, column);
+            if (model.empty()) continue;
+            desc.locationModel = models.get(model);
+            break;
+        }
         desc.soundImpact = audioClips.get(twoDa.getString(row, "soundimpact"));
-        effects.insert({labels[desc.label], desc});
+        // A row with a root model runs no programs.
+        const bool rooted = !rootHuge.empty() || !rootLarge.empty() || !rootMedium.empty();
+        desc.progFXImpact = rooted ? -1 : twoDa.getInt(row, "progfx_impact", -1);
+        desc.progFXDuration = rooted ? -1 : twoDa.getInt(row, "progfx_duration", -1);
+        desc.fireAndForget = boost::iequals(twoDa.getString(row, "type_fd"), "F");
+        desc.soundDuration = audioClips.get(twoDa.getString(row, "soundduration"));
+        // No cessation sound is ever played: the table names its column
+        // soundcessastion, so a lookup of SoundCessation finds nothing.
+        effects.emplace(static_cast<uint32_t>(std::stoul(twoDa.rows().at(row).label)), std::move(desc));
     }
 }
 
 void VisualEffects::init() {
+    // A blank cell names no visual effect.
+    if (auto hitVisuals = _twoDas.get("damagehitvisual")) {
+        for (int slot = 0; slot < kDamageSlotCount; ++slot) {
+            _hitVisuals[slot] = {hitVisuals->getInt(slot, "visualeffect", 0), hitVisuals->getInt(slot, "rangedeffect", 0)};
+        }
+    }
+
     std::shared_ptr<TwoDA> effectsDa(_twoDas.get("visualeffects"));
     if (!effectsDa) {
         return;
     }
 
+    _effects.clear();
     parseEffects(*effectsDa, _models, _audioClips, _effects);
 }
 
@@ -79,6 +91,12 @@ std::optional<const VisualEffectDesc *> VisualEffects::get(uint32_t id) const {
     return &it->second;
 }
 
+
+int VisualEffects::hitVisual(int damageSlot, bool ranged) const {
+    return _hitVisuals[damageSlot][ranged ? 1 : 0];
+}
+
+void VisualEffects::clear() { _effects.clear(); }
 } // namespace game
 
 } // namespace reone

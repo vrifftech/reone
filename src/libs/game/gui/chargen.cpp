@@ -43,6 +43,11 @@ namespace reone {
 
 namespace game {
 
+static constexpr int kAttributesTutorial = 16;
+static constexpr int kSkillsTutorial = 17;
+static constexpr int kPowersTutorial = 19;
+static constexpr uint8_t kNewCharacterGoodEvil = 50;
+
 static constexpr float kModelScale = 1.1f;
 
 CharacterGeneration::CharacterGeneration(Game &game, ServicesView &services) :
@@ -299,12 +304,14 @@ void CharacterGeneration::openAbilities() {
     _abilities->reset(_type != Type::LevelUp);
     _controls.MODEL_LBL->setVisible(false);
     changeScreen(CharGenScreen::Abilities);
+    _game.requestTutorialWindow(kAttributesTutorial);
 }
 
 void CharacterGeneration::openSkills() {
     _charGenSkills->reset(_type != Type::LevelUp);
     _controls.MODEL_LBL->setVisible(false);
     changeScreen(CharGenScreen::Skills);
+    _game.requestTutorialWindow(kSkillsTutorial);
 }
 
 void CharacterGeneration::openFeats() {
@@ -317,6 +324,8 @@ void CharacterGeneration::openPowers() {
     _charGenPowers->reset();
     _controls.MODEL_LBL->setVisible(false);
     changeScreen(CharGenScreen::Powers);
+    // TSL asks only when powers are granted, which is not presented yet.
+    if (!_game.isTSL()) _game.requestTutorialWindow(kPowersTutorial);
 }
 
 void CharacterGeneration::openNameEntry() {
@@ -342,11 +351,8 @@ void CharacterGeneration::finish() {
     if (_type == Type::LevelUp) {
         ClassType classType = _character.attributes.getEffectiveClass();
         std::shared_ptr<CreatureClass> clazz(_services.game.classes.get(classType));
-        _character.attributes.addClassLevels(clazz.get(), 1);
         std::shared_ptr<Creature> partyLeader(_game.party().getLeader());
-        partyLeader->attributes() = _character.attributes;
-        partyLeader->setMaxHitPoints(
-            partyLeader->hitPoints() + clazz->hitdie());
+        partyLeader->applyLevelUp(std::move(_character.attributes), *clazz);
         _game.openInGame();
     } else {
         // Character preview objects belong to the pre-playable character-
@@ -360,12 +366,18 @@ void CharacterGeneration::finish() {
             [&]() {
                 player = _game.newCreature();
                 player->setTag(kObjectTagPlayer);
-                player->setName(_character.name);
+                player->setPlayerCreated(true);
+                // The entered name is the first name.
+                player->setFirstAndLastName(
+                    resource::LocString(-1, _character.name, _services.resource.strings), resource::LocString());
                 player->setGender(_character.gender);
                 player->setAppearance(_character.appearance);
                 player->loadAppearance();
-                player->setFaction(Faction::Friendly1);
-                player->setImmortal(true);
+                player->setFaction(Faction::Player);
+                // A new character is human and starts balanced between the
+                // light and dark sides.
+                player->setRacialType(RacialType::Human);
+                player->setGoodEvil(kNewCharacterGoodEvil);
                 player->attributes() = _character.attributes;
                 player->initializeGeneratedVitality();
 
@@ -373,10 +385,12 @@ void CharacterGeneration::finish() {
                 player->setOnSpawn("k_hen_spawn01");
                 player->setOnNotice("k_hen_percept01");
                 player->setOnEndRound("k_hen_combend01");
+                player->setOnSpellAt("k_def_spellat01");
                 player->setOnAttacked("k_hen_attacked01");
-                player->setOnDamaged("k_hen_damage01");
-                player->setOnBlocked("k_hen_blocked01");
+                player->setOnDamaged("k_def_damage01");
+                player->setOnBlocked("k_def_blocked01");
                 player->setOnDialogue("k_hen_dialogue01");
+                player->setOnUserDefined("k_def_userdef01");
             },
             []() noexcept {});
 
@@ -450,8 +464,18 @@ void CharacterGeneration::updateAttributes() {
     std::shared_ptr<CreatureClass> clazz(_services.game.classes.get(_character.attributes.getEffectiveClass()));
     _controls.LBL_CLASS->setTextMessage(clazz->name());
 
-    int vitality = _character.attributes.getPermanentMaxHitPoints(
-        _character.attributes.getAggregateHitDie());
+    const auto &classLevels = _character.attributes.classLevels();
+    int vitality = _character.attributes.getLevelHistoryMaxHitPoints(
+        [&classLevels](int level) {
+            // Each class level records that class's hit die.
+            for (const auto &[levelClass, count] : classLevels) {
+                if (level < count) return levelClass->hitdie();
+                level -= count;
+            }
+            return 0;
+        },
+        _character.attributes.getAbilityModifier(Ability::Constitution),
+        [this](FeatType feat) { return _character.attributes.hasFeat(feat); });
     _controls.LBL_VIT->setTextMessage(std::to_string(vitality));
 
     int defense = _character.attributes.getDefense();

@@ -51,6 +51,7 @@ public:
     void addDamage(const Object &object, int amount, int adjustedAmount, uint32_t damager);
     void addHeal(const Object &object, int amount);
     void addMiss(const Creature &attacker, const Object &target);
+    void addExperience(const Object &object, int amount);
 
     void update(float dt);
     void render();
@@ -61,6 +62,7 @@ private:
         Damage,
         Heal,
         Miss,
+        Experience,
     };
 
     struct Entry {

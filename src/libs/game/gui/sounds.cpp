@@ -36,6 +36,17 @@ void GUISounds::init() {
     loadSound(*sounds, "Clicked_Default", _onClick);
     loadSound(*sounds, "Entered_Default", _onEnter);
     loadSound(*sounds, "Level_Up_Notify", _onLevelUpNotify);
+    // Rows 10 and 11: an item chosen for, or cleared from, an equipment slot.
+    loadSound(*sounds, "Inventory_Select", _inventorySelect);
+    loadSound(*sounds, "Inventory_Drop", _inventoryDrop);
+    // PlayGuiSound uses the indexed table: row 2 is rejection, row 6 is action.
+    if (sounds->getRowCount() > 2)
+        _actionUnavailable = _audioClips.get(sounds->getString(2, "soundresref"));
+    if (sounds->getRowCount() > 6)
+        _actionAccepted = _audioClips.get(sounds->getString(6, "soundresref"));
+    // Row 3 is the toggle-button click.
+    if (sounds->getRowCount() > 3)
+        _checkboxCheck = _audioClips.get(sounds->getString(3, "soundresref"));
 }
 
 void GUISounds::loadSound(const TwoDA &twoDa, const std::string &label, std::shared_ptr<AudioClip> &sound) {
@@ -49,6 +60,11 @@ void GUISounds::deinit() {
     _onClick.reset();
     _onEnter.reset();
     _onLevelUpNotify.reset();
+    _actionAccepted.reset();
+    _actionUnavailable.reset();
+    _checkboxCheck.reset();
+    _inventorySelect.reset();
+    _inventoryDrop.reset();
 }
 
 } // namespace game

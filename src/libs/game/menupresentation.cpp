@@ -10,6 +10,7 @@
 #include "reone/game/menupresentation.h"
 
 #include <array>
+#include <cstdlib>
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -32,6 +33,23 @@ std::optional<size_t> menuKey(const std::string &line) {
         if (key == keys[i]) return i;
     }
     return std::nullopt;
+}
+const std::string autoPauseSection {"[Autopause Options]"};
+const std::array<std::string, 6> autoPauseKeys {
+    "End Of Combat Round", "Enemy Sighted", "Mine Sighted",
+    "Party Killed", "Action Menu", "New Target Selected"};
+
+// Write the whole configuration through a sibling file so a failed write never
+// truncates the live configuration.
+void replaceConfiguration(const std::filesystem::path &path, const std::string &content,
+                          const char *suffix, const std::string &purpose) {
+    auto temporary = path;
+    temporary += suffix;
+    std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+    file << content;
+    file.close();
+    if (!file) throw std::runtime_error("Cannot write " + purpose + " configuration: " + temporary.string());
+    std::filesystem::rename(temporary, path);
 }
 } // namespace
 
@@ -85,12 +103,141 @@ void MenuPresentation::save(const std::filesystem::path &path) const {
     }
     // Windows cannot replace the configuration while our read handle is open.
     if (input.is_open()) input.close();
-    auto temporary = path;
-    temporary += ".menu.tmp";
-    std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
-    file << output.str();
-    file.close();
-    if (!file) throw std::runtime_error("Cannot write menu configuration: " + temporary.string());
-    std::filesystem::rename(temporary, path);
+    replaceConfiguration(path, output.str(), ".menu.tmp", "menu");
+}
+
+namespace {
+
+const std::string gameOptionsSection {"[Game Options]"};
+const std::array<std::pair<const char *, uint16_t>, 9> feedbackKeys {{
+    {"Hide Unequippable", feedbackoption::kHideUnequippable},
+    {"Tutorial Popups", feedbackoption::kTutorialPopups},
+    {"Subtitles", feedbackoption::kSubtitles},
+    {"Mini Map", feedbackoption::kMiniMap},
+    {"Floating Numbers", feedbackoption::kFloatingNumbers},
+    {"Status Summary", feedbackoption::kStatusSummary},
+    {"Use Small Fonts", feedbackoption::kSmallFonts},
+    {"Hide InGame GUI", feedbackoption::kHideInGameGui},
+    {"Enable Tooltips", feedbackoption::kTooltips},
+}};
+
+std::optional<uint16_t> feedbackBit(const std::string &line) {
+    if (line.find('=') == std::string::npos) return std::nullopt;
+    auto key = trim(line.substr(0, line.find('=')));
+    for (const auto &[name, bit] : feedbackKeys) {
+        if (key == name) return bit;
+    }
+    return std::nullopt;
+}
+
+} // namespace
+
+uint16_t loadFeedbackOptions(const std::filesystem::path &path, uint16_t options) {
+    std::ifstream input(path);
+    bool inSection = false;
+    for (std::string line; std::getline(input, line);) {
+        auto trimmed = trim(line);
+        if (trimmed.rfind("[", 0) == 0) {
+            inSection = trimmed == gameOptionsSection;
+            continue;
+        }
+        if (!inSection) continue;
+        if (auto bit = feedbackBit(line)) {
+            // Only the lowest bit of the number counts.
+            const bool on = (std::atoi(line.substr(line.find('=') + 1).c_str()) & 1) != 0;
+            options = static_cast<uint16_t>(on ? (options | *bit) : (options & ~*bit));
+        }
+    }
+    return options;
+}
+
+void saveFeedbackOptions(const std::filesystem::path &path, uint16_t options) {
+    if (path.empty()) return;
+    std::ifstream input(path, std::ios::binary);
+    if (!input && std::filesystem::exists(path)) {
+        throw std::runtime_error("Cannot read feedback configuration: " + path.string());
+    }
+    auto writeKeys = [options](std::ostringstream &output) {
+        for (const auto &[name, bit] : feedbackKeys) output << name << '=' << ((options & bit) ? 1 : 0) << '\n';
+    };
+    // The keys are rewritten at the end of the Game Options section; every
+    // other line, in that section and elsewhere, is kept.
+    std::ostringstream output;
+    bool inSection = false;
+    bool written = false;
+    for (std::string line; std::getline(input, line);) {
+        auto trimmed = trim(line);
+        if (trimmed.rfind("[", 0) == 0) {
+            if (inSection && !written) {
+                writeKeys(output);
+                written = true;
+            }
+            inSection = trimmed == gameOptionsSection;
+        } else if (inSection && feedbackBit(line)) {
+            continue;
+        }
+        output << line << '\n';
+    }
+    if (!written) {
+        if (!inSection) output << gameOptionsSection << '\n';
+        writeKeys(output);
+    }
+    if (input.is_open()) input.close();
+    replaceConfiguration(path, output.str(), ".feedback.tmp", "feedback");
+}
+
+AutoPauseOptions AutoPauseOptions::defaults(bool tsl) {
+    AutoPauseOptions result;
+    result.mineSighted = !tsl;
+    return result;
+}
+
+AutoPauseOptions AutoPauseOptions::load(const std::filesystem::path &path, bool tsl) {
+    auto result = defaults(tsl);
+    std::array<bool *, 6> values {
+        &result.endOfCombatRound, &result.enemySighted, &result.mineSighted,
+        &result.partyKilled, &result.actionMenu, &result.newTargetSelected};
+    std::ifstream input(path);
+    bool inSection = false;
+    for (std::string line; std::getline(input, line);) {
+        auto trimmed = trim(line);
+        if (trimmed.rfind("[", 0) == 0) {
+            inSection = trimmed == autoPauseSection;
+            continue;
+        }
+        if (!inSection || line.find('=') == std::string::npos) continue;
+        auto key = trim(line.substr(0, line.find('=')));
+        for (size_t i = 0; i < autoPauseKeys.size(); ++i) {
+            if (key != autoPauseKeys[i]) continue;
+            std::istringstream value(line.substr(line.find('=') + 1));
+            int number;
+            if (value >> number) *values[i] = number != 0;
+        }
+    }
+    return result;
+}
+
+void AutoPauseOptions::save(const std::filesystem::path &path) const {
+    if (path.empty()) return;
+    std::ifstream input(path, std::ios::binary);
+    if (!input && std::filesystem::exists(path)) {
+        throw std::runtime_error("Cannot read autopause configuration: " + path.string());
+    }
+    const std::array<bool, 6> values {
+        endOfCombatRound, enemySighted, mineSighted, partyKilled, actionMenu, newTargetSelected};
+    // Retain every other section and top-level line; this section is rewritten last.
+    std::ostringstream output;
+    bool inSection = false;
+    for (std::string line; std::getline(input, line);) {
+        auto trimmed = trim(line);
+        if (trimmed.rfind("[", 0) == 0) inSection = trimmed == autoPauseSection;
+        if (inSection) continue;
+        output << line << '\n';
+    }
+    output << autoPauseSection << '\n';
+    for (size_t i = 0; i < autoPauseKeys.size(); ++i)
+        output << autoPauseKeys[i] << '=' << (values[i] ? 1 : 0) << '\n';
+    if (input.is_open()) input.close();
+    replaceConfiguration(path, output.str(), ".autopause.tmp", "autopause");
 }
 } // namespace reone::game

@@ -17,15 +17,24 @@
 
 #include "reone/game/gui/ingame/character.h"
 
+#include <array>
+
 #include "reone/game/d20/classes.h"
 #include "reone/game/di/services.h"
 #include "reone/game/game.h"
 #include "reone/game/gui/ingame.h"
+#include "reone/game/object/creature.h"
 #include "reone/game/party.h"
 #include "reone/game/types.h"
 #include "reone/graphics/di/services.h"
+#include "reone/gui/guis.h"
 #include "reone/gui/sceneinitializer.h"
+#include "reone/resource/2da.h"
+#include "reone/resource/di/services.h"
+#include "reone/resource/exception/notfound.h"
+#include "reone/resource/provider/2das.h"
 #include "reone/resource/provider/models.h"
+#include "reone/resource/strings.h"
 #include "reone/scene/di/services.h"
 #include "reone/scene/graphs.h"
 
@@ -39,6 +48,8 @@ using namespace reone::scene;
 namespace reone {
 
 namespace game {
+
+static constexpr int kScriptSelectTutorial = 10;
 
 void CharacterMenu::onGUILoaded() {
     loadBackground(BackgroundType::Menu);
@@ -104,8 +115,22 @@ void CharacterMenu::onGUILoaded() {
         }
 
         _controls.LBL_MORE->setVisible(false);
-        _controls.BTN_SCRIPTS->setDisabled(true);
+        _controls.BTN_SCRIPTS->setOnClick([this]() {
+            openScriptSelectPanel();
+        });
+        loadScriptSelectPanel();
     }
+}
+
+bool CharacterMenu::handle(const input::Event &event) {
+    if (!_scriptSelectOpen) return GameGUI::handle(event);
+    // The panel is modal; Escape leaves it the same way as Back.
+    if (event.type == input::EventType::KeyDown && event.key.code == input::KeyCode::Escape) {
+        closeScriptSelectPanel();
+        return true;
+    }
+    _scriptSelectGUI->handle(event);
+    return true;
 }
 
 void CharacterMenu::update(float dt) {
@@ -113,6 +138,105 @@ void CharacterMenu::update(float dt) {
     _controls.BTN_LEVELUP->setVisible(leader->isLevelUpPending());
     _controls.BTN_AUTO->setVisible(leader->isLevelUpPending());
     GameGUI::update(dt);
+    if (_scriptSelectOpen) {
+        _scriptSelectGUI->update(dt);
+        // A row describes itself when it gains focus.
+        const int row = _scriptSelectControls.LST_AIState->selectedItemIndex();
+        if (row >= 0 && row != _scriptDescribedRow) showScriptDescription(row);
+    }
+}
+
+void CharacterMenu::render() {
+    GameGUI::render();
+    if (_scriptSelectOpen) _scriptSelectGUI->render();
+}
+
+void CharacterMenu::clearSelection() {
+    if (_scriptSelectOpen) closeScriptSelectPanel();
+    GameGUI::clearSelection();
+}
+
+void CharacterMenu::loadScriptSelectPanel() {
+    _scriptSelectGUI = _services.gui.guis.get(guiResRef("scriptselect"), [this](IGUI &gui) { preload(gui); });
+    if (!_scriptSelectGUI) {
+        throw ResourceNotFoundException("GUI not found: " + guiResRef("scriptselect"));
+    }
+    auto find = [this](const std::string &tag) { return _scriptSelectGUI->findControl(tag); };
+    auto &controls = _scriptSelectControls;
+    controls.BTN_Accept = std::static_pointer_cast<Button>(find("BTN_Accept"));
+    controls.BTN_Back = std::static_pointer_cast<Button>(find("BTN_Back"));
+    controls.LBL_TITLE = std::static_pointer_cast<Label>(find("LBL_TITLE"));
+    controls.LB_DESC = std::static_pointer_cast<ListBox>(find("LB_DESC"));
+    controls.LST_AIState = std::static_pointer_cast<ListBox>(find("LST_AIState"));
+
+    // One row per aiscripts row, named by its string, in table order.
+    _scriptRows.clear();
+    auto &list = *controls.LST_AIState;
+    list.clearItems();
+    if (auto table = _services.resource.twoDas.get("aiscripts")) {
+        for (int row = 0; row < table->getRowCount(); ++row) {
+            ScriptRow script;
+            script.style = static_cast<NPCAIStyle>(table->getInt(row, "AISTATE", 0));
+            script.nameStrRef = table->getInt(row, "NAME_STRREF", -1);
+            script.descriptionStrRef = table->getInt(row, "DESCRIPTION_STRREF", -1);
+            ListBox::Item item;
+            item.tag = std::to_string(row);
+            item.text = _services.resource.strings.getText(script.nameStrRef);
+            item.on = false;
+            list.addItem(std::move(item));
+            _scriptRows.push_back(script);
+        }
+    }
+
+    // A click takes that row's style at once; Accept takes the focused row's.
+    list.setOnItemClick([this](const std::string &tag) {
+        selectScript(std::stoi(tag));
+    });
+    controls.BTN_Accept->setOnClick([this]() {
+        selectScript(_scriptSelectControls.LST_AIState->selectedItemIndex());
+    });
+    controls.BTN_Back->setOnClick([this]() {
+        closeScriptSelectPanel();
+    });
+}
+
+// The panel opens for the leader with its current style marked and focused,
+// and asks for its tutorial window.
+void CharacterMenu::openScriptSelectPanel() {
+    auto leader = _game.party().getLeader();
+    _scriptSubject = leader->id();
+    auto &list = *_scriptSelectControls.LST_AIState;
+    list.clearSelection();
+    for (size_t row = 0; row < _scriptRows.size(); ++row) {
+        const bool current = _scriptRows[row].style == leader->aiStyle();
+        list.setItemOn(static_cast<int>(row), current);
+        if (current) list.setSelectedItemIndex(static_cast<int>(row));
+    }
+    _scriptDescribedRow = -1;
+    _scriptSelectOpen = true;
+    _game.requestTutorialWindow(kScriptSelectTutorial);
+}
+
+void CharacterMenu::closeScriptSelectPanel() {
+    _scriptSelectGUI->clearSelection();
+    _scriptSelectOpen = false;
+}
+
+// The chosen row's style becomes the creature's own AI style, and the panel
+// closes.
+void CharacterMenu::selectScript(int row) {
+    auto subject = _game.getObjectById<Creature>(_scriptSubject);
+    if (subject && row >= 0 && row < static_cast<int>(_scriptRows.size())) {
+        subject->setAIStyle(_scriptRows[static_cast<size_t>(row)].style);
+    }
+    closeScriptSelectPanel();
+}
+
+void CharacterMenu::showScriptDescription(int row) {
+    _scriptDescribedRow = row;
+    _scriptSelectControls.LB_DESC->clearItems();
+    _scriptSelectControls.LB_DESC->addTextLinesAsItems(
+        _services.resource.strings.getText(_scriptRows[static_cast<size_t>(row)].descriptionStrRef));
 }
 
 static std::string toStringOrEmptyIfZero(int value) {
@@ -159,8 +283,39 @@ void CharacterMenu::refreshControls() {
     _controls.LBL_EXPERIENCE_STAT->setTextMessage(std::to_string(partyLeader->xp()));
     _controls.LBL_NEEDED_XP->setTextMessage(std::to_string(partyLeader->getNeededXP()));
 
+    if (_game.isTSL()) {
+        refreshForceMastery(*partyLeader);
+    }
     refreshPortraits();
     refresh3D();
+}
+
+// The Force mastery line describes the leader's Pure Good or Pure Evil powers
+// for its last class; classes from Jedi Guardian to Sith Assassin that are
+// Jedi name their group's line, any other class shows none.
+void CharacterMenu::refreshForceMastery(const Creature &leader) {
+    static constexpr int kNoMastery = -1;
+    static constexpr std::array<int, 14> kPureGoodMastery {
+        114161, 114163, 114162, kNoMastery, kNoMastery, kNoMastery, kNoMastery,
+        kNoMastery, 114161, 114163, 114162, 114161, 114163, 114162};
+    static constexpr std::array<int, 14> kPureEvilMastery {
+        114164, 114166, 114165, kNoMastery, kNoMastery, kNoMastery, kNoMastery,
+        kNoMastery, 114164, 114166, 114165, 114164, 114166, 114165};
+    const auto &classLevels = leader.attributes().classLevels();
+    const int row = classLevels.empty()
+        ? -1 : static_cast<int>(classLevels.back().first->type()) - static_cast<int>(ClassType::JediGuardian);
+    const std::array<int, 14> *mastery = nullptr;
+    if (leader.hasEffect(EffectType::PureGoodPowers)) {
+        mastery = &kPureGoodMastery;
+    } else if (leader.hasEffect(EffectType::PureEvilPowers)) {
+        mastery = &kPureEvilMastery;
+    }
+    const int strRef = mastery && row >= 0 && row < static_cast<int>(mastery->size())
+        ? (*mastery)[row] : kNoMastery;
+    _controls.LBL_FORCEMASTERY->setVisible(strRef != kNoMastery);
+    if (strRef != kNoMastery) {
+        _controls.LBL_FORCEMASTERY->setTextMessage(_services.resource.strings.getText(strRef));
+    }
 }
 
 std::string CharacterMenu::describeClass(ClassType clazz) const {

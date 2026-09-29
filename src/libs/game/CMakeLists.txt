@@ -70,6 +70,7 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/castspell.h
     ${GAME_INCLUDE_DIR}/character.h
     ${GAME_INCLUDE_DIR}/combat.h
+    ${GAME_INCLUDE_DIR}/combatfeedback.h
     ${GAME_INCLUDE_DIR}/combattables.h
     ${GAME_INCLUDE_DIR}/contextaction.h
     ${GAME_INCLUDE_DIR}/d20/attributes.h
@@ -204,6 +205,7 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/gui/confirmpopup.h
     ${GAME_INCLUDE_DIR}/gui/container.h
     ${GAME_INCLUDE_DIR}/gui/conversation.h
+    ${GAME_INCLUDE_DIR}/gui/deathdisplay.h
     ${GAME_INCLUDE_DIR}/gui/dialog.h
     ${GAME_INCLUDE_DIR}/gui/galaxymap.h
     ${GAME_INCLUDE_DIR}/gui/generated/areatrans.h
@@ -356,6 +358,7 @@ set(GAME_HEADERS
 
 set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/menupresentation.cpp
+    ${GAME_SOURCE_DIR}/gui/deathdisplay.cpp
     ${GAME_SOURCE_DIR}/temporarydeath.cpp
     ${GAME_SOURCE_DIR}/action.cpp
     ${GAME_SOURCE_DIR}/action/attackobject.cpp
@@ -376,6 +379,7 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/camerastyles.cpp
     ${GAME_SOURCE_DIR}/castspell.cpp
     ${GAME_SOURCE_DIR}/combat.cpp
+    ${GAME_SOURCE_DIR}/combatfeedback.cpp
     ${GAME_SOURCE_DIR}/combattables.cpp
     ${GAME_SOURCE_DIR}/d20/attributes.cpp
     ${GAME_SOURCE_DIR}/d20/class.cpp

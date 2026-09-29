@@ -20,10 +20,33 @@
 #include "reone/game/contextaction.h"
 
 namespace reone {
+namespace audio { class AudioSource; }
 namespace game {
 
+class Game;
 struct ContextAction;
-class ServicesView;
+struct ServicesView;
+
+class ActionMenuFeedback {
+public:
+    void reject(PowerUnavailableReason reason, ServicesView &services);
+    void accept(ServicesView &services);
+    /** Show \p message, the outcome of a selection, for a while. */
+    void announce(uint32_t message);
+    void update(float dt);
+    bool active() const { return _remaining > 0.0f; }
+    bool announcing() const { return _announcementRemaining > 0.0f; }
+    std::string text(const Game &game) const;
+    std::string announcementText(const Game &game) const;
+    float descriptionOpacity() const;
+
+private:
+    float _remaining {-1.0f};
+    std::optional<uint32_t> _message;
+    std::shared_ptr<audio::AudioSource> _sound;
+    float _announcementRemaining {0.0f};
+    uint32_t _announcement {0};
+};
 
 struct ActionSlot {
     std::vector<ContextAction> actions;

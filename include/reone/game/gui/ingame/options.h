@@ -20,8 +20,10 @@
 #include "reone/gui/control/button.h"
 #include "reone/gui/control/label.h"
 #include "reone/gui/control/listbox.h"
+#include "reone/gui/control/togglebutton.h"
 
 #include "../../gui.h"
+#include "../../menupresentation.h"
 
 namespace reone {
 
@@ -39,6 +41,12 @@ public:
         GameGUI(game, services) {
         _resRef = guiResRef("optionsingame");
     }
+
+    bool handle(const input::Event &event) override;
+    void update(float dt) override;
+    void render() override;
+    /** Leaving the options writes them to the configuration. */
+    void clearSelection() override;
 
 private:
     struct Controls {
@@ -62,7 +70,60 @@ private:
 
     Controls _controls;
 
+    // Autopause options panel, opened over the menu from BTN_AUTOPAUSE.
+    struct AutoPauseControls {
+        std::shared_ptr<gui::Button> BTN_BACK;
+        std::shared_ptr<gui::Button> BTN_DEFAULT;
+        std::shared_ptr<gui::ToggleButton> CB_ACTIONMENU;
+        std::shared_ptr<gui::ToggleButton> CB_ENDROUND;
+        std::shared_ptr<gui::ToggleButton> CB_ENEMYSIGHTED;
+        std::shared_ptr<gui::ToggleButton> CB_MINESIGHTED;
+        std::shared_ptr<gui::ToggleButton> CB_PARTYKILLED;
+        std::shared_ptr<gui::ToggleButton> CB_TRIGGERS;
+        std::shared_ptr<gui::ListBox> LB_DETAILS;
+    };
+
+    std::shared_ptr<gui::IGUI> _autoPauseGUI;
+    AutoPauseControls _autoPauseControls;
+    bool _autoPauseOpen {false};
+
+    // Feedback options panel, opened over the menu from BTN_FEEDBACK. Its
+    // rows are built in code, one per option.
+    struct FeedbackControls {
+        std::shared_ptr<gui::Button> BTN_BACK;
+        std::shared_ptr<gui::Button> BTN_DEFAULT;
+        std::shared_ptr<gui::Label> LBL_BAR1;
+        std::shared_ptr<gui::Label> LBL_BAR2;
+        std::shared_ptr<gui::Label> LBL_TITLE;
+        std::shared_ptr<gui::ListBox> LB_DESC;
+        std::shared_ptr<gui::ListBox> LB_OPTIONS;
+    };
+
+    struct FeedbackRow {
+        uint16_t option {0};
+        int nameStrRef {0};
+        int descriptionStrRef {0};
+    };
+
+    std::shared_ptr<gui::IGUI> _feedbackGUI;
+    FeedbackControls _feedbackControls;
+    std::vector<FeedbackRow> _feedbackRows;
+    bool _feedbackOpen {false};
+    int _feedbackDescribedRow {-1};
+
     void onGUILoaded() override;
+
+    void loadFeedbackPanel();
+    void openFeedbackPanel();
+    void closeFeedbackPanel();
+    void showFeedbackOptions();
+    void showFeedbackDescription(int row);
+
+    void loadAutoPausePanel();
+    void openAutoPausePanel();
+    void closeAutoPausePanel();
+    void showAutoPauseOptions(const AutoPauseOptions &options);
+    void showAutoPauseDescription(int strRef);
 
     void bindControls() {
         _controls.BTN_AUTOPAUSE = findControl<gui::Button>("BTN_AUTOPAUSE");

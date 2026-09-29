@@ -50,7 +50,12 @@ class SilentSounds : public IGUISounds {
 public:
     std::shared_ptr<audio::AudioClip> getOnClick() const override { return nullptr; }
     std::shared_ptr<audio::AudioClip> getOnEnter() const override { return nullptr; }
+    std::shared_ptr<audio::AudioClip> getActionAccepted() const override { return nullptr; }
+    std::shared_ptr<audio::AudioClip> getActionUnavailable() const override { return nullptr; }
     std::shared_ptr<audio::AudioClip> getOnLevelUpNotify() const override { return nullptr; }
+    std::shared_ptr<audio::AudioClip> getCheckboxCheck() const override { return nullptr; }
+    std::shared_ptr<audio::AudioClip> getInventorySelect() const override { return nullptr; }
+    std::shared_ptr<audio::AudioClip> getInventoryDrop() const override { return nullptr; }
 };
 
 // Real controls, layout, list rows and input, with a recording test renderer.
@@ -146,12 +151,21 @@ public:
         int slot;
     };
     std::vector<Request> requests;
+    void beginEquipment() override { ++begins; }
+    void endEquipment() override { ++ends; }
+    void nextCharacter() override { ++nextRequests; }
+    void previousCharacter() override { ++previousRequests; }
+    void changeCharacter(int) override {}
+    int begins {0}, ends {0}, nextRequests {0}, previousRequests {0};
     InventoryView readInventory(InventoryFilter) override { return inventory; }
     EquipmentView readEquipment(int) override { return equipment; }
     void equip(uint64_t revision, uint64_t handle, int slot) override {
         requests.push_back({revision, handle, slot});
     }
     std::optional<EquipmentRequestResult> equipmentResult() const override { return result; }
+    void switchWeapons() override { ++switchRequests; }
+    int switchRequests {0};
+    std::string interfaceText(int) const override { return std::string(); }
 };
 
 class SharedPresentation : public Test {

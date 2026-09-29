@@ -18,6 +18,8 @@
 #include "reone/game/object/camera/firstperson.h"
 
 #include "reone/game/di/services.h"
+#include "reone/game/game.h"
+#include "reone/game/object/creature.h"
 #include "reone/graphics/types.h"
 #include "reone/scene/di/services.h"
 #include "reone/scene/graphs.h"
@@ -32,6 +34,12 @@ namespace game {
 
 static constexpr float kMovementSpeed = 4.0f;
 static constexpr float kMouseMultiplier = glm::pi<float>() / 4000.0f;
+// Free-look: the most a frame of mouse travel may turn, before the rotate
+// speed and the frame time scale it, and the keyboard tilt's rate in degrees
+// per second with the gain that approaches it and brakes from it.
+static constexpr float kFreeLookMaxTurn = 30.0f;
+static constexpr float kFreeLookTiltRate = 200.0f;
+static constexpr float kFreeLookTiltGain = 500.0f;
 
 void FirstPersonCamera::load() {
     auto &scene = _services.scene.graphs.get(_sceneName);
@@ -44,6 +52,7 @@ float FirstPersonCamera::projectionFovy() const {
 }
 
 bool FirstPersonCamera::handle(const input::Event &event) {
+    if (isAttached()) return handleAttached(event);
     switch (event.type) {
     case input::EventType::MouseMotion:
         return handleMouseMotion(event.motion);
@@ -164,8 +173,102 @@ bool FirstPersonCamera::handleKeyUp(const input::KeyEvent &event) {
     }
 }
 
+void FirstPersonCamera::attach(const std::shared_ptr<Creature> &creature, const CameraStyle &style) {
+    _attached = creature;
+    _style = style;
+    _lookPitch = 0.0f;
+    _mouseX = _mouseY = _mouseTilt = 0.0f;
+    _turnLeft = _turnRight = false;
+    _turnVelocity = _turnInput = 0.0f;
+    _pitchUp = _pitchDown = false;
+    _tiltVelocity = _tiltInput = 0.0f;
+    _moveDir = MovementDirection::None;
+}
+
+bool FirstPersonCamera::isAttached() const {
+    return static_cast<bool>(_attached.resolve());
+}
+
+void FirstPersonCamera::detach() {
+    _attached.reset();
+    _turnLeft = _turnRight = false;
+    _pitchUp = _pitchDown = false;
+}
+
+// Mouse travel is taken at the next update. A and D turn the creature; W and S
+// are held for the keyboard tilt.
+bool FirstPersonCamera::handleAttached(const input::Event &event) {
+    switch (event.type) {
+    case input::EventType::MouseMotion:
+        _mouseX += static_cast<float>(event.motion.xrel);
+        _mouseY += static_cast<float>(event.motion.yrel);
+        return true;
+    case input::EventType::KeyDown:
+    case input::EventType::KeyUp: {
+        const bool down = event.type == input::EventType::KeyDown;
+        switch (event.key.code) {
+        case input::KeyCode::A: _turnLeft = down; return true;
+        case input::KeyCode::D: _turnRight = down; return true;
+        case input::KeyCode::W: _pitchUp = down; return true;
+        case input::KeyCode::S: _pitchDown = down; return true;
+        default: return false;
+        }
+    }
+    default:
+        return false;
+    }
+}
+
+void FirstPersonCamera::updateAttached(float dt) {
+    auto creature = _attached.resolve();
+    if (!creature) return;
+    const bool tsl = _game.isTSL();
+    // Held keys turn the creature with the keyboard profile. Otherwise the
+    // mouse turns it by its travel.
+    const float input = _turnLeft ? 1.0f : (_turnRight ? -1.0f : 0.0f);
+    float turned = stepKeyboardTurn(_turnVelocity, _turnInput, input, dt);
+    const float strengthX = mouseFrameStrength(_mouseX);
+    const float strengthY = mouseFrameStrength(_mouseY);
+    _mouseX = _mouseY = 0.0f;
+    if (input == 0.0f) {
+        const float delta = -kDefaultMouseSensitivity * strengthX;
+        turned -= glm::clamp(delta * 0.5f, -kFreeLookMaxTurn, kFreeLookMaxTurn) * dt * _style.freeLookRotateSpeed;
+    }
+    if (turned != 0.0f) creature->setFacing(glm::mod(creature->getFacing() + glm::radians(turned), glm::two_pi<float>()));
+    // Vertical travel sets the tilt. TSL reads it only on frames without a
+    // turn key, so the last tilt lasts while one is held, and there downward
+    // travel looks up. KotOR reads it every frame, and downward travel looks
+    // down.
+    if (!tsl) {
+        _mouseTilt = kDefaultMouseSensitivity * strengthY;
+    } else if (input == 0.0f) {
+        _mouseTilt = -kDefaultMouseSensitivity * strengthY / 10.0f;
+    }
+    // A mouse tilt pitches directly and stops the keyboard tilt. Otherwise W
+    // and S pitch with the keyboard profile, up and down, in KotOR only.
+    if (_mouseTilt != 0.0f) {
+        _lookPitch += _mouseTilt * dt * _style.freeLookTiltSpeed;
+        _tiltVelocity = _tiltInput = 0.0f;
+    } else {
+        const float keys = tsl ? 0.0f : (_pitchUp ? 1.0f : 0.0f) - (_pitchDown ? 1.0f : 0.0f);
+        _lookPitch += stepAcceleratedRate(_tiltVelocity, _tiltInput, keys, dt, kFreeLookTiltRate, kFreeLookTiltGain, kFreeLookTiltGain);
+    }
+    if (_lookPitch < -180.0f) _lookPitch += 360.0f;
+    if (_lookPitch > 180.0f) _lookPitch -= 360.0f;
+    _lookPitch = std::min(_style.freeLookUp, std::max(-_style.freeLookDown, _lookPitch));
+
+    _position = creature->freeLookPoint();
+    _facing = creature->getFacing();
+    _pitch = glm::radians(_lookPitch);
+    updateSceneNode();
+}
+
 void FirstPersonCamera::update(float dt) {
     Camera::update(dt);
+    if (isAttached()) {
+        updateAttached(dt);
+        return;
+    }
 
     float facingSin = glm::sin(_facing) * _multiplier * kMovementSpeed * dt;
     float facingCos = glm::cos(_facing) * _multiplier * kMovementSpeed * dt;

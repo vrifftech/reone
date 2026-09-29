@@ -49,22 +49,47 @@ void AnimatedCamera::update(float dt) {
     }
 }
 
-static const std::string &getAnimationName(int animNumber) {
-    static std::map<int, std::string> nameByNumber;
+static constexpr int kCameraClipBandSize = 128;
+static constexpr int kFirstLoopingCameraOrdinal = 1400;
+static constexpr int kLastLoopingCameraOrdinal = 1727;
 
-    auto maybeName = nameByNumber.find(animNumber);
-    if (maybeName != nameByNumber.end()) {
-        return maybeName->second;
+// The 29th clip of every band is named as clip 39.
+static constexpr int kMisnumberedCameraClipOffset = 28;
+static constexpr int kMisnumberedCameraClipNumber = 39;
+
+static const struct CameraClipBand {
+    int base;
+    const char *suffix;
+} g_cameraClipBands[] {
+    {1000, ""},
+    {1200, "w"},
+    {1400, "l"},
+    {1600, "wl"}};
+
+std::string AnimatedCamera::getShotClipName(int ordinal) {
+    for (auto &band : g_cameraClipBands) {
+        int offset = ordinal - band.base;
+        if (offset >= 0 && offset < kCameraClipBandSize) {
+            int number = offset == kMisnumberedCameraClipOffset ? kMisnumberedCameraClipNumber : offset + 1;
+            return str(boost::format("cut%03d%s") % number % band.suffix);
+        }
     }
-    std::string name(str(boost::format("cut%03dw") % (animNumber - 1200 + 1)));
-
-    return nameByNumber.insert(std::make_pair(animNumber, std::move(name))).first->second;
+    return "";
 }
 
-void AnimatedCamera::playAnimation(int animNumber) {
-    if (_model) {
-        _model->playAnimation(reone::game::getAnimationName(animNumber));
+void AnimatedCamera::playAnimation(int ordinal) {
+    if (!_model) {
+        return;
     }
+    std::string name(getShotClipName(ordinal));
+    if (name.empty()) {
+        return;
+    }
+    AnimationProperties properties;
+    if (ordinal >= kFirstLoopingCameraOrdinal && ordinal <= kLastLoopingCameraOrdinal) {
+        properties.flags |= AnimationFlags::loop;
+    }
+    _model->playAnimation(name, nullptr, std::move(properties));
 }
 
 bool AnimatedCamera::isAnimationFinished() const {

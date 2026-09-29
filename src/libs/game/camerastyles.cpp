@@ -38,12 +38,18 @@ void CameraStyles::init() {
         style->pitch = twoDa->getFloat(row, "pitch");
         style->viewAngle = twoDa->getFloat(row, "viewangle");
         style->height = twoDa->getFloat(row, "height");
+        // TSL's table names the free-look speeds for the player character; KotOR's does not.
+        style->freeLookTiltSpeed = twoDa->getFloat(row, "fl_pc_tiltspeed", twoDa->getFloat(row, "fl_tiltspeed", 60.0f));
+        style->freeLookRotateSpeed = twoDa->getFloat(row, "fl_pc_rotatespeed", twoDa->getFloat(row, "fl_rotatespeed", 60.0f));
+        style->freeLookUp = twoDa->getFloat(row, "fl_lookup");
+        style->freeLookDown = twoDa->getFloat(row, "fl_lookdown");
         _styles.push_back(std::move(style));
     }
 }
 
 std::shared_ptr<CameraStyle> CameraStyles::get(int index) const {
-    return _styles[index];
+    // A row outside the table has no style.
+    return index >= 0 && index < static_cast<int>(_styles.size()) ? _styles[index] : nullptr;
 }
 
 std::shared_ptr<CameraStyle> CameraStyles::get(const std::string &name) const {

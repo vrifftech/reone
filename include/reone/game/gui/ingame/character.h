@@ -30,6 +30,7 @@ namespace reone {
 
 namespace game {
 
+class Creature;
 class InGameMenu;
 
 class CharacterMenu : public GameGUI {
@@ -43,7 +44,10 @@ public:
         _resRef = guiResRef("character");
     }
 
+    bool handle(const input::Event &event) override;
     void update(float dt) override;
+    void render() override;
+    void clearSelection() override;
 
     void refreshControls();
 
@@ -138,7 +142,36 @@ private:
 
     InGameMenu &_inGameMenu;
 
+    // KotOR's AI script panel, opened over the screen from BTN_SCRIPTS. Its
+    // rows are the aiscripts table, one per AI style the leader may take.
+    struct ScriptSelectControls {
+        std::shared_ptr<gui::Button> BTN_Accept;
+        std::shared_ptr<gui::Button> BTN_Back;
+        std::shared_ptr<gui::Label> LBL_TITLE;
+        std::shared_ptr<gui::ListBox> LB_DESC;
+        std::shared_ptr<gui::ListBox> LST_AIState;
+    };
+
+    struct ScriptRow {
+        NPCAIStyle style {NPCAIStyle::DefaultAttack};
+        int nameStrRef {-1};
+        int descriptionStrRef {-1};
+    };
+
+    std::shared_ptr<gui::IGUI> _scriptSelectGUI;
+    ScriptSelectControls _scriptSelectControls;
+    std::vector<ScriptRow> _scriptRows;
+    uint32_t _scriptSubject {0};
+    bool _scriptSelectOpen {false};
+    int _scriptDescribedRow {-1};
+
     void onGUILoaded() override;
+
+    void loadScriptSelectPanel();
+    void openScriptSelectPanel();
+    void closeScriptSelectPanel();
+    void selectScript(int row);
+    void showScriptDescription(int row);
 
     void bindControls() {
         _controls.BTN_3DCHAR = findControl<gui::Button>("BTN_3DCHAR");
@@ -222,6 +255,7 @@ private:
 
     void refreshPortraits();
     void refresh3D();
+    void refreshForceMastery(const Creature &leader);
 
     std::shared_ptr<scene::ModelSceneNode> getSceneModel(scene::ISceneGraph &sceneGraph) const;
     std::string describeClass(ClassType clazz) const;

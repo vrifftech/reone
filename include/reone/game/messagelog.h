@@ -28,12 +28,19 @@ namespace reone {
 namespace game {
 
 /**
- * Rolling in-game feedback history.
+ * Rolling in-game feedback and conversation history.
  */
 class MessageLog {
 public:
+    /** The highlight flag a line is written with: Combat is the highlighted colour. */
     enum class Style : uint8_t {
         Normal = 0,
+        Combat = 1,
+    };
+
+    /** The list a line is written to. KotOR has only the message list. */
+    enum class Buffer : uint8_t {
+        Messages = 0,
         Combat = 1,
     };
 
@@ -41,18 +48,38 @@ public:
         uint32_t type;
         Style style;
         std::string text;
+        Buffer buffer {Buffer::Messages};
     };
 
+    /** A conversation line: who spoke it and what was said. */
+    struct DialogEntry {
+        std::string speaker;
+        std::string text;
+    };
+
+    /** Each list keeps this many lines and drops its oldest one when full. */
     static constexpr std::size_t kMaxEntries = 64;
     static constexpr uint32_t kFeedbackMessageType = 0x80;
 
-    void add(uint32_t type, Style style, std::string text);
-    void reset() { _entries.clear(); }
+    void add(uint32_t type, Style style, std::string text, Buffer buffer = Buffer::Messages);
+    /** A conversation line goes to the dialog list; one without text is not kept. */
+    void addDialog(std::string speaker, std::string text);
+    void reset() {
+        _entries.clear();
+        _dialogEntries.clear();
+    }
+
+    /** With the combat list disabled, its lines go to the message list. */
+    void setCombatBufferEnabled(bool enabled) { _combatBufferEnabled = enabled; }
+    bool combatBufferEnabled() const { return _combatBufferEnabled; }
 
     const std::deque<Entry> &entries() const { return _entries; }
+    const std::deque<DialogEntry> &dialogEntries() const { return _dialogEntries; }
 
 private:
     std::deque<Entry> _entries;
+    std::deque<DialogEntry> _dialogEntries;
+    bool _combatBufferEnabled {false};
 };
 
 } // namespace game

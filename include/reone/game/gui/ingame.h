@@ -39,6 +39,8 @@ namespace reone {
 
 namespace game {
 
+class Creature;
+
 class InGameMenu : public GameGUI {
 public:
     InGameMenu(Game &game, ServicesView &services) :
@@ -54,6 +56,11 @@ public:
     void render() override;
 
     void openEquipment();
+    void closeEquipment();
+    int inventoryCharacter() const { return _inventoryCharacter; }
+    void setInventoryCharacter(int npc) { _inventoryCharacter = npc; }
+    std::shared_ptr<Creature> equipmentCharacter() const;
+
     void openEquipmentItems();
     void openInventory();
     void openCharacter();
@@ -69,6 +76,8 @@ public:
 
 private:
     std::unique_ptr<InGameMenuHost> _host;
+    int _inventoryCharacter {-1};
+    bool _equipmentOpen {false};
     std::shared_ptr<CharacterMenu> _character;
     std::shared_ptr<Equipment> _equip;
     std::shared_ptr<InventoryMenu> _inventory;

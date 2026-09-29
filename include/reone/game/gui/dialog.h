@@ -43,6 +43,9 @@ public:
     /** Selects, but does not activate, a reply for a scripted visual capture. */
     void selectReplyForCapture(int index);
 
+    /** The object is the current entry's speaker or listener. */
+    bool isSpeakerOrListener(const Object &object) const;
+
 private:
     struct Participant {
         std::shared_ptr<graphics::Model> model;
@@ -55,7 +58,8 @@ private:
 
     /**
      * A cutscene clip named directly by a DLG animation ordinal, together with
-     * whether the clip loops rather than playing once.
+     * whether the clip loops rather than playing once. An empty name stands
+     * for the participant's pause.
      */
     struct CutAnimation {
         std::string name;
@@ -72,11 +76,21 @@ private:
     RuntimeObjectRef<Object> _currentSpeaker;
     std::map<std::string, Participant> _participantByTag;
 
+    // The pair that turns to each other on each entry, and the pair before it.
+    RuntimeObjectRef<Object> _pairSpeaker;
+    RuntimeObjectRef<Object> _pairListener;
+    RuntimeObjectRef<Object> _previousPairSpeaker;
+    RuntimeObjectRef<Object> _previousPairListener;
+    bool _pairStarted {false};
+
+    /** The previous entry's animation per participant, so unchanged ones are left alone. */
+    std::map<std::string, int> _previousAnimations;
+
     /**
-     * Ordinary creatures currently holding an authored cutscene pose. They keep
-     * it until another authored animation replaces it or the dialogue ends.
+     * Ordinary creatures given a cutscene clip. They return to state-driven
+     * animation when the conversation ends.
      */
-    std::vector<RuntimeObjectRef<Creature>> _heldCutParticipants;
+    std::vector<RuntimeObjectRef<Creature>> _cutParticipants;
 
     void preload(gui::IGUI &gui) override;
     void onGUILoaded() override;
@@ -92,6 +106,13 @@ private:
     void repositionMessage();
 
     void updateCamera();
+    void updateSpeakerPair(const std::shared_ptr<Object> &speaker);
+    std::shared_ptr<Object> resolveEntryListener() const;
+    void orientSpeakerPair();
+    void turnToward(Object &turner, const std::shared_ptr<Object> &other);
+    void endSpeakerPair();
+    std::shared_ptr<Creature> participantCreature(const std::string &participant) const;
+    bool canPlayDialogAnimations(const Creature &creature) const;
     void updateParticipantAnimations();
     void applyCutAnimation(const std::string &participant, const CutAnimation &cut);
     void applyDialogAnimation(const std::string &participant, int ordinal);
@@ -103,6 +124,8 @@ private:
     DialogCamera::Variant getRandomCameraVariant() const;
     static std::optional<CutAnimation> decodeCutAnimation(int ordinal);
     AnimationType getDialogAnimationType(int ordinal) const;
+    /** Also tells whether its row is a dialog animation. */
+    AnimationType getDialogAnimationType(int ordinal, bool &dialog) const;
     std::shared_ptr<Creature> resolveParticipantCreature(const std::string &participant) const;
     bool hasStuntPresentation() const;
     std::shared_ptr<graphics::Animation> getStuntParticipantAnimation(
@@ -132,8 +155,8 @@ private:
 
     void loadStuntParticipants();
     void releaseStuntParticipants();
-    void holdCutParticipant(const std::shared_ptr<Creature> &creature);
-    void releaseHeldCutParticipants();
+    void addCutParticipant(const std::shared_ptr<Creature> &creature);
+    void releaseCutParticipants();
 
     // END Participants
 };
