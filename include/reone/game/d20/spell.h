@@ -66,6 +66,7 @@ struct Spell {
     char alignment {'N'};
     std::unordered_map<ClassType, int> classLevelRequirements;
     uint32_t category {0};
+    int maxCR {0}; // the challenge rating that ranks the spell as a talent
     std::string impactScript;
     SpellCastAnimation castAnimation {SpellCastAnimation::Other};
     std::shared_ptr<audio::AudioClip> castSound;
@@ -91,7 +92,8 @@ struct Spell {
     // The head, hand and ground models shown while conjuring and after the release.
     std::array<std::string, 3> conjureVisuals;
     std::array<std::string, 3> castVisuals;
-    // Target kinds a hostile power menu does not offer the power against.
+    // Target kinds a hostile power menu does not offer the power against. Talent
+    // selection also tests it against the requested inclusion.
     uint32_t exclusion {0};
 
     bool isForbiddenByEquipment(uint32_t equippedMask) const {

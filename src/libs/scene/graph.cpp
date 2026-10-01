@@ -497,8 +497,6 @@ Texture &SceneGraph::render(const glm::ivec2 &dim) {
     }
     auto &pipeline = *_renderPipeline;
     pipeline.reset();
-    pipeline.setSpeedBlur(_speedBlur, _speedBlurRatio);
-    pipeline.setVideoEffect(_videoEffect);
 
     auto cameraNode = this->camera();
     if (cameraNode) {
@@ -580,7 +578,7 @@ Texture &SceneGraph::render(const glm::ivec2 &dim) {
         });
     }
 
-    return pipeline.render();
+    return pipeline.render(_frameEffects);
 }
 
 void SceneGraph::renderShadows(IRenderPass &pass) {

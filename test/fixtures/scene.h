@@ -37,6 +37,10 @@ public:
 
     MOCK_METHOD(void, setSpeedBlur, (bool enabled), (override));
     MOCK_METHOD(void, setSpeedBlurRatio, (float ratio), (override));
+    MOCK_METHOD(bool, isSpeedBlurEnabled, (), (const override));
+    MOCK_METHOD(void, setVideoEffect, (std::optional<VideoEffect>), (override));
+    MOCK_METHOD(bool, isForceSightEnabled, (), (const override));
+    MOCK_METHOD(float, forceSightPulse, (), (const override));
 
     MOCK_METHOD(void, addRoot, (std::shared_ptr<ModelSceneNode>), (override));
     MOCK_METHOD(void, addRoot, (std::shared_ptr<WalkmeshSceneNode>), (override));
@@ -119,9 +123,7 @@ public:
     MOCK_METHOD(void, reset, (), (override));
     MOCK_METHOD(void, inRenderPass, (RenderPassName, std::function<void(IRenderPass &)>), (override));
 
-    MOCK_METHOD(graphics::Texture &, render, (), (override));
-
-    MOCK_METHOD(void, setSpeedBlur, (bool enabled, float ratio), (override));
+    MOCK_METHOD(graphics::Texture &, render, (const FrameEffects &), (override));
 };
 
 class MockRenderPipelineFactory : public IRenderPipelineFactory, boost::noncopyable {

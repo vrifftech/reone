@@ -22,6 +22,7 @@ namespace reone {
 namespace game {
 
 class Action;
+class Creature;
 class Door;
 class Game;
 class Object;
@@ -57,10 +58,13 @@ void lockObject(Object &target, Object &actor);
 // instead of the actor's open, unlock or use. Returns true when it did.
 bool springTrapOnUse(Object &target, Object &actor);
 
-// Set position and facing of an actor, and update area visibility. A jumping
-// leader starts the party's trail over at the destination, facing trailFacing.
-void jumpToPositionFacing(Object &actor, const glm::vec3 &position,
-                          float facing, float trailFacing, Game &game);
+// Jump a creature to the first safe spot found within the radius of a position,
+// turned to the facing, and update area visibility; clearLine makes the spot
+// one the creature could walk straight to the position from. A jumping leader
+// starts the party's trail over at the spot, facing trailFacing. With no safe
+// spot the creature stays as it is.
+void jumpToPositionFacing(Creature &creature, const glm::vec3 &position, float facing, float trailFacing,
+                          float radius, bool clearLine, Game &game);
 
 } // namespace game
 

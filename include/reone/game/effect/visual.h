@@ -39,6 +39,15 @@ class Game;
 struct ServicesView;
 struct VisualEffectDesc;
 
+// Where a visual's models attach on an object. Creatures name their nodes;
+// a placeable prefixes its with its model name after the first four
+// characters, a door with its whole model name.
+enum class VisualSite {
+    Root,
+    Impact,
+    Head
+};
+
 /** Wrap a body and its head and hand models in a bumped-out shell, or clear it. */
 void setShell(scene::ModelSceneNode &body, graphics::Texture *texture);
 
@@ -49,7 +58,7 @@ public:
     ~VisualEffect();
 
     EffectApplicationResult onApply(Object &object, EffectInstance &) override;
-    EffectRemovalResult onRemove(Object &object, const EffectInstance &) override;
+    void onRemove(Object &object, const EffectInstance &) override;
     void onUpdate(Object &object, const EffectInstance &, float dt) override;
     void retireAreaRuntime(
         const std::set<const Object *> &retainedObjects) override;
@@ -64,6 +73,13 @@ public:
      * the slot is empty.
      */
     static void showLatestShell(Object &holder);
+    /**
+     * A rebuilt body takes back what the visual shows on it: its models come
+     * off the old body and go back to the same nodes of the new one, carrying
+     * on where they were. A model whose node the new body lacks is not shown.
+     */
+    void detachFromBody();
+    void reattachToBody(Object &object, scene::ModelSceneNode &body);
 
 private:
     // A model attached to one of the target's nodes: it plays its impact
@@ -71,8 +87,10 @@ private:
     // or goes away when it is not.
     struct NodeModel {
         std::shared_ptr<scene::ModelSceneNode> model;
+        // No owner: the model stands at a point in the world.
         std::shared_ptr<scene::ModelSceneNode> owner;
-        // No hook: the model stands at a point in the world.
+        VisualSite site {VisualSite::Root};
+        // No hook on a body's model: the body lacks its node.
         scene::SceneNode *hook {nullptr};
         bool followsPositionOnly {false};
         float impactRemaining {0.0f};
@@ -115,7 +133,7 @@ private:
     int _pendingDurationProgram {-1};
     EffectApplicationResult present(Object &object, EffectInstance &instance);
     void attachNodeModels(Object &object, const std::shared_ptr<scene::ModelSceneNode> &body, bool restoring);
-    void startNodeModel(scene::ISceneGraph &graph, graphics::Model &model, scene::SceneNode *hook,
+    void startNodeModel(scene::ISceneGraph &graph, graphics::Model &model, scene::SceneNode *hook, VisualSite site,
                         std::shared_ptr<scene::ModelSceneNode> owner, const glm::vec3 &position, bool restoring);
     float nodeModelsImpactLength() const;
     void updateNodeModels(float dt);

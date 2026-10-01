@@ -61,8 +61,10 @@ static glm::vec3 unitDirection(const glm::vec3 &delta) {
 // When a push ends, the creature's AI stays held this long.
 static constexpr float kForcePushAIHoldSeconds = 2.55f;
 static constexpr int kForcePushAIHoldMask = -351;
-bool applyForcePushMovement(Object &object, const glm::vec3 &centre,
-                            bool ignoreDirectLine, EffectInstance &owner) {
+// Pushes the creature away from the centre and lays it in the force-pushed
+// state for the push effect's duration.
+static bool applyForcePushMovement(Object &object, const glm::vec3 &centre,
+                                   bool ignoreDirectLine, EffectInstance &owner) {
     auto *target = dyn_cast<Creature>(&object);
     if (!target) return false;
     const glm::vec3 direction = unitDirection(target->position() - centre);
@@ -90,12 +92,14 @@ bool applyForcePushMovement(Object &object, const glm::vec3 &centre,
     object.applyEffect(std::move(state));
     return true;
 }
-std::shared_ptr<Object> getForcePushCreator(const EffectInstance &owner) {
+// The creator a push comes from; only an object in the world pushes.
+static std::shared_ptr<Object> getForcePushCreator(const EffectInstance &owner) {
     auto creator = owner.boundCreator();
     if (!creator || isa<Area>(creator.get()) || isa<Module>(creator.get())) return nullptr;
     return creator;
 }
-void endForcePushEffect(Object &object) {
+// A push ending frees the creature's facing and holds its AI a moment.
+static void endForcePushEffect(Object &object) {
     auto *creature = dyn_cast<Creature>(&object);
     if (!creature) return;
     creature->setOrientationLock(script::kObjectInvalid);
@@ -108,9 +112,8 @@ EffectApplicationResult ForcePushedEffect::onApply(Object &object, EffectInstanc
     // Retain even inert non-creature or missing-creator records.
     return EffectApplicationResult::Retained;
 }
-EffectRemovalResult ForcePushedEffect::onRemove(Object &object, const EffectInstance &) {
+void ForcePushedEffect::onRemove(Object &object, const EffectInstance &) {
     endForcePushEffect(object);
-    return EffectRemovalResult::Removed;
 }
 EffectApplicationResult ForceJumpEffect::onApply(Object &object, EffectInstance &instance) {
     auto *jumper = dyn_cast<Creature>(&object);
@@ -189,7 +192,7 @@ EffectApplicationResult BeamEffect::onApply(Object &object, EffectInstance &inst
     child.markGeneratedForLoad();
     child.objectParameters = instance.objectParameters;
     child.objectParameterObjects = instance.objectParameterObjects;
-    child.subType = static_cast<uint16_t>((child.subType & ~0x18) | 0x08);
+    child.subType = static_cast<uint16_t>((child.subType & ~0x18) | kMagicalEffectCategory);
     object.applyEffect(std::move(child));
     return EffectApplicationResult::Retained;
 }
@@ -203,9 +206,8 @@ EffectApplicationResult BodyFuelEffect::onApply(Object &object, EffectInstance &
     return EffectApplicationResult::Retained;
 }
 
-EffectRemovalResult BodyFuelEffect::onRemove(Object &object, const EffectInstance &) {
+void BodyFuelEffect::onRemove(Object &object, const EffectInstance &) {
     if (auto *creature = dyn_cast<Creature>(&object)) creature->setBodyFuel(false);
-    return EffectRemovalResult::Removed;
 }
 
 EffectApplicationResult ForceBodyEffect::onApply(Object &object, EffectInstance &) {
@@ -235,9 +237,8 @@ EffectApplicationResult ForcePushTargetedEffect::onApply(Object &object, EffectI
     return EffectApplicationResult::Retained;
 }
 
-EffectRemovalResult ForcePushTargetedEffect::onRemove(Object &object, const EffectInstance &) {
+void ForcePushTargetedEffect::onRemove(Object &object, const EffectInstance &) {
     endForcePushEffect(object);
-    return EffectRemovalResult::Removed;
 }
 
 EffectApplicationResult ForceResistedEffect::onApply(Object &object, EffectInstance &instance) {
@@ -280,7 +281,7 @@ EffectApplicationResult ForceShieldEffect::onApply(Object &object, EffectInstanc
     protection.creatorId = object.id();
     protection.spellId = object.effectSpellId();
     protection.restoring = false;
-    protection.subType = (protection.subType & ~uint16_t(0x18)) | 0x08;
+    protection.subType = (protection.subType & ~uint16_t(0x18)) | kMagicalEffectCategory;
     object.applyEffect(visual);
     object.applyEffect(protection);
     return EffectApplicationResult::Retained;
@@ -298,9 +299,9 @@ EffectApplicationResult FuryEffect::onApply(Object &object, EffectInstance &inst
     return EffectApplicationResult::Retained;
 }
 
-EffectRemovalResult FuryEffect::onRemove(Object &object, const EffectInstance &instance) {
+void FuryEffect::onRemove(Object &object, const EffectInstance &instance) {
     auto *creature = dyn_cast<Creature>(&object);
-    if (!creature) return EffectRemovalResult::Removed;
+    if (!creature) return;
     const bool survivor = std::any_of(
         object.effects().begin(), object.effects().end(),
         [&instance](const EffectInstance &record) {
@@ -309,7 +310,6 @@ EffectRemovalResult FuryEffect::onRemove(Object &object, const EffectInstance &i
                    record.serializedType == 111;
         });
     if (!survivor) creature->clearFuryState();
-    return EffectRemovalResult::Removed;
 }
 
 EffectApplicationResult LightsaberThrowEffect::onApply(Object &object, EffectInstance &record) {
@@ -326,9 +326,8 @@ EffectApplicationResult LightsaberThrowEffect::onApply(Object &object, EffectIns
     return EffectApplicationResult::Retained;
 }
 
-EffectRemovalResult LightsaberThrowEffect::onRemove(Object &object, const EffectInstance &) {
+void LightsaberThrowEffect::onRemove(Object &object, const EffectInstance &) {
     if (auto *creature = dyn_cast<Creature>(&object)) creature->setThrowParryBlocked(false);
-    return EffectRemovalResult::Removed;
 }
 
 EffectApplicationResult PsychicStaticEffect::onApply(Object &object, EffectInstance &) {

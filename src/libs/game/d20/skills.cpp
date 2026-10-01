@@ -17,7 +17,10 @@
 
 #include "reone/game/d20/skills.h"
 
+#include <cstdio>
+
 #include "reone/resource/2da.h"
+#include "reone/resource/exception/notfound.h"
 #include "reone/resource/provider/2das.h"
 #include "reone/resource/provider/textures.h"
 #include "reone/resource/strings.h"
@@ -34,6 +37,7 @@ void Skills::init() {
     if (!skills) {
         return;
     }
+    _loaded = true;
 
     for (int row = 0; row < skills->getRowCount(); ++row) {
         std::string name(_strings.getText(skills->getInt(row, "name", -1)));
@@ -44,6 +48,14 @@ void Skills::init() {
         skill->name = std::move(name);
         skill->description = std::move(description);
         skill->icon = std::move(icon);
+        const auto untrained = skills->getString(row, "untrained");
+        std::sscanf(untrained.c_str(), "%i", &skill->untrained);
+        const auto key = skills->getString(row, "keyability");
+        if (key == "DEX") skill->keyAbility = Ability::Dexterity;
+        else if (key == "CON") skill->keyAbility = Ability::Constitution;
+        else if (key == "INT") skill->keyAbility = Ability::Intelligence;
+        else if (key == "WIS") skill->keyAbility = Ability::Wisdom;
+        else if (key == "CHA") skill->keyAbility = Ability::Charisma;
         _skills.insert(std::make_pair(static_cast<SkillType>(row), std::move(skill)));
     }
 }
@@ -51,6 +63,13 @@ void Skills::init() {
 std::shared_ptr<Skill> Skills::get(SkillType type) const {
     auto it = _skills.find(type);
     return it != _skills.end() ? it->second : nullptr;
+}
+
+std::shared_ptr<Skill> Skills::getRequired(SkillType type) const {
+    if (!_loaded) {
+        throw ResourceNotFoundException("2DA not found: skills");
+    }
+    return get(type);
 }
 
 } // namespace game

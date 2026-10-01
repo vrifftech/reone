@@ -230,8 +230,9 @@ void FirstPersonCamera::updateAttached(float dt) {
     const float strengthX = mouseFrameStrength(_mouseX);
     const float strengthY = mouseFrameStrength(_mouseY);
     _mouseX = _mouseY = 0.0f;
+    const float sensitivity = mouseSensitivity(_game.options().game.mouse.sensitivity);
     if (input == 0.0f) {
-        const float delta = -kDefaultMouseSensitivity * strengthX;
+        const float delta = -sensitivity * strengthX;
         turned -= glm::clamp(delta * 0.5f, -kFreeLookMaxTurn, kFreeLookMaxTurn) * dt * _style.freeLookRotateSpeed;
     }
     if (turned != 0.0f) creature->setFacing(glm::mod(creature->getFacing() + glm::radians(turned), glm::two_pi<float>()));
@@ -240,9 +241,9 @@ void FirstPersonCamera::updateAttached(float dt) {
     // travel looks up. KotOR reads it every frame, and downward travel looks
     // down.
     if (!tsl) {
-        _mouseTilt = kDefaultMouseSensitivity * strengthY;
+        _mouseTilt = sensitivity * strengthY;
     } else if (input == 0.0f) {
-        _mouseTilt = -kDefaultMouseSensitivity * strengthY / 10.0f;
+        _mouseTilt = -sensitivity * strengthY / 10.0f;
     }
     // A mouse tilt pitches directly and stops the keyboard tilt. Otherwise W
     // and S pitch with the keyboard profile, up and down, in KotOR only.

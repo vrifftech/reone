@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 The reone project contributors
+ * Copyright (c) 2026 The reone project contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -17,6 +17,7 @@
 
 #pragma once
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
@@ -202,6 +203,15 @@ void addPoisonedFeedback(Game &, ServicesView &, Creature &, int poisonNameStrRe
  */
 void addDispelFeedback(Game &, ServicesView &, const Object &target, const Object *caster,
                        const std::vector<uint32_t> &spellIds);
+/**
+ * The damage line (1403): the creator, the damaged object, the total and the
+ * amount of each damage type present; 1402, naming only the damaged object,
+ * when there is no creator. Told to the controlled creature when it is on the
+ * damaged creature's side, or on a creature creator's side of another faction;
+ * for a damaged door or container, only on a creature creator's side.
+ */
+void addDamageFeedback(Game &, ServicesView &, const Object *creator, const Object &damaged,
+                       const std::array<int, 15> &amounts);
 /**
  * The death-experience line (1407): the recipient, the victim and the award
  * as reported. TSL writes it to the combat list, KotOR to its only list.

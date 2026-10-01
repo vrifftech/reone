@@ -157,8 +157,9 @@ void Conversation::releaseDialogParticipants(const std::shared_ptr<Object> &dial
 void Conversation::runAreaEndDialogScripts(const std::shared_ptr<Object> &dialogOwner) {
     auto *area = dialogOwner ? dialogOwner->spatialArea() : nullptr;
     if (!area) return;
-    // RunEndConversationScript(owner, 0) visits the area's creature/placeable
-    // handlers, not only the speaker. Snapshot handles across script mutation.
+    // Ending a conversation runs the end-dialogue script of every creature and
+    // placeable in the area, not only the speaker's. The scripts may change the
+    // area, so the objects are gathered first.
     std::vector<RuntimeObjectRef<Object>> objects;
     for (const auto &object : area->objects()) objects.emplace_back(object);
     for (const auto &reference : objects) {

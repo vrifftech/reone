@@ -57,8 +57,7 @@ public:
 
     void openEquipment();
     void closeEquipment();
-    int inventoryCharacter() const { return _inventoryCharacter; }
-    void setInventoryCharacter(int npc) { _inventoryCharacter = npc; }
+    int inventoryCharacter() const;
     std::shared_ptr<Creature> equipmentCharacter() const;
 
     void openEquipmentItems();
@@ -76,7 +75,6 @@ public:
 
 private:
     std::unique_ptr<InGameMenuHost> _host;
-    int _inventoryCharacter {-1};
     bool _equipmentOpen {false};
     std::shared_ptr<CharacterMenu> _character;
     std::shared_ptr<Equipment> _equip;

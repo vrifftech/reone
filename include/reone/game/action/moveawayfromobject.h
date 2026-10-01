@@ -33,11 +33,13 @@ public:
                        ServicesView &services,
                        std::shared_ptr<Object> fleeFrom,
                        bool run,
-                       float moveAwayRange) :
+                       float moveAwayRange,
+                       int attemptsLeft = kMaxAttempts) :
         Action(game, services, ActionType::MoveAwayFromObject),
         _fleeFrom(std::move(fleeFrom)),
         _run(run),
-        _moveAwayRange(moveAwayRange) {
+        _moveAwayRange(moveAwayRange),
+        _attemptsLeft(attemptsLeft) {
         requireRuntimeObject(_fleeFrom);
     }
 
@@ -46,6 +48,7 @@ public:
     }
 
     void execute(std::shared_ptr<Action> self, Object &actor, float dt) override;
+    std::optional<SavedActionRecord> saveFacingState() const override;
 
 private:
     static constexpr int kMaxAttempts = 10;
@@ -53,7 +56,7 @@ private:
     std::shared_ptr<Object> _fleeFrom;
     bool _run;
     float _moveAwayRange;
-    int _attemptsLeft {kMaxAttempts};
+    int _attemptsLeft;
 };
 
 } // namespace game

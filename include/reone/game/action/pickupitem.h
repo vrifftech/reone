@@ -41,6 +41,7 @@ public:
     void execute(std::shared_ptr<Action> self, Object &actor, float dt) override {
         complete();
     }
+    std::optional<SavedActionRecord> saveFacingState() const override;
 
 private:
     std::shared_ptr<Item> _item;

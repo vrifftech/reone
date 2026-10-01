@@ -1,6 +1,20 @@
-/* Copyright (c) 2026 The reone project contributors
- * SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (c) 2020-2023 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+
 #include <algorithm>
 
 #include "reone/game/game.h"
@@ -35,14 +49,6 @@ static void collectBeamMeshes(scene::SceneNode &node, std::vector<scene::MeshSce
     if (node.type() == scene::SceneNodeType::Mesh) meshes.push_back(static_cast<scene::MeshSceneNode *>(&node));
     for (auto *child : node.children()) collectBeamMeshes(*child, meshes);
 }
-// Where a visual's models attach on an object. Creatures name their nodes;
-// a placeable prefixes its with its model name after the first four
-// characters, a door with its whole model name.
-enum class VisualSite {
-    Root,
-    Impact,
-    Head
-};
 static std::string placeableNodePrefix(const scene::ModelSceneNode &model) {
     const std::string &name = model.model().name();
     return name.substr(std::min<size_t>(4, name.size()));
@@ -58,6 +64,20 @@ static std::string visualSiteNode(const Object &object, const scene::ModelSceneN
     }
     static constexpr const char *nodes[] = {"root", "impact", "talkdummy"};
     return nodes[static_cast<int>(site)];
+}
+// On a creature the head site is on its head model when it has one.
+static scene::SceneNode *visualSiteHook(const Object &object, scene::ModelSceneNode &body, VisualSite site) {
+    scene::ModelSceneNode *owner = &body;
+    if (site == VisualSite::Head && isa<Creature>(&object)) {
+        if (auto *head = dynamic_cast<scene::ModelSceneNode *>(body.getAttachment("headhook"))) owner = head;
+    }
+    return owner->getNodeByName(visualSiteNode(object, body, site));
+}
+// The breath hooks the head model, and the body only when there is no head
+// model.
+static scene::SceneNode *attachmentHook(scene::ModelSceneNode &body, int program, const char *hook) {
+    auto *head = program == 1703 ? dynamic_cast<scene::ModelSceneNode *>(body.getAttachment("headhook")) : nullptr;
+    return head ? head->getNodeByName(hook) : body.getNodeByName(hook);
 }
 // The node a beam starts from on its source, by body part; the source's root
 // when its model lacks that node.
@@ -293,11 +313,7 @@ bool VisualEffect::startProgram(int program, Object &object, const EffectInstanc
     const auto *attachment = spellVisual ? spellVisual : modelAttachmentForProgram(program, tsl);
     if (!attachment) return false;
     auto model = _services.resource.models.get(attachment->model);
-    // The breath hooks the head model, and the body only when there is no
-    // head model.
-    scene::SceneNode *hook = nullptr;
-    auto *head = program == 1703 ? dynamic_cast<scene::ModelSceneNode *>(body->getAttachment("headhook")) : nullptr;
-    hook = head ? head->getNodeByName(attachment->hook) : body->getNodeByName(attachment->hook);
+    auto *hook = attachmentHook(*body, program, attachment->hook);
     if (!model || !hook) return false;
     _hookNode = hook;
     _attachedOwner = body;
@@ -409,11 +425,12 @@ void VisualEffect::stopProgram(Object *holder) {
 // model for a second.
 static constexpr float kNodeModelHold = 1.0f;
 void VisualEffect::startNodeModel(scene::ISceneGraph &graph, graphics::Model &model, scene::SceneNode *hook,
-                                  std::shared_ptr<scene::ModelSceneNode> owner, const glm::vec3 &position,
-                                  bool restoring) {
+                                  VisualSite site, std::shared_ptr<scene::ModelSceneNode> owner,
+                                  const glm::vec3 &position, bool restoring) {
     NodeModel nodeModel;
     nodeModel.model = graph.newModel(model, scene::ModelUsage::Projectile);
     nodeModel.owner = std::move(owner);
+    nodeModel.site = site;
     nodeModel.hook = hook;
     nodeModel.followsPositionOnly = hook && _desc->orientationOff;
     if (hook && !nodeModel.followsPositionOnly) {
@@ -447,18 +464,44 @@ void VisualEffect::attachNodeModels(Object &object, const std::shared_ptr<scene:
         {&_desc->headModel, VisualSite::Head}};
     for (const auto &[model, site] : models) {
         if (!*model) continue;
-        scene::ModelSceneNode *owner = body.get();
-        if (site == VisualSite::Head && creature) {
-            if (auto *head = dynamic_cast<scene::ModelSceneNode *>(body->getAttachment("headhook"))) owner = head;
-        }
-        auto *hook = owner->getNodeByName(visualSiteNode(object, *body, site));
+        auto *hook = visualSiteHook(object, *body, site);
         if (!hook) continue;
-        startNodeModel(body->graph(), **model, hook, body, glm::vec3(0.0f), restoring);
+        startNodeModel(body->graph(), **model, hook, site, body, glm::vec3(0.0f), restoring);
+    }
+}
+void VisualEffect::detachFromBody() {
+    for (auto &nodeModel : _nodeModels) {
+        if (!nodeModel.owner || !nodeModel.hook) continue;
+        if (nodeModel.followsPositionOnly) nodeModel.model->graph().removeRoot(*nodeModel.model);
+        else nodeModel.hook->removeChild(*nodeModel.model);
+        nodeModel.hook = nullptr;
+    }
+    if (_hookNode && _attached) _hookNode->removeChild(*_attached);
+    _hookNode = nullptr;
+}
+void VisualEffect::reattachToBody(Object &object, scene::ModelSceneNode &body) {
+    for (auto &nodeModel : _nodeModels) {
+        if (!nodeModel.owner) continue;
+        nodeModel.hook = visualSiteHook(object, body, nodeModel.site);
+        if (!nodeModel.hook) continue;
+        if (nodeModel.followsPositionOnly) {
+            nodeModel.model->setLocalTransform(glm::translate(nodeModel.hook->origin()));
+            body.graph().addRoot(nodeModel.model);
+        } else {
+            nodeModel.hook->addChild(*nodeModel.model);
+        }
+    }
+    if (_attached) {
+        const auto *spellVisual = spellVisualForProgram(_attachmentProgram);
+        const auto *attachment = spellVisual ? spellVisual
+                                             : modelAttachmentForProgram(_attachmentProgram, object.game().isTSL());
+        _hookNode = attachmentHook(body, _attachmentProgram, attachment->hook);
+        if (_hookNode) _hookNode->addChild(*_attached);
     }
 }
 void VisualEffect::updateNodeModels(float dt) {
     for (auto it = _nodeModels.begin(); it != _nodeModels.end();) {
-        if (it->followsPositionOnly) it->model->setLocalTransform(glm::translate(it->hook->origin()));
+        if (it->followsPositionOnly && it->hook) it->model->setLocalTransform(glm::translate(it->hook->origin()));
         if (it->impactRemaining > 0.0f) {
             it->impactRemaining -= dt;
             if (it->impactRemaining <= 0.0f) {
@@ -540,7 +583,8 @@ EffectApplicationResult VisualEffect::present(Object &object, EffectInstance &in
         if (!_beam && (!instance.restoring || _kept)) {
             if (_location) {
                 if (_desc->locationModel) {
-                    startNodeModel(*graph, *_desc->locationModel, nullptr, nullptr, position, instance.restoring);
+                    startNodeModel(*graph, *_desc->locationModel, nullptr, VisualSite::Root, nullptr, position,
+                                   instance.restoring);
                 }
             } else if (body) {
                 attachNodeModels(object, body, instance.restoring);
@@ -591,8 +635,7 @@ void VisualEffect::onUpdate(Object &object, const EffectInstance &instance, floa
         _beamTargetOwner = targetModel;
     }
 }
-EffectRemovalResult VisualEffect::onRemove(Object &object, const EffectInstance &) {
+void VisualEffect::onRemove(Object &object, const EffectInstance &) {
     clearPresentation(&object);
-    return EffectRemovalResult::Removed;
 }
 } // namespace reone::game

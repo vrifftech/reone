@@ -42,7 +42,7 @@ namespace game {
 static std::string g_attackIcon("i_attack");
 
 void ActionMenuFeedback::reject(PowerUnavailableReason reason, ServicesView &services) {
-    // DoPersonalAction and DoTargetAction use these localized GUI string refs.
+    // The power and target menus refuse with these interface strings.
     switch (reason) {
     case PowerUnavailableReason::InsufficientForce: _message = 38613; break;
     case PowerUnavailableReason::ForbiddenEquipment: _message = 38614; break;
@@ -99,6 +99,9 @@ void renderContextActionIcon(const ContextAction &action, glm::mat4 transform, S
     switch (action.type) {
     case ActionType::AttackObject:
         texture = services.resource.textures.get(g_attackIcon, graphics::TextureUsage::GUI);
+        break;
+    case ActionType::DoorSaber:
+        texture = services.resource.textures.get("i_doorsaber", graphics::TextureUsage::GUI);
         break;
     case ActionType::UseFeat: {
         std::shared_ptr<Feat> feat(services.game.feats.get(action.feat));

@@ -128,12 +128,15 @@ void InGameMenu::loadOptions() {
 void InGameMenu::closeEquipment() {
     if (_equipmentOpen && _equip) _equip->endSession();
     _equipmentOpen = false;
-    _inventoryCharacter = -1;
+}
+
+int InGameMenu::inventoryCharacter() const {
+    return _equipmentOpen ? _equip->browsedRosterIndex() : -1;
 }
 
 std::shared_ptr<Creature> InGameMenu::equipmentCharacter() const {
     if (!_equipmentOpen || !_equip->browsingRoster()) return _game.party().getLeader();
-    return _inventoryCharacter == -1 ? _game.party().player() : _game.party().getAvailableMember(_inventoryCharacter);
+    return _equip->browsedCharacter();
 }
 
 void InGameMenu::openEquipment() {
@@ -172,8 +175,10 @@ void InGameMenu::openAbilities() {
 
 void InGameMenu::openPartySelection() {
     closeEquipment();
-    _partySelect->prepare(PartySelectionContext());
+    // The tab being left lets go of what it showed before the party screen
+    // brings its companions into being.
     _host->changeTab(InGameMenuTab::Party);
+    _partySelect->prepare(PartySelectionContext());
 }
 
 void InGameMenu::openMessages() {
@@ -238,6 +243,9 @@ InGameMenuFooter InGameMenu::footer() const {
     }
     if (!leader) return view;
     view.subjectPresent = true;
+    // A fallen character or one with a level-up pending shows no helpless mark.
+    view.subjectDebilitated = !leader->isDead() && !leader->isTemporarilyDead() &&
+        !leader->isLevelUpPending() && leader->isDebilitated();
     view.name = leader->name();
     // TSL shows the character's name with its actions hidden, resolved for
     // that character.

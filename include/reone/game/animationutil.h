@@ -23,12 +23,13 @@ namespace reone {
 
 namespace resource {
 
-class ITwoDAs;
 class TwoDA;
 
 }
 
 namespace game {
+
+class ICombatTables;
 
 bool isAnimationLooping(AnimationType animation);
 
@@ -79,7 +80,7 @@ int loopTransitionRow(int id, bool characterModel);
  * from ID 10000, animations.2da rows below its row count, otherwise the cut
  * clip IDs (one-shot 1000-1327, looping 1400-1727).
  */
-bool isDialogAnimation(resource::ITwoDAs &twoDas, int id);
+bool isDialogAnimation(const ICombatTables &tables, int id);
 /** The row of animations.2da or dialoganimations.2da is a looping or fire-and-forget dialog animation. */
 bool isDialogAnimationRow(const resource::TwoDA &table, int row);
 

@@ -34,6 +34,7 @@ struct GameOptions {
     uint8_t clientDifficulty {1}; // Easy=0, Normal=1, Difficult=2, Default=3
     MenuPresentation menuPresentation;
     AutoPauseOptions autoPause;
+    MouseOptions mouse;
     std::filesystem::path configurationPath; // Empty for embedded/test hosts.
 };
 

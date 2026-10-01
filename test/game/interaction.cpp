@@ -125,7 +125,9 @@ TEST_F(CreatureInteractionTest, creature_that_is_hostile_to_the_leader_is_presen
     EXPECT_TRUE(_module->isHostileToPartyLeader(*_other));
     // The click orders an attack, which waits on the leader's round.
     TestGameModule::clickCreature(*_module, _other);
-    EXPECT_EQ(std::optional<int>(1), _game->combat().nextScheduledKind(*_leader));
+    const auto pending = _game->combat().pendingScheduled(*_leader);
+    ASSERT_FALSE(pending.empty());
+    EXPECT_EQ(1, pending.front().first);
     EXPECT_THAT(contextActionTypes(), Contains(ActionType::AttackObject));
 }
 
@@ -143,6 +145,7 @@ TEST_F(CreatureInteractionTest, dead_creatures_are_never_hostile_regardless_of_d
             .columns({"destroyobjectdelay"})
             .row({""})
             .build())));
+    _engine.gameModule().combatTables().init(_engine.resourceModule().twoDas());
     // The body's destruction is queued on the active module.
     TestGameModule::setActiveModuleArea(*_game, _game->newArea());
     // Dying renames the creature to its authored "remains" string.

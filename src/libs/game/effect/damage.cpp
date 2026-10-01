@@ -41,7 +41,6 @@
 #include "reone/game/effect/hitpointchangewhendying.h"
 #include "reone/game/object/area.h"
 #include "reone/game/object/module.h"
-#include "reone/resource/provider/2das.h"
 #include "reone/game/effect/heal.h"
 #include "reone/game/effect/resurrection.h"
 #include "reone/game/effect/damageforcepoints.h"
@@ -175,7 +174,7 @@ static int applyDamageImmunity(
     const Object &object,
     DamageType damageType,
     int damage,
-    DamageResolution &resolution, const Creature *versus = nullptr) {
+    DamageResolution &resolution) {
 
     if (damage <= 0) {
         resolution.damageAfterImmunity = 0;
@@ -371,7 +370,7 @@ static int applyDamageBonusMitigation(
     Object &object, DamageType damageType, int damage, DamageResolution &resolution,
     const Creature &source, bool simulate) {
 
-    int amount = applyDamageImmunity(object, damageType, damage, resolution, &source);
+    int amount = applyDamageImmunity(object, damageType, damage, resolution);
     return applyDamageResistance(object, damageType, amount, resolution, false, &source, &source, simulate);
 }
 
@@ -463,7 +462,7 @@ void DamagePacket::resolvePhysical(Object &object, const Creature &source, bool 
         result.damageAmounts[slot] = narrowAttackDamage(current > 0 ? current + 1 : 1);
         base = 1;
     }
-    base = applyDamageImmunity(object, type, base, result, &source);
+    base = applyDamageImmunity(object, type, base, result);
     base = applyDamageResistance(object, type, narrowAttackDamage(base), result, true, &source, &source, simulate);
     base = applyDamageReduction(object, type, _power, narrowAttackDamage(base), result, simulate);
     // A door-cutting weapon takes a door or placeable's whole vitality.
@@ -501,7 +500,7 @@ void DamagePacket::resolveReturned(Creature &shooter) {
     const auto type = static_cast<DamageType>(_damageFlags);
     int amount = narrowAttackDamage(result.rawDamage);
     amount = applyDamageResistance(shooter, type, amount, result, true, &shooter, &shooter);
-    amount = applyDamageImmunity(shooter, type, narrowAttackDamage(amount), result, &shooter);
+    amount = applyDamageImmunity(shooter, type, narrowAttackDamage(amount), result);
     result.finalDamage = narrowAttackDamage(amount);
     if (slot < 14) result.damageAmounts[slot] = result.finalDamage;
     result.damageAmounts[14] = result.finalDamage;
@@ -528,7 +527,7 @@ std::shared_ptr<DamageEffect> DamageEffect::fromResolvedAttackAmount(int amount,
     payload.setIntegerParameter(slot, amount);
     payload.setIntegerParameter(kTotal, amount);
     payload.setIntegerParameter(kReactionDelay, 0);
-    // These post-roll producers write Log_Base2(damage flag), i.e. the slot.
+    // The damage flags hold the slot number, not the flag.
     payload.setIntegerParameter(kDamageFlags, static_cast<int>(slot));
     payload.setIntegerParameter(kPreResolved, 1);
     payload.setIntegerParameter(kSuppressShields, 1);
@@ -584,16 +583,32 @@ EffectApplicationResult DamageEffect::onApply(Object &object, EffectInstance &in
     // Nested shield callbacks must see this hit, not the preceding hit. Do not
     // republish afterward: a nested hit may have legitimately replaced it.
     object.setLastDamager(creator);
+    // A creature records the damage's creator as its last hostile actor,
+    // except for the damage of its own poison.
+    auto *creature = dyn_cast<Creature>(&object);
+    if (creature) {
+        const bool ownPoison = creature->activePoisonEffectId() != kUnassignedEffectId &&
+            std::any_of(creature->effects().begin(), creature->effects().end(), [&](const auto &record) {
+                return record.type() == EffectType::Poison && record.id == instance.id;
+            });
+        if (!ownPoison) creature->setLastHostileActor(creator ? creator->id() : script::kObjectInvalid);
+    }
     object.setLastDamageAmounts(damageAmounts);
     debug(str(boost::format("Damage taken: %s %d") % object.tag() % amount));
     if (application->preResolved &&
         !application->suppressDamageShields) {
         auto attacker = std::dynamic_pointer_cast<Creature>(instance.boundCreator());
-        auto *defender = dyn_cast<Creature>(&object);
-        if (defender && attacker) defender->resolveDamageShields(*attacker);
+        if (creature && attacker) creature->resolveDamageShields(*attacker);
     }
-    if (amount > 0) {
-        if (auto *creature = dyn_cast<Creature>(&object)) creature->removeMindTrickEffects();
+    if (amount > 0 && creature) creature->removeMindTrickEffects();
+    // The damage line goes to the party unless the hit that caused it has
+    // already reported it. A door or container always reports the effect's
+    // own amounts.
+    if (creature) {
+        if (instance.integerParameter(kFeedbackHandled) == 0)
+            addDamageFeedback(object.game(), object.services(), creator.get(), object, damageAmounts);
+    } else if (isa<Door>(&object) || isa<Placeable>(&object)) {
+        addDamageFeedback(object.game(), object.services(), creator.get(), object, application->effectAmounts);
     }
     if (object.isRuntimeLive()) object.applyDamageEffect(amount, creator, reaction);
     return EffectApplicationResult::Applied;
@@ -621,7 +636,7 @@ void DamagePacket::resolveLightsaberThrow(Object &object, const Creature &caster
     int amount = result.rawDamage;
     if (dyn_cast<Creature>(&object)) {
         amount = applyDamageResistance(object, type, amount, result, true, &caster, &caster);
-        amount = applyDamageImmunity(object, type, amount, result, &caster);
+        amount = applyDamageImmunity(object, type, amount, result);
     }
     if (object.plotFlag()) { result.plotSuppressed = true; amount = 0; }
     result.finalDamage = amount;
@@ -790,17 +805,16 @@ EffectApplicationResult HitPointChangeWhenDyingEffect::onApply(Object &object, E
     return EffectApplicationResult::Retained;
 }
 
-EffectRemovalResult HitPointChangeWhenDyingEffect::onRemove(Object &object, const EffectInstance &instance) {
+void HitPointChangeWhenDyingEffect::onRemove(Object &object, const EffectInstance &instance) {
     auto *creature = dyn_cast<Creature>(&object);
     // Remove malformed loaded non-creature records safely after a failed cast.
-    if (!creature) return EffectRemovalResult::Removed;
+    if (!creature) return;
     if (creature->isPC()) {
         const float rate = instance.floatParameters[0];
         const int amount = creature->currentHitPointsWithoutTemporary() + (rate > 0.0f ? 1 : -1);
         creature->Object::setCurrentHitPoints(amount);
         if (!(rate > 0.0f)) {
-            auto appearance = object.services().resource.twoDas.get("appearance");
-            const auto blood = appearance ? appearance->getString(creature->appearance(), "bloodcolr") : "";
+            const auto &blood = creature->bloodColour();
             const int visualId = blood == "R" ? 158 : blood == "G" ? 159 : blood == "Y" ? 160 : 0;
             auto effect = std::make_shared<VisualEffectMarkerEffect>(visualId);
             auto child = effect->saveFacingInstance();
@@ -820,7 +834,6 @@ EffectRemovalResult HitPointChangeWhenDyingEffect::onRemove(Object &object, cons
         if (auto creator = instance.boundCreator()) child.spellId = creator->effectSpellId();
         object.applyEffect(std::move(child));
     }
-    return EffectRemovalResult::Removed;
 }
 
 EffectApplicationResult HealEffect::onApply(Object &object, EffectInstance &instance) {

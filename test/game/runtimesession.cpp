@@ -219,7 +219,11 @@ void configureEquipmentEffectTables(TestEngine &engine) {
     // The other combat tables are missing.
     EXPECT_CALL(engine.resourceModule().twoDas(),
                 get(AnyOf(StartsWith("iprp_"), "gameeffects", "forceshields", "forceadjust",
-                          "excitedduration", "poison", "statescripts")))
+                          "excitedduration", "poison", "statescripts", "removefxondeath", "exptable",
+                          "xptable", "npc", "appearancesndset", "weaponsounds", "placeableobjsnds",
+                          "bodybag", "traps", "fractionalcr", "regeneration", "racialtypes", "ranges",
+                          "effecticon", "itemvalue", "videoeffects", "stringtokens", "tutorial", "feedbacktext",
+                          "aiscripts", "dialoganimations", "animations", "encdifficulty")))
         .Times(AnyNumber());
     resource::TwoDA::Builder costTables;
     costTables.columns({"name"});
@@ -259,6 +263,15 @@ void configureEquipmentEffectTables(TestEngine &engine) {
 TEST(PassiveRegeneration, k1_uses_the_numeric_combat_rows_for_hit_points) {
     TestEngine engine;
     engine.init();
+    // The game reads its rule tables when it starts; the others are missing.
+    EXPECT_CALL(engine.resourceModule().twoDas(),
+                get(AnyOf(StartsWith("iprp_"), "gameeffects", "forceshields", "forceadjust",
+                          "excitedduration", "poison", "statescripts", "removefxondeath", "exptable",
+                          "xptable", "npc", "appearancesndset", "weaponsounds", "placeableobjsnds",
+                          "bodybag", "traps", "fractionalcr", "regeneration", "racialtypes", "ranges",
+                          "effecticon", "itemvalue", "videoeffects", "stringtokens", "tutorial", "feedbacktext",
+                          "aiscripts", "dialoganimations", "animations", "encdifficulty")))
+        .Times(AnyNumber());
     resource::TwoDA::Builder regeneration;
     regeneration.columns({"healthregen", "forceregen"})
         .row({"2", "0"})
@@ -267,6 +280,7 @@ TEST(PassiveRegeneration, k1_uses_the_numeric_combat_rows_for_hit_points) {
         .Times(AnyNumber())
         .WillRepeatedly(Return(
             std::shared_ptr<resource::TwoDA>(regeneration.build())));
+    engine.gameModule().combatTables().init(engine.resourceModule().twoDas());
 
     StubConsole console;
     Game game(resource::GameID::KotOR, "", engine.options(), engine.services(), console);
@@ -339,6 +353,11 @@ void reone::game::TestGameModule::setAreaRuntimePath(
     pathfinder.paths.emplace_back();
     pathfinder.paths.back().active = true;
     creature._path = Path {static_cast<int32_t>(pathfinder.paths.size() - 1)};
+}
+
+void reone::game::TestGameModule::setAreaRuntimeStraightPath(Creature &creature, Pathfinder &pathfinder, const glm::vec3 &to) {
+    setAreaRuntimePath(creature, pathfinder);
+    setPathPoints(pathfinder, *creature._path, {creature.position(), to}, 1);
 }
 
 bool reone::game::TestGameModule::hasAreaRuntimePath(const Creature &creature) {
@@ -972,6 +991,7 @@ struct PartyTransferHarness {
         auto previous = std::move(area);
         area = game->newArea();
         area->loadParty(entry, facing, false);
+        area->runSpawnScripts();
         return previous;
     }
 };
@@ -1188,7 +1208,6 @@ TEST(AreaRuntimeRetirement, canonical_boundary_retires_every_area_owned_attachme
     retained->setLastHostileActor(outgoing->id());
     retained->setObjectSeen(outgoing, true);
     retained->setObjectHeard(outgoing, true);
-    retained->setBlockingDoor(outgoing->id());
     retained->startStuntMode();
 
     int executions = 0;
@@ -1251,7 +1270,6 @@ TEST(AreaRuntimeRetirement, canonical_boundary_retires_every_area_owned_attachme
     EXPECT_EQ(script::kObjectInvalid, retained->getLastHostileActor());
     EXPECT_EQ(0u, TestGameModule::seenObjectCount(*retained));
     EXPECT_EQ(0u, TestGameModule::heardObjectCount(*retained));
-    EXPECT_EQ(script::kObjectInvalid, retained->blockingDoorId());
     EXPECT_TRUE(retained->actions().empty());
     EXPECT_TRUE(action->isCancelled());
     EXPECT_FALSE(retained->isStuntMode());
@@ -2663,9 +2681,8 @@ TEST(EquipmentCombatEffects, effective_stats_follow_exact_equipment_ownership) {
     TestEngine engine;
     engine.init();
     // Effective abilities include the racial adjustments.
-    EXPECT_CALL(engine.resourceModule().twoDas(), get("racialtypes"))
-        .Times(AnyNumber())
-        .WillRepeatedly(Return(std::shared_ptr<resource::TwoDA>(resource::TwoDA::Builder()
+    ON_CALL(engine.resourceModule().twoDas(), get("racialtypes"))
+        .WillByDefault(Return(std::shared_ptr<resource::TwoDA>(resource::TwoDA::Builder()
             .columns({"stradjust", "dexadjust", "conadjust", "intadjust", "wisadjust", "chaadjust"})
             .row({"0", "0", "0", "0", "0", "0"})
             .build())));
@@ -3229,6 +3246,7 @@ TEST(PartyTransferSpawn, session_replacement_does_not_leak_the_old_party) {
 
         harness.area = harness.game->newArea();
         harness.area->loadParty(glm::vec3(0.0f), 0.0f, false);
+        harness.area->runSpawnScripts();
 
         EXPECT_EQ(2, spawnRuns("npc_spawn"));
         EXPECT_TRUE(companion->spawnScriptFired());

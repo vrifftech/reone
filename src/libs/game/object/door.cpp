@@ -39,6 +39,7 @@
 #include "reone/scene/node/model.h"
 #include "reone/scene/types.h"
 
+#include "reone/game/combattables.h"
 #include "reone/game/di/services.h"
 #include "reone/game/object/area.h"
 #include "reone/game/object/module.h"
@@ -216,11 +217,13 @@ void Door::loadAppearance() {
         modelName = boost::to_lower_copy(types->getString(_appearance, "model"));
         _preciseUse = false;
         _blocksSight = types->getInt(_appearance, "blocksight", 1) != 0;
+        _soundAppType = types->getInt(_appearance, "soundapptype", 0);
     } else {
         std::shared_ptr<TwoDA> doors(_services.resource.twoDas.get("genericdoors"));
         modelName = boost::to_lower_copy(doors->getString(_genericType, "modelname"));
         _preciseUse = doors->getInt(_genericType, "preciseuse", 0) != 0;
         _blocksSight = doors->getInt(_genericType, "blocksight", 1) != 0;
+        _soundAppType = doors->getInt(_genericType, "soundapptype", 0);
     }
 
     _linkedTransitionGeometry.clear();
@@ -578,6 +581,13 @@ void Door::onFailToOpen(uint32_t openerId, bool quiet) {
     if (leader && leader->id() == openerId) _game.addFeedbackMessage(kLockedStrRef);
 }
 
+void Door::runConversationScript() {
+    // Only a door whose conversation script is "default" takes the fallback
+    // one, which stays its own; a door with none runs nothing.
+    if (_onDialog == "default") _onDialog = kFallbackConversationScript;
+    _game.scriptRunner().run(_onDialog, _id);
+}
+
 void Door::runDamagedScript() {
     if (_onDamaged.empty()) {
         return;
@@ -638,8 +648,7 @@ bool canBashDoor(const Door &door) {
            door.isSelectable() &&
            !door.isDead() &&
            !door.plotFlag() &&
-           !door.isNotBlastable() &&
-           (door.hitPoints() > 0 || door.currentHitPoints() > 0);
+           !door.isNotBlastable();
 }
 
 void Door::updateTransform() {
@@ -746,8 +755,7 @@ void Door::armMine(int trapType, int detectDC, int disarmDC, int ownerDemolition
                     const std::shared_ptr<Creature> &setter, int blastBonus, bool blast) {
     _trapFlag = 1;
     _trapType = static_cast<uint8_t>(trapType);
-    if (auto traps = _services.resource.twoDas.get("traps"))
-        _onTrapTriggered = boost::to_lower_copy(traps->getString(_trapType, "trapscript"));
+    if (auto script = _services.game.combatTables.trapScript(_trapType)) _onTrapTriggered = *script;
     _trapDetectDC = static_cast<uint8_t>(detectDC);
     _disarmDC = static_cast<uint8_t>(disarmDC);
     _trapDetectable = true;

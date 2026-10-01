@@ -14,8 +14,9 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-
 #pragma once
+
+#include "reone/system/timer.h"
 
 #include "../action.h"
 
@@ -23,19 +24,29 @@ namespace reone {
 
 namespace game {
 
-class EquipMostEffectiveArmorAction : public Action {
+/**
+ * A creature created to appear holds everything it is told to do for two
+ * seconds, then takes up its ordinary pose. Clearing actions never removes it.
+ */
+class AppearAction : public Action {
 public:
-    EquipMostEffectiveArmorAction(Game &game, ServicesView &services) :
-        Action(game, services, ActionType::EquipMostEffectiveArmor) {
+    AppearAction(Game &game, ServicesView &services) :
+        Action(game, services, ActionType::Appear) {
+        _timer.reset(kDuration);
+        setClearable(false);
     }
 
     static bool classof(Action *from) {
-        return from->type() == ActionType::EquipMostEffectiveArmor;
+        return from->type() == ActionType::Appear;
     }
 
-    void execute(std::shared_ptr<Action> self, Object &actor, float dt) override {
-        complete();
-    }
+    void execute(std::shared_ptr<Action> self, Object &actor, float dt) override;
+    std::optional<SavedActionRecord> saveFacingState() const override;
+
+private:
+    static constexpr float kDuration = 2.0f;
+
+    Timer _timer;
 };
 
 } // namespace game

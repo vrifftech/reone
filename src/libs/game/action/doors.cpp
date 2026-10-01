@@ -19,7 +19,14 @@
 
 #include "reone/system/randomutil.h"
 
+#include "reone/audio/di/services.h"
+#include "reone/audio/mixer.h"
+#include "reone/resource/di/services.h"
+#include "reone/resource/provider/audioclips.h"
+
 #include "reone/game/action.h"
+#include "reone/game/action/doorsaber.h"
+#include "reone/game/action/playanimation.h"
 #include "reone/game/action/wait.h"
 #include "reone/game/event.h"
 #include "reone/game/game.h"
@@ -37,7 +44,6 @@
 #include "reone/game/action/closedoor.h"
 #include "reone/game/action/lockobject.h"
 #include "reone/game/action/unlockobject.h"
-#include "reone/game/action/openlock.h"
 #include "reone/system/logutil.h"
 #include "reone/game/action/opencontainer.h"
 
@@ -178,41 +184,33 @@ void lockObject(Object &target, Object &actor) {
     actor.game().queueScriptEvent(target, &actor, Event(kLockedEvent));
 }
 
-void jumpToPositionFacing(Object &actor, const glm::vec3 &position,
-                          float facing, float trailFacing, Game &game) {
-    // The position changes at once; a creature's model turns to the new facing.
-    actor.setPosition(position);
-    if (auto *creature = dyn_cast<Creature>(&actor)) {
-        creature->turnTo(facing);
-    } else {
-        actor.setFacing(facing);
-    }
-
+void jumpToPositionFacing(Creature &creature, const glm::vec3 &position, float facing, float trailFacing,
+                          float radius, bool clearLine, Game &game) {
     auto module = game.module();
-    if (!module) {
-        return;
-    }
+    auto area = module ? module->area() : nullptr;
+    if (!area) return;
+    auto spot = area->computeSafeLocation(position, radius, creature, clearLine);
+    if (!spot) return;
 
-    auto area = game.module()->area();
-    if (!area) {
-        return;
-    }
+    // The position changes at once; the creature's model turns to the new facing.
+    creature.setPosition(*spot);
+    creature.turnTo(facing);
 
-    Room *roomBefore = actor.room();
-    area->determineObjectRoom(actor);
-    Room *roomAfter = actor.room();
+    Room *roomBefore = creature.room();
+    area->determineObjectRoom(creature);
+    Room *roomAfter = creature.room();
 
     if (auto leader = game.party().getLeader()) {
-        if (leader->id() == actor.id()) {
-            game.party().resetFollowPath(*area, position, trailFacing, true);
+        if (leader->id() == creature.id()) {
+            game.party().resetFollowPath(*area, *spot, trailFacing, true);
             area->onPartyLeaderMoved(roomBefore != roomAfter);
         }
     }
     // Areas of effect the creature carries jump with it before its own
     // entries and exits are noted.
-    if (auto creature = game.getObjectById<Creature>(actor.id())) {
-        area->jumpCarriedAreaEffects(*creature);
-        area->updateSubAreaOccupancy(creature);
+    if (auto live = game.getObjectById<Creature>(creature.id())) {
+        area->jumpCarriedAreaEffects(*live);
+        area->updateSubAreaOccupancy(live);
     }
 }
 
@@ -223,7 +221,7 @@ static constexpr float kPreciseOpenWait = 0.5f;
 void OpenDoorAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
     if (actor.type() == ObjectType::Creature) {
         auto &creature = static_cast<Creature &>(actor);
-        if (!creature.navigateToUse(*_door, 0.0f, dt)) {
+        if (!creature.navigateToUse(*_door, 0.0f, dt, true, false, false)) {
             _waitAfterApproach = _door->isPreciseUse() && _door->isLocked();
             return;
         }
@@ -261,14 +259,32 @@ void OpenDoorAction::execute(std::shared_ptr<Action> self, Object &actor, float 
     complete();
 }
 
+// Only the door is kept, with the run mode every open is queued with; an open
+// taken up again walks up afresh.
+std::optional<SavedActionRecord> OpenDoorAction::saveFacingState() const {
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 20;
+    result.declaredParameterCount = 2;
+    result.parameters = {{3, SavedObjectReference::fromRuntimeId(_door->id())}, {1, int32_t {0}}};
+    return result;
+}
+
 void CloseDoorAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
     auto creatureActor = _game.getObjectById<Creature>(actor.id());
 
-    bool reached = !creatureActor || creatureActor->navigateToUse(*_door, 0.0f, dt);
+    bool reached = !creatureActor || creatureActor->navigateToUse(*_door, 0.0f, dt, true, false, false);
     if (reached) {
         _door->close();
         complete();
     }
+}
+
+std::optional<SavedActionRecord> CloseDoorAction::saveFacingState() const {
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 21;
+    result.declaredParameterCount = 2;
+    result.parameters = {{3, SavedObjectReference::fromRuntimeId(_door->id())}, {1, int32_t {0}}};
+    return result;
 }
 
 // A lock is worked at from the object's use point.
@@ -280,6 +296,15 @@ void LockObjectAction::execute(std::shared_ptr<Action> self, Object &actor, floa
     if (!workAtLock(*this, *_target, actor, _working, dt)) return;
     lockObject(*_target, actor);
     complete();
+}
+
+// Only the object is kept; a lock taken up again walks up and works afresh.
+std::optional<SavedActionRecord> LockObjectAction::saveFacingState() const {
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 39;
+    result.declaredParameterCount = 1;
+    result.parameters = {{3, SavedObjectReference::fromRuntimeId(_target ? _target->id() : kSavedRuntimeInvalidObjectId)}};
+    return result;
 }
 
 // An unlock is worked at from the object's use point; a trap on the object
@@ -308,16 +333,107 @@ void UnlockObjectAction::execute(std::shared_ptr<Action> self, Object &actor, fl
     complete();
 }
 
-void OpenLockAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
-    if (_target->type() == ObjectType::Door) {
-        if (!workAtLock(*this, *_target, actor, _working, dt)) return;
-        unlockDoor(static_cast<Door &>(*_target), actor);
+// An unlock is kept as the object, no item used on the lock and no item
+// property; taken up again it is worked as a Security unlock.
+std::optional<SavedActionRecord> UnlockObjectAction::saveFacingState() const {
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 38;
+    result.declaredParameterCount = 3;
+    result.parameters = {
+        {3, SavedObjectReference::fromRuntimeId(_target ? _target->id() : kSavedRuntimeInvalidObjectId)},
+        {3, SavedObjectReference::fromRuntimeId(kSavedRuntimeInvalidObjectId)},
+        {1, int32_t {0}},
+    };
+    return result;
+}
+
+// A door saber's work is the burn-door clip of the wielder's sword class on a
+// character model, one row per class from single sword on; anything else
+// works for two seconds without a clip.
+static constexpr int kBurnDoorAnimationRow = 387;
+static constexpr float kDoorSaberWorkSeconds = 2.0f;
+static constexpr int kNotLockedStrRef = 1430;
+static constexpr int kUnlockVoiceChance = 20;
+
+// Every pass powers the creature's lightsabers and holds it in combat state
+// without a battle cry. It goes to within a metre of the door, turns to it,
+// then works at it. When the work is done a hostile trap on the
+// door goes off instead; a door no longer locked is left as it is, and the
+// creature the player controls hears that it is not locked; otherwise the
+// door is unlocked and opened, and one time in five the creature says the
+// unlock went well. No key is wanted and no experience is given.
+void DoorSaberAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
+    assert(actor.type() == ObjectType::Creature);
+    auto &creature = static_cast<Creature &>(actor);
+    if (creature.isDead() || creature.isTemporarilyDead()) {
         complete();
         return;
     }
 
-    warn("ActionExecutor: unsupported OpenLockAction target");
+    creature.setLightsabersPowered(true, true);
+    creature.setCombatState(true, CombatActivation::Indirect, false);
+    if (!creature.navigateToUse(*_door, 0.0f, dt, true, true)) return;
+    if (!_approached) {
+        _approached = true;
+        creature.turnToward(*_door);
+        return;
+    }
+    if (!_working) {
+        _working = true;
+        auto leader = _game.party().getLeader();
+        if (leader && leader.get() == &creature) {
+            if (auto clip = _services.resource.audioClips.get("gui_doorsaber")) {
+                _services.audio.mixer.play(std::move(clip), audio::AudioType::Sound);
+            }
+        }
+        const auto wield = creature.getWieldType();
+        const bool swordClass = wield == CreatureWieldType::SingleSword ||
+                                wield == CreatureWieldType::DoubleBladedSword ||
+                                wield == CreatureWieldType::DualSwords;
+        if (creature.modelType() != Creature::ModelType::Creature && swordClass) {
+            const auto animation = static_cast<AnimationType>(10000 + kBurnDoorAnimationRow + static_cast<int>(wield));
+            actor.addActionBefore(*this, _game.newAction<PlayAnimationAction>(animation, 1.0f, kDoorSaberWorkSeconds));
+        } else {
+            actor.addActionBefore(*this, _game.newAction<WaitAction>(kDoorSaberWorkSeconds));
+        }
+        return;
+    }
+
+    if (springTrapOnUse(*_door, actor)) {
+        complete();
+        return;
+    }
+    if (!_door->isLocked()) {
+        auto leader = _game.party().getLeader();
+        if (leader && leader.get() == &creature) _game.addFeedbackMessage(kNotLockedStrRef);
+        complete();
+        return;
+    }
+    _door->setLocked(false);
+    _door->open();
+    _door->onOpen(actor.id());
+    if (randomInt(0, 99) < kUnlockVoiceChance && creature.isHeardByLeader()) {
+        creature.playSound(resource::SoundSetEntry::UnlockSuccess);
+    }
     complete();
+}
+
+// A door saber taken away puts the creature back in its usual pose.
+bool DoorSaberAction::cancel(std::shared_ptr<Action> self, Object &actor) {
+    auto &creature = static_cast<Creature &>(actor);
+    creature.resumeStateDrivenAnimation();
+    return true;
+}
+
+// Only the door is kept; a door saber taken up again walks up, turns and
+// works afresh.
+std::optional<SavedActionRecord> DoorSaberAction::saveFacingState() const {
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 67;
+    result.declaredParameterCount = 1;
+    result.parameters = {{static_cast<uint32_t>(SavedActionParameterType::Object),
+                          SavedObjectReference::fromRuntimeId(_door->id())}};
+    return result;
 }
 
 static constexpr int kUsedEvent = 25;
@@ -384,6 +500,15 @@ void OpenContainerAction::execute(std::shared_ptr<Action> self, Object &actor, f
     placeable->completeOpeningInventory(actor);
     _game.queueScriptEvent(*placeable, &actor, Event(kUsedEvent));
     complete();
+}
+
+// Only the object is kept; a use taken up again walks up and opens afresh.
+std::optional<SavedActionRecord> OpenContainerAction::saveFacingState() const {
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 40;
+    result.declaredParameterCount = 1;
+    result.parameters = {{3, SavedObjectReference::fromRuntimeId(_object ? _object->id() : kSavedRuntimeInvalidObjectId)}};
+    return result;
 }
 
 } // namespace game

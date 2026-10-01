@@ -20,31 +20,21 @@
 #include "reone/game/attack.h"
 #include "reone/game/d20/class.h"
 #include "reone/game/d20/feats.h"
+#include "reone/game/d20/skills.h"
 #include "reone/game/d20/spells.h"
 #include "reone/game/di/services.h"
 #include "reone/game/forcerules.h"
 #include "reone/game/game.h"
 #include "reone/game/object/item.h"
 #include "reone/game/talent.h"
-#include "reone/game/twodautil.h"
-#include "reone/resource/2da.h"
 #include "reone/system/randomutil.h"
 
 #include <algorithm>
-#include <cstdio>
 #include <utility>
 #include <vector>
 
 namespace reone::game {
 namespace {
-
-// Read UsesPerDay on demand from the cached feat table without a second admission sweep.
-int selectionNumber(const resource::TwoDA &table, int row, const char *column) {
-    const auto cell = table.getString(row, column);
-    int value = 0;
-    std::sscanf(cell.c_str(), "%i", &value);
-    return value;
-}
 
 bool categoryMatches(int requested, int actual) {
     constexpr unsigned categoryCount = 4;
@@ -59,11 +49,10 @@ bool categoryMatches(int requested, int actual) {
     return true;
 }
 
-bool inclusionMatches(const resource::TwoDA &table, int id, int inclusion) {
-    const int exclusion = selectionNumber(table, id, "exclusion");
+bool inclusionMatches(uint32_t exclusion, int inclusion) {
     // A zero exclusion or a zero bitwise-OR result passes.
     // This comparison is not an intersection test.
-    return exclusion == 0 || (inclusion | exclusion) == 0;
+    return exclusion == 0 || (static_cast<uint32_t>(inclusion) | exclusion) == 0;
 }
 
 struct Candidate {
@@ -122,8 +111,7 @@ int Creature::featRemainingUses(FeatType feat) const {
     feat = static_cast<FeatType>(static_cast<uint16_t>(feat));
     const auto definition = _services.game.feats.get(feat);
     if (!definition || !hasEffectiveFeat(feat)) return 0;
-    const auto table = getRequiredTwoDA(_services.resource.twoDas, "feat");
-    const int maximum = static_cast<uint8_t>(selectionNumber(*table, static_cast<int>(feat), "usesperday"));
+    const int maximum = static_cast<uint8_t>(definition->usesPerDay);
     // Base feats create tracked counters only for nonzero UsesPerDay. Effect-granted feats
     // use a separate membership list and do not create counters.
     if (maximum == 0 || !_attributes.hasFeat(feat)) return 100;
@@ -138,9 +126,7 @@ void Creature::spendFeatUse(FeatType feat) {
     feat = static_cast<FeatType>(static_cast<uint16_t>(feat));
     const auto definition = _services.game.feats.get(feat);
     if (!definition || !_attributes.hasFeat(feat)) return;
-    const auto table = getRequiredTwoDA(_services.resource.twoDas, "feat");
-    if (static_cast<uint8_t>(selectionNumber(*table, static_cast<int>(feat), "usesperday")) != 0)
-        _attributes.spendFeatUse(feat);
+    if (static_cast<uint8_t>(definition->usesPerDay) != 0) _attributes.spendFeatUse(feat);
 }
 
 FeatType Creature::attackFeatToUse(FeatType feat) const {
@@ -223,8 +209,8 @@ bool Creature::hasTalent(TalentType type, int id) const {
     case TalentType::Skill: {
         const int rank = getUnopposedSkillRank(static_cast<SkillType>(static_cast<uint8_t>(id)));
         if (rank > 0) return true;
-        const auto skills = getRequiredTwoDA(_services.resource.twoDas, "skills");
-        return (selectionNumber(*skills, static_cast<uint16_t>(id), "untrained") & 1) != 0;
+        const auto skill = _services.game.skills.getRequired(static_cast<SkillType>(static_cast<uint16_t>(id)));
+        return skill && (skill->untrained & 1) != 0;
     }
     case TalentType::Spell: {
         const auto spell = _services.game.spells.get(static_cast<SpellType>(id));
@@ -250,15 +236,13 @@ bool Creature::hasTalent(TalentType type, int id) const {
 
 std::shared_ptr<Talent> Creature::selectTalent(int category, int crMax, int inclusion,
                                                int excludeType, int excludeId) const {
-    const auto spells = getRequiredTwoDA(_services.resource.twoDas, "spells");
-    const auto feats = getRequiredTwoDA(_services.resource.twoDas, "feat");
     const bool ranked = crMax != -1;
     const int excludedSpell = excludeType == 0 ? excludeId : -1;
     const int excludedFeat = excludeType == 1 ? excludeId : -1;
     const auto suitable = [&](const Spell &spell, int excluded) {
         const int id = static_cast<int>(spell.type);
         if (id == excluded || !hasTalent(TalentType::Spell, id)) return false;
-        return !spatialArea() || categoryMatches(category, selectionNumber(*spells, id, "category"));
+        return !spatialArea() || categoryMatches(category, static_cast<int>(spell.category));
     };
 
     const auto specialAbility = [&]() -> std::shared_ptr<Talent> {
@@ -266,9 +250,9 @@ std::shared_ptr<Talent> Creature::selectTalent(int category, int crMax, int incl
         for (const auto &ability : _spellLikeAbilities) {
             if (ability.flags == 0) continue;
             const auto spell = _services.game.spells.get(static_cast<SpellType>(ability.spell));
-            if (!spell || !suitable(*spell, -1) || !inclusionMatches(*spells, ability.spell, inclusion)) continue;
+            if (!spell || !suitable(*spell, -1) || !inclusionMatches(spell->exclusion, inclusion)) continue;
             pool.add({TalentType::Spell, ability.spell, kSpellLikeAbilityClass, script::kObjectInvalid, -1, ability.casterLevel},
-                     selectionNumber(*spells, ability.spell, "maxcr"), ranked);
+                     spell->maxCR, ranked);
         }
         return pool.choose(_game);
     };
@@ -282,8 +266,7 @@ std::shared_ptr<Talent> Creature::selectTalent(int category, int crMax, int incl
                 const auto spell = _services.game.spells.get(type);
                 if (!spell || !talentPowerAffordable(*spell) || !suitable(*spell, excludedSpell)) continue;
                 const int id = static_cast<int>(type);
-                pool.addKnownPower({TalentType::Spell, id, static_cast<uint8_t>(index)},
-                                   selectionNumber(*spells, id, "maxcr"), ranked);
+                pool.addKnownPower({TalentType::Spell, id, static_cast<uint8_t>(index)}, spell->maxCR, ranked);
             }
             if (auto selected = pool.choose(_game)) return selected;
         }
@@ -296,12 +279,12 @@ std::shared_ptr<Talent> Creature::selectTalent(int category, int crMax, int incl
             const auto spell = _services.game.spells.get(static_cast<SpellType>(id));
             if (!spell) continue;
             if (source.equipped) {
-                if (!suitable(*spell, -1) || !inclusionMatches(*spells, id, inclusion)) continue;
-            } else if (!categoryMatches(category, selectionNumber(*spells, id, "category"))) {
+                if (!suitable(*spell, -1) || !inclusionMatches(spell->exclusion, inclusion)) continue;
+            } else if (!categoryMatches(category, static_cast<int>(spell->category))) {
                 continue;
             }
             pool.add({TalentType::Spell, id, kUnselectedCastingClass, source.item->id(), static_cast<int>(source.property)},
-                     selectionNumber(*spells, id, "maxcr"), ranked);
+                     spell->maxCR, ranked);
         }
         return pool.choose(_game);
     };
@@ -311,10 +294,11 @@ std::shared_ptr<Talent> Creature::selectTalent(int category, int crMax, int incl
         // HasTalent/HasFeat, but its separate array is not an extra draw pool.
         for (const auto type : _attributes.featOrder()) {
             const int id = static_cast<uint16_t>(type);
-            if (!_services.game.feats.get(type) ||
-                !categoryMatches(category, selectionNumber(*feats, id, "category")) ||
-                !inclusionMatches(*feats, id, inclusion) || id == excludedFeat || !hasTalent(TalentType::Feat, id)) continue;
-            pool.add({TalentType::Feat, id}, selectionNumber(*feats, id, "maxcr"), ranked);
+            const auto definition = _services.game.feats.get(type);
+            if (!definition || !categoryMatches(category, definition->category) ||
+                !inclusionMatches(definition->exclusion, inclusion) || id == excludedFeat ||
+                !hasTalent(TalentType::Feat, id)) continue;
+            pool.add({TalentType::Feat, id}, definition->maxCR, ranked);
         }
         return pool.choose(_game);
     };

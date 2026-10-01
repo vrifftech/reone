@@ -16,11 +16,11 @@
  */
 
 #include "reone/game/animationutil.h"
+#include "reone/game/combattables.h"
 
 #include <array>
 
 #include "reone/resource/2da.h"
-#include "reone/resource/provider/2das.h"
 
 using namespace reone::resource;
 
@@ -210,15 +210,15 @@ bool isDialogAnimationRow(const TwoDA &table, int row) {
     return table.getBool(row, "dialog") && (table.getBool(row, "looping") || table.getBool(row, "fireforget"));
 }
 
-bool isDialogAnimation(ITwoDAs &twoDas, int id) {
-    auto dialogAnimations = twoDas.get("dialoganimations");
+bool isDialogAnimation(const ICombatTables &tables, int id) {
+    const auto *dialogAnimations = tables.dialogAnimationRows();
     if (dialogAnimations && id >= kDialogAnimationBase &&
-        id < kDialogAnimationBase + dialogAnimations->getRowCount()) {
-        return isDialogAnimationRow(*dialogAnimations, id - kDialogAnimationBase);
+        id < kDialogAnimationBase + static_cast<int>(dialogAnimations->size())) {
+        return (*dialogAnimations)[id - kDialogAnimationBase];
     }
-    auto animations = twoDas.get("animations");
-    if (animations && id >= 0 && id < std::min(kDialogAnimationBase, animations->getRowCount())) {
-        return isDialogAnimationRow(*animations, id);
+    const auto *animations = tables.animationDialogRows();
+    if (animations && id >= 0 && id < std::min(kDialogAnimationBase, static_cast<int>(animations->size()))) {
+        return (*animations)[id];
     }
     return (id >= 1000 && id <= 1327) || (id >= 1400 && id <= 1727);
 }

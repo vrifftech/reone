@@ -324,6 +324,8 @@ private:
 struct DamageEffectApplication {
     int amount {0};
     std::array<int, 15> damageAmounts {};
+    /** The effect's own amounts before mitigation; a plot object's are zero. */
+    std::array<int, 15> effectAmounts {};
     bool preResolved {false};
     bool suppressDamageShields {false};
 };
@@ -336,6 +338,7 @@ std::optional<DamageEffectApplication> resolveDamageEffect(
         const int value = instance.integerParameter(i);
         result.damageAmounts[i] = plot && value >= 0 ? 0 : value;
     }
+    result.effectAmounts = result.damageAmounts;
     result.amount = result.damageAmounts[DamageEffect::kTotal];
     // Entry eligibility is independent of whether mitigation was already performed.
     // A positive input reduced to zero below still completes its application.

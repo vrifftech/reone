@@ -146,7 +146,8 @@ void Equipment::onGUILoaded() {
 
     configureItemsListBox();
 
-    // TSL swaps the shown character's weapon sets at once.
+    // TSL asks for the shown character's weapon sets to be swapped; the slots
+    // show the swap once it is made.
     if (isTSL() && _controls.BTN_SWAPWEAPONS) _controls.BTN_SWAPWEAPONS->setOnClick([this]() {
         if (!_backing) return;
         _backing->switchWeapons();
@@ -378,6 +379,9 @@ void Equipment::changeCharacter(int member) {
 
 void Equipment::update(float dt) {
     PresentationGUI::update(dt);
+    // The slots show what the character has on at every frame; with an item
+    // list open they are hidden.
+    if (_selectedSlot == Slot::None) updateEquipment();
     receiveEquipmentResult();
     updateCandidateDescription();
 }
@@ -477,7 +481,7 @@ void Equipment::activateSlot(Slot slot) {
 }
 
 void Equipment::updateEquipment() {
-    _view = _backing ? _backing->readEquipment(_activeSlot == Slot::None ? -1 : getInventorySlot(_activeSlot)) : EquipmentView {};
+    _view = _backing ? _backing->readEquipmentOverview() : EquipmentView {};
     for (auto &[slot, label] : _lblInv) {
         auto equipped = _view.equipment.find(getInventorySlot(slot));
         label->setBorderFill(equipped == _view.equipment.end() ? getEmptySlotIcon(slot) : equipped->second);

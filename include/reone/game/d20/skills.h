@@ -38,6 +38,8 @@ public:
     virtual ~ISkills() = default;
 
     virtual std::shared_ptr<Skill> get(SkillType type) const = 0;
+    /** As get, for rules that fail when the game has no skills table. */
+    virtual std::shared_ptr<Skill> getRequired(SkillType type) const = 0;
 };
 
 class Skills : public ISkills, boost::noncopyable {
@@ -54,8 +56,10 @@ public:
     void init();
 
     std::shared_ptr<Skill> get(SkillType type) const override;
+    std::shared_ptr<Skill> getRequired(SkillType type) const override;
 
 private:
+    bool _loaded {false};
     std::unordered_map<SkillType, std::shared_ptr<Skill>> _skills;
 
     // Services

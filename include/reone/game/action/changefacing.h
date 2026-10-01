@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2023 The reone project contributors
+ * Copyright (c) 2026 The reone project contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -23,17 +23,33 @@ namespace reone {
 
 namespace game {
 
-class PauseConversationAction : public Action {
+/**
+ * A creature turns at once to face an object or a point, measured across
+ * the ground, and is done. A creature standing on the spot keeps its facing.
+ */
+class ChangeFacingAction : public Action {
 public:
-    PauseConversationAction(Game &game, ServicesView &services) :
-        Action(game, services, ActionType::PauseConversation) {
+    ChangeFacingAction(Game &game, ServicesView &services, std::shared_ptr<Object> target) :
+        Action(game, services, ActionType::ChangeFacing),
+        _target(std::move(target)) {
+        requireRuntimeObject(_target);
+    }
+
+    ChangeFacingAction(Game &game, ServicesView &services, glm::vec3 point) :
+        Action(game, services, ActionType::ChangeFacing),
+        _point(std::move(point)) {
     }
 
     static bool classof(Action *from) {
-        return from->type() == ActionType::PauseConversation;
+        return from->type() == ActionType::ChangeFacing;
     }
 
     void execute(std::shared_ptr<Action> self, Object &actor, float dt) override;
+    std::optional<SavedActionRecord> saveFacingState() const override;
+
+private:
+    std::shared_ptr<Object> _target;
+    glm::vec3 _point {0.0f};
 };
 
 } // namespace game

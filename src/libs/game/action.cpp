@@ -56,6 +56,18 @@ uint32_t Action::serializedActionId() const {
     switch (_type) {
     case ActionType::MoveToPoint:
     case ActionType::MoveToLocation: return 1;
+    case ActionType::MoveAwayFromObject: return 3;
+    case ActionType::JumpToLocation: return 5;
+    case ActionType::SpeakString: return 14;
+    case ActionType::ResumeConversation: return 32;
+    case ActionType::SpeakStringByStrRef: return 33;
+    case ActionType::GiveItem: return 34;
+    case ActionType::TakeItem: return 35;
+    case ActionType::MoveAwayFromLocation: return 44;
+    case ActionType::JumpToObject: return 48;
+    case ActionType::Appear: return 52;
+    case ActionType::BarkString: return 62;
+    case ActionType::SurrenderToEnemies: return 65;
     case ActionType::PlayAnimation: return 6;
     case ActionType::EquipItem: return 8;
     case ActionType::UnequipItem: return 11;
@@ -75,6 +87,7 @@ uint32_t Action::serializedActionId() const {
     case ActionType::StartConversation: return 24;
     case ActionType::Wait: return 30;
     case ActionType::DoCommand: return 37;
+    case ActionType::RandomWalk: return 45;
     case ActionType::OpenLock: return 38;
     case ActionType::Lock: return 39;
     case ActionType::OpenContainer: return 40;
@@ -82,7 +95,7 @@ uint32_t Action::serializedActionId() const {
     case ActionType::ForceFollowObject: return 55;
     case ActionType::FollowLeader: return 61;
     case ActionType::FollowOwner: return 70;
-    default: return 0xffff; // Do not reinterpret an unrepresented engine enum.
+    default: return 0xffff; // An action type with no saved ID has none.
     }
 }
 

@@ -114,8 +114,6 @@ enum class ArgKind {
     LastPerceptionSeen,
     LastPerceptionVanished,
     LastUsedBy,
-    LastSpeaker,
-    ListenPatternNumber,
     LastAttacker,
     LastDamager,
     SpellId,
@@ -128,13 +126,9 @@ enum class ArgKind {
     ScriptParam4,
     ScriptParam5,
     ScriptStringParam,
-    SpellTargetObject,
     LastSpellCaster,
     LastSpell,
     LastSpellHarmful,
-    SpellCasterLevel,
-    SpellMetaMagic,
-    SpellForcePointCost,
     LastDisarmed,
 };
 

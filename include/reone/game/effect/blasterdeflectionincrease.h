@@ -26,24 +26,19 @@ namespace game {
 class BlasterDeflectionIncreaseEffect : public CopyableEffect<BlasterDeflectionIncreaseEffect> {
 public:
     BlasterDeflectionIncreaseEffect(int change) :
-        CopyableEffect(EffectType::BlasterDeflectionIncrease),
-        _change(change) {
+        CopyableEffect(EffectType::BlasterDeflectionIncrease) {
         setSaveFacingInteger(0, change);
     }
 
     // The deflection roll reads integer 1; integer 0 carries the item
     // property's subtype.
     BlasterDeflectionIncreaseEffect(int subtype, int deflection) :
-        CopyableEffect(EffectType::BlasterDeflectionIncrease),
-        _change(subtype) {
+        CopyableEffect(EffectType::BlasterDeflectionIncrease) {
         setSaveFacingInteger(0, subtype);
         setSaveFacingInteger(1, deflection);
     }
 
     EffectApplicationResult onApply(Object &object, EffectInstance &) override;
-
-private:
-    int _change;
 };
 
 } // namespace game

@@ -47,6 +47,7 @@ static constexpr int kAttributesTutorial = 16;
 static constexpr int kSkillsTutorial = 17;
 static constexpr int kPowersTutorial = 19;
 static constexpr uint8_t kNewCharacterGoodEvil = 50;
+static constexpr char kPlayerAlignmentGlobal[] = "G_PC_Align_Val";
 
 static constexpr float kModelScale = 1.1f;
 
@@ -353,6 +354,13 @@ void CharacterGeneration::finish() {
         std::shared_ptr<CreatureClass> clazz(_services.game.classes.get(classType));
         std::shared_ptr<Creature> partyLeader(_game.party().getLeader());
         partyLeader->applyLevelUp(std::move(_character.attributes), *clazz);
+        // The player character's new level moves every companion with a
+        // creature through its influence.
+        if (partyLeader->isPlayerCreated()) {
+            for (int npc = 0; npc < static_cast<int>(Party::kK2NpcCount); ++npc) {
+                if (auto companion = _game.party().getAvailableMember(npc)) companion->recomputeInfluenceAlignment();
+            }
+        }
         _game.openInGame();
     } else {
         // Character preview objects belong to the pre-playable character-
@@ -373,6 +381,8 @@ void CharacterGeneration::finish() {
                 player->setGender(_character.gender);
                 player->setAppearance(_character.appearance);
                 player->loadAppearance();
+                // A new character moves at the player's pace.
+                player->setMovementRate(0);
                 player->setFaction(Faction::Player);
                 // A new character is human and starts balanced between the
                 // light and dark sides.
@@ -402,6 +412,13 @@ void CharacterGeneration::finish() {
         // The canonical PC has to exist before any script hands control to a
         // stand-in, or there is nothing to hand control back to.
         party.setActualPlayer(player);
+        // TSL starts the player character's recorded alignment balanced, and
+        // records the new character's level before the first module loads, so
+        // creatures balanced there freeze it rather than following it later.
+        if (_game.isTSL()) {
+            _game.setGlobalNumber(kPlayerAlignmentGlobal, kNewCharacterGoodEvil);
+            _game.setGlobalNumber("G_PC_LEVEL", player->attributes().getAggregateLevel());
+        }
 
         std::string moduleName(!_game.isTSL() ? "end_m01aa" : "001ebo");
         _game.loadModule(moduleName);

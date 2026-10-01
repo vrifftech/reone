@@ -909,12 +909,14 @@ TEST(SavedAction, move_to_location_rejects_malformed_semantics_and_invalid_area)
     ASSERT_TRUE(record.bindObjectReferences(game));
 
     record.parameters[6].payload = 1.0f;
-    EXPECT_FALSE(record.toRuntimeAction(game));
+    auto ranged = std::dynamic_pointer_cast<MoveToLocationAction>(record.toRuntimeAction(game));
+    ASSERT_TRUE(ranged);
+    EXPECT_FLOAT_EQ(ranged->closeRange(), 1.0f);
     record.parameters[6].payload = 0.0f;
     record.parameters[7].payload = int32_t {1};
     EXPECT_FALSE(record.toRuntimeAction(game));
     record.parameters[7].payload = int32_t {0};
-    record.parameters[5].payload = int32_t {8};
+    record.parameters[5].payload = int32_t {2};
     EXPECT_FALSE(record.toRuntimeAction(game));
     record.parameters[5].payload = int32_t {1};
     record.parameters[0].payload = std::numeric_limits<float>::quiet_NaN();
@@ -1249,6 +1251,7 @@ TEST(SavedRuntimePublication, should_separate_parse_bind_and_idempotent_publicat
             .columns({"stradjust", "dexadjust", "conadjust", "intadjust", "wisadjust", "chaadjust"})
             .row({"0", "0", "0", "0", "0", "0"})
             .build())));
+    engine.gameModule().combatTables().init(engine.resourceModule().twoDas());
     StubConsole console;
     Game game(GameID::KotOR, "", engine.options(), engine.services(), console);
     NiceMock<scene::MockSceneGraph> sceneGraph;

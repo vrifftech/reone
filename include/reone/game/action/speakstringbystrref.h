@@ -44,6 +44,7 @@ public:
         if (auto *creature = dyn_cast<Creature>(&actor)) creature->setStealthMode(false);
         complete();
     }
+    std::optional<SavedActionRecord> saveFacingState() const override;
 
 private:
     int _strRef;

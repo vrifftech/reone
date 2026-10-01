@@ -89,6 +89,15 @@ protected:
     Game game {GameID::KotOR, "", engine.options(), engine.services(), console};
     std::shared_ptr<Creature> owner, subject;
     void SetUp() override {
+        // The game reads its rule tables when it starts; the others are missing.
+        EXPECT_CALL(engine.resourceModule().twoDas(),
+                    get(AnyOf(StartsWith("iprp_"), "gameeffects", "forceshields", "forceadjust",
+                              "excitedduration", "poison", "statescripts", "removefxondeath", "exptable",
+                              "xptable", "npc", "appearancesndset", "weaponsounds", "placeableobjsnds",
+                              "bodybag", "traps", "fractionalcr", "regeneration", "racialtypes", "ranges",
+                              "effecticon", "itemvalue", "videoeffects", "stringtokens", "tutorial", "feedbacktext",
+                              "aiscripts", "dialoganimations", "animations", "encdifficulty")))
+            .Times(AnyNumber());
         EXPECT_CALL(engine.resourceModule().twoDas(), get("baseitems"))
             .Times(AnyNumber())
             .WillRepeatedly(Return(makeLightsaberBaseItemsTable()));
@@ -97,6 +106,7 @@ protected:
         EXPECT_CALL(engine.resourceModule().twoDas(), get("racialtypes"))
             .Times(AnyNumber())
             .WillRepeatedly(Return(makeRacialTypesTable()));
+        engine.gameModule().combatTables().init(engine.resourceModule().twoDas());
         owner = game.newCreature();
         subject = game.newCreature();
         // The subject is a companion: real NPCs come from records carrying

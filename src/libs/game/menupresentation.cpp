@@ -12,6 +12,7 @@
 #include <array>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <sstream>
 #include <stdexcept>
@@ -34,6 +35,27 @@ std::optional<size_t> menuKey(const std::string &line) {
     }
     return std::nullopt;
 }
+
+// The trimmed key before '=' of an option line; empty when the line has no '='.
+std::string gameOptionKey(const std::string &line) {
+    return line.find('=') == std::string::npos ? "" : trim(line.substr(0, line.find('=')));
+}
+
+// Visit every line inside the section, in file order.
+void forEachSectionLine(const std::filesystem::path &path, const std::string &section,
+                        const std::function<void(const std::string &)> &visit) {
+    std::ifstream input(path);
+    bool inSection = false;
+    for (std::string line; std::getline(input, line);) {
+        auto trimmed = trim(line);
+        if (trimmed.rfind("[", 0) == 0) {
+            inSection = trimmed == section;
+            continue;
+        }
+        if (inSection) visit(line);
+    }
+}
+
 const std::string autoPauseSection {"[Autopause Options]"};
 const std::array<std::string, 6> autoPauseKeys {
     "End Of Combat Round", "Enemy Sighted", "Mine Sighted",
@@ -122,8 +144,7 @@ const std::array<std::pair<const char *, uint16_t>, 9> feedbackKeys {{
 }};
 
 std::optional<uint16_t> feedbackBit(const std::string &line) {
-    if (line.find('=') == std::string::npos) return std::nullopt;
-    auto key = trim(line.substr(0, line.find('=')));
+    auto key = gameOptionKey(line);
     for (const auto &[name, bit] : feedbackKeys) {
         if (key == name) return bit;
     }
@@ -133,35 +154,34 @@ std::optional<uint16_t> feedbackBit(const std::string &line) {
 } // namespace
 
 uint16_t loadFeedbackOptions(const std::filesystem::path &path, uint16_t options) {
-    std::ifstream input(path);
-    bool inSection = false;
-    for (std::string line; std::getline(input, line);) {
-        auto trimmed = trim(line);
-        if (trimmed.rfind("[", 0) == 0) {
-            inSection = trimmed == gameOptionsSection;
-            continue;
-        }
-        if (!inSection) continue;
+    forEachSectionLine(path, gameOptionsSection, [&options](const std::string &line) {
         if (auto bit = feedbackBit(line)) {
             // Only the lowest bit of the number counts.
             const bool on = (std::atoi(line.substr(line.find('=') + 1).c_str()) & 1) != 0;
             options = static_cast<uint16_t>(on ? (options | *bit) : (options & ~*bit));
         }
-    }
+    });
     return options;
 }
 
-void saveFeedbackOptions(const std::filesystem::path &path, uint16_t options) {
-    if (path.empty()) return;
+namespace {
+
+const std::string difficultyLevelKey {"Difficulty Level"};
+
+bool isDifficultyLevelLine(const std::string &line) {
+    return gameOptionKey(line) == difficultyLevelKey;
+}
+
+// Rewrite some keys of the Game Options section at its end; every other line,
+// in that section and elsewhere, is kept.
+void rewriteGameOptions(const std::filesystem::path &path,
+                        const std::function<bool(const std::string &)> &ownsLine,
+                        const std::function<void(std::ostringstream &)> &writeKeys,
+                        const char *suffix, const std::string &purpose) {
     std::ifstream input(path, std::ios::binary);
     if (!input && std::filesystem::exists(path)) {
-        throw std::runtime_error("Cannot read feedback configuration: " + path.string());
+        throw std::runtime_error("Cannot read " + purpose + " configuration: " + path.string());
     }
-    auto writeKeys = [options](std::ostringstream &output) {
-        for (const auto &[name, bit] : feedbackKeys) output << name << '=' << ((options & bit) ? 1 : 0) << '\n';
-    };
-    // The keys are rewritten at the end of the Game Options section; every
-    // other line, in that section and elsewhere, is kept.
     std::ostringstream output;
     bool inSection = false;
     bool written = false;
@@ -173,7 +193,7 @@ void saveFeedbackOptions(const std::filesystem::path &path, uint16_t options) {
                 written = true;
             }
             inSection = trimmed == gameOptionsSection;
-        } else if (inSection && feedbackBit(line)) {
+        } else if (inSection && ownsLine(line)) {
             continue;
         }
         output << line << '\n';
@@ -183,7 +203,97 @@ void saveFeedbackOptions(const std::filesystem::path &path, uint16_t options) {
         writeKeys(output);
     }
     if (input.is_open()) input.close();
-    replaceConfiguration(path, output.str(), ".feedback.tmp", "feedback");
+    replaceConfiguration(path, output.str(), suffix, purpose);
+}
+
+} // namespace
+
+void saveFeedbackOptions(const std::filesystem::path &path, uint16_t options) {
+    if (path.empty()) return;
+    rewriteGameOptions(
+        path,
+        [](const std::string &line) { return feedbackBit(line).has_value(); },
+        [options](std::ostringstream &output) {
+            for (const auto &[name, bit] : feedbackKeys) output << name << '=' << ((options & bit) ? 1 : 0) << '\n';
+        },
+        ".feedback.tmp", "feedback");
+}
+
+uint8_t loadDifficultyLevel(const std::filesystem::path &path, uint8_t level) {
+    forEachSectionLine(path, gameOptionsSection, [&level](const std::string &line) {
+        // The number is taken as written, without a range check; an empty
+        // value reads as zero.
+        if (isDifficultyLevelLine(line)) {
+            level = static_cast<uint8_t>(std::atoi(line.substr(line.find('=') + 1).c_str()));
+        }
+    });
+    return level;
+}
+
+void saveDifficultyLevel(const std::filesystem::path &path, uint8_t level) {
+    if (path.empty()) return;
+    rewriteGameOptions(
+        path,
+        isDifficultyLevelLine,
+        [level](std::ostringstream &output) { output << difficultyLevelKey << '=' << static_cast<int>(level) << '\n'; },
+        ".difficulty.tmp", "difficulty");
+}
+
+namespace {
+
+const std::string unlockedPlanetSongsKey {"UnlockedPlanetSongs"};
+
+} // namespace
+
+void saveUnlockedPlanetSongs(const std::filesystem::path &path, int songs) {
+    if (path.empty()) return;
+    rewriteGameOptions(
+        path,
+        [](const std::string &line) { return gameOptionKey(line) == unlockedPlanetSongsKey; },
+        [songs](std::ostringstream &output) { output << unlockedPlanetSongsKey << '=' << songs << '\n'; },
+        ".songs.tmp", "music");
+}
+
+namespace {
+
+const std::string mouseLookKey {"Mouse Look"};
+const std::string mouseSensitivityKey {"Mouse Sensitivity"};
+
+bool isMouseOptionLine(const std::string &line) {
+    auto key = gameOptionKey(line);
+    return key == mouseLookKey || key == mouseSensitivityKey;
+}
+
+} // namespace
+
+MouseOptions MouseOptions::load(const std::filesystem::path &path) {
+    MouseOptions result;
+    forEachSectionLine(path, gameOptionsSection, [&result](const std::string &line) {
+        // Mouse Look keeps only the lowest bit of its number. The sensitivity
+        // is taken as written, as a byte, without a range check. An empty
+        // value reads as zero.
+        auto key = gameOptionKey(line);
+        if (key != mouseLookKey && key != mouseSensitivityKey) return;
+        const int value = std::atoi(line.substr(line.find('=') + 1).c_str());
+        if (key == mouseLookKey) {
+            result.mouseLook = (value & 1) != 0;
+        } else {
+            result.sensitivity = static_cast<uint8_t>(value);
+        }
+    });
+    return result;
+}
+
+void MouseOptions::save(const std::filesystem::path &path) const {
+    if (path.empty()) return;
+    rewriteGameOptions(
+        path,
+        isMouseOptionLine,
+        [this](std::ostringstream &output) {
+            output << mouseLookKey << '=' << (mouseLook ? 1 : 0) << '\n'
+                   << mouseSensitivityKey << '=' << static_cast<int>(sensitivity) << '\n';
+        },
+        ".mouse.tmp", "mouse");
 }
 
 AutoPauseOptions AutoPauseOptions::defaults(bool tsl) {
@@ -197,23 +307,15 @@ AutoPauseOptions AutoPauseOptions::load(const std::filesystem::path &path, bool 
     std::array<bool *, 6> values {
         &result.endOfCombatRound, &result.enemySighted, &result.mineSighted,
         &result.partyKilled, &result.actionMenu, &result.newTargetSelected};
-    std::ifstream input(path);
-    bool inSection = false;
-    for (std::string line; std::getline(input, line);) {
-        auto trimmed = trim(line);
-        if (trimmed.rfind("[", 0) == 0) {
-            inSection = trimmed == autoPauseSection;
-            continue;
-        }
-        if (!inSection || line.find('=') == std::string::npos) continue;
-        auto key = trim(line.substr(0, line.find('=')));
+    forEachSectionLine(path, autoPauseSection, [&values](const std::string &line) {
+        auto key = gameOptionKey(line);
         for (size_t i = 0; i < autoPauseKeys.size(); ++i) {
             if (key != autoPauseKeys[i]) continue;
             std::istringstream value(line.substr(line.find('=') + 1));
             int number;
             if (value >> number) *values[i] = number != 0;
         }
-    }
+    });
     return result;
 }
 

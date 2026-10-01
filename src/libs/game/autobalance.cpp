@@ -22,7 +22,6 @@
 #include <cstdio>
 
 #include <string>
-#include <utility>
 
 namespace reone {
 
@@ -46,23 +45,31 @@ static int readAdjustment(const resource::TwoDA &table, int row, const char *col
 
 void AutoBalance::init() {
     _rows.clear();
-    _table.reset();
-    if (_gameId == resource::GameID::TSL)
-        _table = getRequiredTwoDA(_twoDas, "autobalance");
+    if (_gameId != resource::GameID::TSL) {
+        return;
+    }
+    const auto table = getRequiredTwoDA(_twoDas, "autobalance");
+    _rows.reserve(table->getRowCount());
+    for (int multiplierSet = 0; multiplierSet < table->getRowCount(); ++multiplierSet) {
+        AutoBalanceRow row;
+        row.vitalityMultiplier = readMultiplier(*table, multiplierSet, "vpmult");
+        row.toHitMultiplier = readMultiplier(*table, multiplierSet, "tohitmult");
+        row.armorClassMultiplier = readMultiplier(*table, multiplierSet, "armormult");
+        row.damageMultiplier = readMultiplier(*table, multiplierSet, "damagemult");
+        row.savingThrowMultiplier = readMultiplier(*table, multiplierSet, "savemult");
+        row.challengeRatingModifier = readAdjustment(*table, multiplierSet, "crmod");
+        row.levelMultiplier = readMultiplier(*table, multiplierSet, "levelmult");
+        _rows.push_back(row);
+    }
 }
 
 const AutoBalanceRow &AutoBalance::get(int multiplierSet) const {
-    const auto found = _rows.find(multiplierSet);
-    if (found != _rows.end()) return found->second;
-    AutoBalanceRow row;
-    row.vitalityMultiplier = readMultiplier(*_table, multiplierSet, "vpmult");
-    row.toHitMultiplier = readMultiplier(*_table, multiplierSet, "tohitmult");
-    row.armorClassMultiplier = readMultiplier(*_table, multiplierSet, "armormult");
-    row.damageMultiplier = readMultiplier(*_table, multiplierSet, "damagemult");
-    row.savingThrowMultiplier = readMultiplier(*_table, multiplierSet, "savemult");
-    row.challengeRatingModifier = readAdjustment(*_table, multiplierSet, "crmod");
-    row.levelMultiplier = readMultiplier(*_table, multiplierSet, "levelmult");
-    return _rows.emplace(multiplierSet, row).first->second;
+    // A multiplier set with no row in the table has every multiplier at zero.
+    static const AutoBalanceRow kMissingRow;
+    if (multiplierSet < 0 || multiplierSet >= static_cast<int>(_rows.size())) {
+        return kMissingRow;
+    }
+    return _rows[multiplierSet];
 }
 
 } // namespace game

@@ -35,8 +35,6 @@
 #include "reone/resource/provider/textures.h"
 #include "reone/resource/resources.h"
 #include "reone/resource/strings.h"
-
-#include <algorithm>
 #include "reone/system/exception/validation.h"
 
 using namespace reone::audio;
@@ -186,6 +184,7 @@ void Item::deserializeBase(const resource::Gff &gff) {
     _itemType = baseItems->getInt(_baseItem, "itemtype", 0);
     _attackRange = baseItems->getFloat(_baseItem, "maxattackrange", 0.0f);
     _baseDefense = baseItems->getInt(_baseItem, "baseac", 0);
+    _bodyModel = baseItems->getInt(_baseItem, "modeltype", 0) == 1;
     _criticalHitMultiplier = baseItems->getInt(_baseItem, "crithitmult", 0);
     _criticalThreat = baseItems->getInt(_baseItem, "critthreat", 0);
     _damageFlags = baseItems->getInt(_baseItem, "damageflags", 0);
@@ -204,6 +203,7 @@ void Item::deserializeBase(const resource::Gff &gff) {
         static_cast<int>(ACBonus::Invalid)));
     _weaponType = static_cast<WeaponType>(
         baseItems->getInt(_baseItem, "weapontype", 0));
+    _rangedWeapon = baseItems->getInt(_baseItem, "rangedweapon", 0) != 0;
     _weaponWield = static_cast<WeaponWield>(
         baseItems->getInt(_baseItem, "weaponwield", 0));
     _weaponSize = static_cast<CreatureSize>(
@@ -339,6 +339,7 @@ void Item::clone(const Item &from) {
     _weaponMaterialType = from._weaponMaterialType;
     _armorType = from._armorType;
     _weaponType = from._weaponType;
+    _rangedWeapon = from._rangedWeapon;
     _weaponWield = from._weaponWield;
     _weaponSize = from._weaponSize;
 
@@ -356,6 +357,7 @@ void Item::clone(const Item &from) {
     _weaponFocusFeat = from._weaponFocusFeat;
     _weaponSpecializationFeat = from._weaponSpecializationFeat;
     _baseDefense = from._baseDefense;
+    _bodyModel = from._bodyModel;
     _maxDexterityBonus = from._maxDexterityBonus;
     _acBonusType = from._acBonusType;
 
@@ -381,19 +383,35 @@ std::optional<size_t> Item::spellProperty(SpellType spell) const {
     return std::nullopt;
 }
 
+bool Item::isUseProperty(uint16_t propertyName) {
+    switch (static_cast<ItemProperty>(propertyName)) {
+    case ItemProperty::ActivateItem:
+    case ItemProperty::SecuritySpike:
+    case ItemProperty::Trap:
+    case ItemProperty::ComputerSpike:
+        return true;
+    default:
+        return false;
+    }
+}
+
 std::optional<size_t> Item::firstUseProperty() const {
     for (size_t i = 0; i < _properties.size(); ++i) {
-        switch (static_cast<ItemProperty>(_properties[i].propertyName)) {
-        case ItemProperty::ActivateItem:
-        case ItemProperty::SecuritySpike:
-        case ItemProperty::Trap:
-        case ItemProperty::ComputerSpike:
-            return i;
-        default:
-            break;
-        }
+        if (isUseProperty(_properties[i].propertyName)) return i;
     }
     return std::nullopt;
+}
+
+int Item::armorValue(bool installedUpgradesOnly) const {
+    // Only armour worn as the body model counts its base armour class, so
+    // droid plating starts from nothing.
+    int value = _bodyModel ? _baseDefense : 0;
+    for (const auto &property : _properties) {
+        if (static_cast<ItemProperty>(property.propertyName) != ItemProperty::AcBonus) continue;
+        if (installedUpgradesOnly && !isPropertyActive(property)) continue;
+        value += property.costValue;
+    }
+    return value;
 }
 
 bool Item::canUseSpell(size_t index) const {
@@ -510,12 +528,12 @@ void Item::playImpactSound(int variant, glm::vec3 position) {
     }
 }
 
-void Item::powerUp(glm::vec3 position) {
+void Item::powerUp(glm::vec3 position, bool transition) {
     if (!_poweredItem || _isPowered) {
         return;
     }
     _isPowered = true;
-    if (_powerUpSound) {
+    if (transition && _powerUpSound) {
         _services.audio.mixer.play(_powerUpSound, AudioType::Sound, 1.0f, false, position);
     }
     if (_poweredAudioSource) {
@@ -526,7 +544,7 @@ void Item::powerUp(glm::vec3 position) {
     }
 }
 
-void Item::powerDown(glm::vec3 position) {
+void Item::powerDown(glm::vec3 position, bool transition) {
     if (!_poweredItem || !_isPowered) {
         return;
     }
@@ -535,7 +553,7 @@ void Item::powerDown(glm::vec3 position) {
         _poweredAudioSource->stop();
         _poweredAudioSource.reset();
     }
-    if (_powerDownSound) {
+    if (transition && _powerDownSound) {
         _services.audio.mixer.play(_powerDownSound, AudioType::Sound, 1.0f, false, position);
     }
 }
@@ -733,19 +751,13 @@ std::vector<ItemOnHitProperty> Item::itemOnHitProperties() const {
 
         value.difficultyClass = tables.costTable(kOnHitDifficultyClassTable).row(property.costValue).value.value_or(20);
 
-        // SavingThrowRoll receives an unsigned-short DC.
+        // The DC is kept to an unsigned 16-bit value, as the saving throw reads it.
         value.difficultyClass = static_cast<uint16_t>(value.difficultyClass);
         result.push_back(value);
     }
     return result;
 }
 
-} // namespace game
-
-} // namespace reone
-
-namespace reone {
-namespace game {
 bool Item::isPropertyActive(uint32_t upgrades, uint8_t upgradeType) {
     if (upgradeType == 0xff) {
         return true;
@@ -753,5 +765,7 @@ bool Item::isPropertyActive(uint32_t upgrades, uint8_t upgradeType) {
     // Select an upgrade bit using the low five bits of the selector.
     return (upgrades & (uint32_t {1} << (upgradeType & 31))) != 0;
 }
+
 } // namespace game
+
 } // namespace reone

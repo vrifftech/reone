@@ -179,9 +179,11 @@ public:
     bool isRoundMaster(const Creature &creature) const;
     bool isActionPaused(const Action &action) const;
     /**
-     * The target is engaged by the attacker: it is able to act, and it attacks
-     * no one, or attacks or casts at the attacker. The controlled leader is
-     * engaged only while it acts against the attacker and no one else.
+     * The target is engaged by the attacker: it is able to act, and it is
+     * attempting to attack no one, or attempting to attack or cast at the
+     * attacker. The controlled leader is engaged only while it acts against
+     * the attacker and no one else, and the player has not ordered it onto
+     * another target.
      */
     bool isEngagedBy(const Creature &attacker, const Creature &target) const;
     /**
@@ -207,13 +209,22 @@ public:
     /**
      * Schedule a physical attack on the creature's round: kind 1, or 11 with a
      * feat. A cutscene attack carries its forced values and accepts any
-     * target. Out of combat the creature's other actions are cleared. Returns
-     * the attack to come, or nothing when nothing was scheduled: the target
-     * cannot be attacked or four entries are already pending.
+     * target. Out of combat the controlled creature's other actions are
+     * cleared, and the dispatcher is installed, even when the target cannot be
+     * attacked. Returns the attack to come, or nothing when nothing was
+     * scheduled: the target cannot be attacked or four entries are already
+     * pending.
      */
     std::shared_ptr<Action> scheduleAttack(Creature &actor, const std::shared_ptr<Object> &target,
                                            FeatType feat = FeatType::Invalid,
                                            const CutsceneAttack *cutscene = nullptr);
+    /**
+     * Schedule a cutscene move on the creature's round: kind 12. When taken,
+     * it goes to the object where it stands then, or to the point when the
+     * object is gone, and is forced there after a tenth of a second. Out of
+     * combat the controlled creature's other actions are cleared.
+     */
+    void scheduleCutsceneMove(Creature &actor, const std::shared_ptr<Object> &object, const glm::vec3 &point, bool run);
     /**
      * Add an ordinary attack entry (kind 1) to the creature's round, and
      * nothing else: no dispatcher is installed and nothing is cleared, so the
@@ -224,12 +235,19 @@ public:
     /**
      * Schedule a cast on the creature's round: kind 9, or 10 for an item use.
      * The dispatcher goes behind the creature's actions if it is not queued.
-     * Out of combat an item use then clears the creature's other actions.
+     * Out of combat an item use then clears the controlled creature's other
+     * actions while an entry is due, a cast while none is.
      * Nothing is scheduled when four entries are already pending.
      */
     void scheduleCast(Creature &actor, const std::shared_ptr<Action> &cast);
     /** The creature's ClearAllActions: its clearable actions go, its pending round entries stay. */
     void clearActions(Creature &actor);
+    /**
+     * The clear that scheduling a round command out of combat makes: the
+     * controlled creature's forced ClearAllActions. Any other creature keeps
+     * its actions.
+     */
+    void clearControlledActions(Creature &actor);
     /**
      * The clear the player's controls make: the creature's forced
      * ClearAllActions, then, even for one that cannot be commanded, its round's pending
@@ -241,7 +259,6 @@ public:
     bool removeLastScheduled(Creature &actor);
     /** Drop every scheduled entry that has not started. */
     void removeAllScheduled(Creature &actor);
-    std::optional<float> roundElapsed(const Action &action) const;
     bool hasScheduled(const Object &actor) const;
     /** Whether the creature has a command in a round that has not ended. */
     bool ownsRound(const Creature &actor) const;
@@ -262,8 +279,6 @@ public:
     bool isEngaged(const Creature &creature) const;
     /** The creature's round leaves room for a reaction to an attack by \p attacker. */
     bool hasReactionRoom(const Creature &creature, const Creature &attacker) const;
-    /** The kind of the next scheduled round entry for the creature, if any. */
-    std::optional<int> nextScheduledKind(const Object &actor) const;
     /** The creature's scheduled round entries not yet taken up, in order: each kind and its command. */
     std::vector<std::pair<int, Action *>> pendingScheduled(const Object &actor) const;
     void transferEquipment(Creature &actor);
@@ -307,6 +322,12 @@ public:
      * states that turn it on anyone. The attack is used up without a swing.
      */
     static bool refusesAttackOnFriend(const Creature &attacker, const Object &target);
+    /**
+     * A creature outside the party does not cast, or use an item, at another
+     * creature it has not perceived or that is invisible to it and unseen; a
+     * fake cast is exempt. The entry is used up without casting.
+     */
+    static bool refusesUnperceivedTarget(const Creature &caster, Action &cast);
     /**
      * A creature that cannot be commanded takes up no attack, save in TSL one
      * under either state that turns it on anyone.
@@ -376,6 +397,7 @@ private:
     std::shared_ptr<ScheduledEntry> makeAttackEntry(const std::shared_ptr<Object> &target, FeatType feat,
                                                     const CutsceneAttack *cutscene) const;
     void dispatchScheduled(Creature &actor, const ScheduledEntry &entry);
+    void dispatchCutsceneMove(Creature &actor, const ScheduledEntry &entry);
     bool dispatchItemUse(Creature &actor, ScheduledEntry &entry);
     void rescaleRound(CombatRound &round, int milliseconds, bool force);
     void releasePartner(Creature &actor);
@@ -388,7 +410,6 @@ private:
     void updateRound(CombatRound &round, float dt);
     void finishRound(CombatRound &round);
     void pruneInvalidRounds();
-    void cancelRound(CombatRound &round);
 
     CombatRound *findRoundForAction(
         const std::shared_ptr<Action> &action,

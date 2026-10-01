@@ -68,9 +68,6 @@ void UseFeatAction::execute(std::shared_ptr<Action> self, Object &actor, float d
         finish(attacker);
         return;
     }
-    if (isPhysicalAttackFeat(_feat)) {
-        attacker.setAttemptedAttackTarget(target->id());
-    }
     // A creature outside the party cannot go on attacking one it does not see.
     if (!_instantCastAttack && !attacker.hasDetectedTarget(*target)) {
         finish(attacker);
@@ -88,6 +85,8 @@ void UseFeatAction::execute(std::shared_ptr<Action> self, Object &actor, float d
     case AttackApproachStep::Reached:
         break;
     }
+    // While the world is held, an attack in reach waits.
+    if (_game.holdsWorld()) return;
 
     attacker.setDesiredFacingToward(target->position());
 
@@ -192,6 +191,8 @@ bool UseFeatAction::cancel(std::shared_ptr<Action> self, Object &actor) {
     _attacks.discardPending();
     _attacks.clearHistory();
     attacker.clearCurrentAttackTarget();
+    // A physical feat cleared before its round took it up forgets the attempted target.
+    if (isPhysicalAttackFeat(_feat) && !locked()) attacker.setAttemptedAttackTarget(script::kObjectInvalid);
     finish(attacker);
     return true;
 }
@@ -210,7 +211,7 @@ std::optional<SavedActionRecord> UseFeatAction::saveFacingState() const {
     result.actionId = 12;
     result.declaredParameterCount = 10;
     result.parameters = {
-        {1, int32_t {_cutsceneAttack ? 1 : 0}},
+        {1, int32_t {0}},
         {3, SavedObjectReference::fromRuntimeId(target->id())},
         {1, int32_t {1}},
         {1, int32_t {10009}},

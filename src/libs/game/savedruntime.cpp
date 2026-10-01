@@ -12,14 +12,38 @@
 #include <set>
 
 #include "reone/game/action/switchweapons.h"
+#include "reone/game/action/doorsaber.h"
 #include "reone/game/action/attackobject.h"
 #include "reone/game/action/equipitem.h"
 #include "reone/game/equipmentrules.h"
 #include "reone/game/action/unequipitem.h"
 #include "reone/game/action/usefeat.h"
+#include "reone/game/action/useskill.h"
+#include "reone/game/action/appear.h"
+#include "reone/game/action/barkstring.h"
+#include "reone/game/action/changefacing.h"
+#include "reone/game/action/closedoor.h"
+#include "reone/game/action/follow.h"
+#include "reone/game/action/followowner.h"
+#include "reone/game/action/giveitem.h"
+#include "reone/game/action/jumptolocation.h"
+#include "reone/game/action/jumptoobject.h"
+#include "reone/game/action/lockobject.h"
+#include "reone/game/action/opencontainer.h"
+#include "reone/game/action/opendoor.h"
+#include "reone/game/action/pickupitem.h"
+#include "reone/game/action/putdownitem.h"
+#include "reone/game/action/resumeconversation.h"
+#include "reone/game/action/speakstring.h"
+#include "reone/game/action/speakstringbystrref.h"
+#include "reone/game/action/surrendertoenemies.h"
+#include "reone/game/action/takeitem.h"
 #include "reone/game/action/followleader.h"
 #include "reone/game/action/wait.h"
 #include "reone/game/action/playanimation.h"
+#include "reone/game/action/randomwalk.h"
+#include "reone/game/action/moveawayfromlocation.h"
+#include "reone/game/action/moveawayfromobject.h"
 #include "reone/game/action/castspellatobject.h"
 #include "reone/game/action/castspellatlocation.h"
 #include "reone/game/d20/spells.h"
@@ -340,8 +364,7 @@ SavedCombatAttack savedCombatAttackFromGff(
                            gff.getFloat("RangedTargetY"),
                            gff.getFloat("RangedTargetZ")};
     const auto &damage = gff.getList("DamageList");
-    // storage has 15 entries. Bound malformed oversized lists rather
-    // than reproducing the out-of-bounds write.
+    // An attack record holds 15 damage values; a longer list keeps its first 15.
     for (size_t i = 0; i < std::min(damage.size(), fields.damage.size()); ++i) {
         if (damage[i]) fields.damage[i] = static_cast<int16_t>(damage[i]->getInt("DamageValue", 0));
     }
@@ -360,9 +383,6 @@ SavedCombatAttack savedCombatAttackFromGff(
     return result;
 }
 
-// The type of a feedback-log message that reports a saving throw.
-static constexpr uint32_t kSavingThrowFeedbackMessageType = 1;
-
 SavedFeedbackMessage savedFeedbackMessageFromGff(
     const resource::Gff &gff,
     const SerializedIdentityContext &identityContext) {
@@ -372,12 +392,10 @@ SavedFeedbackMessage savedFeedbackMessageFromGff(
         result.objects.push_back(SavedObjectReference::fromSerializedId(
             item->getUint("ObjectValue"), identityContext));
     }
-    // A saving-throw message names its saver by its seventh integer.
-    constexpr size_t kSaverIndex = 6;
     const auto integers = gff.getList("IntList");
-    if (gff.getUint("Type") == kSavingThrowFeedbackMessageType && integers.size() > kSaverIndex) {
+    if (gff.getUint("Type") == kSavingThrowFeedbackMessageType && integers.size() > kFeedbackSaverIndex) {
         result.saver = SavedObjectReference::fromSerializedId(
-            static_cast<uint32_t>(integers[kSaverIndex]->getInt("IntegerValue")), identityContext);
+            static_cast<uint32_t>(integers[kFeedbackSaverIndex]->getInt("IntegerValue")), identityContext);
     }
     return result;
 }
@@ -404,6 +422,7 @@ struct SavedMoveToPoint {
     SavedObjectReference area;
     SavedObjectReference target;
     bool run {false};
+    bool straight {false};
     float range {0.0f};
     float timeout {0.0f};
     bool forcedPending {false};
@@ -451,6 +470,7 @@ std::optional<SavedMoveToPoint> decodeMoveToPoint(const SavedActionRecord &recor
     result.target = std::get<SavedObjectReference>(record.parameters[4].payload);
     int32_t flags = std::get<int32_t>(record.parameters[5].payload);
     result.run = (flags & 1) != 0;
+    result.straight = (flags & 8) != 0;
     result.range = std::get<float>(record.parameters[6].payload);
     int32_t subtype = std::get<int32_t>(record.parameters[7].payload);
     result.timeout = std::get<float>(record.parameters[8].payload);
@@ -467,15 +487,21 @@ std::optional<SavedMoveToPoint> decodeMoveToPoint(const SavedActionRecord &recor
     // days. Snapshots split that clock into a normalized day/time pair.
     result.forcedActive = !timed && (day != 0 || time != 0) &&
                           result.timeout == 0.0f && day >= 0 && time >= 0;
+    // A walk to an object may already be headed for the object's use point
+    // (512), and may end once the object is within its range in a clear line
+    // (1024).
+    static constexpr int32_t kObjectWalkFlags = 512 | 1024;
     bool valid =
         std::isfinite(result.destination.x) && std::isfinite(result.destination.y) &&
         std::isfinite(result.destination.z) && std::isfinite(result.range) &&
         result.range >= 0.0f && std::isfinite(result.timeout) &&
         std::isfinite(offset.x) && std::isfinite(offset.y) &&
-        offset == glm::vec2(0.0f) && subtype == 0 && (flags & ~5) == 0 &&
+        offset == glm::vec2(0.0f) && subtype == 0 && (flags & ~(13 | kObjectWalkFlags)) == 0 &&
+        // Only a walk to a point keeps to the straight line.
+        (!result.straight || result.target.isInvalid()) &&
+        ((flags & kObjectWalkFlags) == 0 || !result.target.isInvalid()) &&
         !result.area.isInvalid() &&
-        (ordinary || result.forcedPending || result.forcedActive) &&
-        (result.target.isInvalid() ? result.range == 0.0f : !ordinary);
+        (ordinary || result.forcedPending || result.forcedActive);
     if (!valid) {
         return std::nullopt;
     }
@@ -843,7 +869,6 @@ SavedCastAction SavedCastAction::fromGff(const resource::Gff &g, const Serialize
     s.item = SavedObjectReference::fromSerializedId(g.getUint("Item", kSavedRuntimeInvalidObjectId), ids);
     s.position = g.getVector("Position"); s.facing = g.getFloat("Facing");
     s.itemProperty = g.getInt("Property", -1); s.itemCasterLevel = g.getInt("ItemLevel", -1);
-    s.itemType = g.getInt("ItemType", -1);
     s.casterLevel = g.getInt("CasterLevel"); s.forceCost = g.getInt("ForceCost");
     s.phase = g.getInt("Phase"); s.elapsed = g.getFloat("Elapsed");
     s.conjureTime = g.getFloat("ConjureTime"); s.castTime = g.getFloat("CastTime"); s.catchTime = g.getFloat("CatchTime");
@@ -869,7 +894,6 @@ std::shared_ptr<resource::Gff> SavedCastAction::toGff() const {
         .field(G::Field::newDword("Target", target.id)).field(G::Field::newDword("Item", item.id))
         .field(G::Field::newVector("Position", position)).field(G::Field::newFloat("Facing", facing))
         .field(G::Field::newInt("Property", itemProperty)).field(G::Field::newInt("ItemLevel", itemCasterLevel))
-        .field(G::Field::newInt("ItemType", itemType))
         .field(G::Field::newInt("CasterLevel", casterLevel)).field(G::Field::newInt("ForceCost", forceCost))
         .field(G::Field::newInt("Phase", phase)).field(G::Field::newFloat("Elapsed", elapsed))
         .field(G::Field::newFloat("ConjureTime", conjureTime)).field(G::Field::newFloat("CastTime", castTime)).field(G::Field::newFloat("CatchTime", catchTime))
@@ -908,18 +932,18 @@ SavedProjectile SavedProjectile::fromGff(const resource::Gff &g, const Serialize
     p.caster = ref(g, "Caster"); p.weapon = ref(g, "Weapon");
     p.spellId = g.getInt("Spell", -1); p.path = g.getInt("Path"); p.model = g.getString("Model");
     p.leg = g.getInt("Leg"); p.released = g.getBool("Released");
-    p.initialized = g.getBool("Initialized"); p.clockwise = g.getBool("Clockwise");
+    p.clockwise = g.getBool("Clockwise");
     p.elapsed = g.getFloat("Elapsed"); p.position = g.getVector("Position");
     p.velocity = g.getVector("Velocity"); p.orientation = g.getOrientation("Orientation");
-    p.acceleration = g.getVector("Acceleration"); p.parryBlocked = g.getBool("ParryBlocked");
+    p.acceleration = g.getVector("Acceleration");
     p.activationDelay = g.getFloat("ActivationDelay"); p.travelRate = g.getFloat("TravelRate");
     p.sourceHook = g.getString("SourceHook"); p.orientationMode = g.getInt("OrientMode");
     p.targetHook = g.getString("TargetHook", "impact");
     p.combatResult = g.getInt("CombatResult"); p.soundVariant = g.getInt("SoundVariant");
     for (const auto &v : g.getList("Legs")) p.legs.push_back({ref(*v, "Source"), ref(*v, "Target"),
-        v->getVector("Origin"), v->getVector("Destination"), v->getFloat("Duration"), v->getBool("Reacted"),
+        v->getVector("Origin"), v->getVector("Destination"), v->getFloat("Duration"),
         v->getInt("Motion", 1), v->getVector("TargetOffset"), v->getString("TargetHook"),
-        v->getBool("OwnTargetHook"), v->getFloat("StopRadius")});
+        v->getBool("OwnTargetHook"), v->getFloat("StopRadius"), v->getInt("Surface", -1)});
     return p;
 }
 std::shared_ptr<resource::Gff> SavedProjectile::toGff() const {
@@ -928,21 +952,21 @@ std::shared_ptr<resource::Gff> SavedProjectile::toGff() const {
     for (const auto &l : legs) entries.push_back(G::Builder().type(0)
         .field(G::Field::newDword("Source", l.source.id)).field(G::Field::newDword("Target", l.target.id))
         .field(G::Field::newVector("Origin", l.origin)).field(G::Field::newVector("Destination", l.destination))
-        .field(G::Field::newFloat("Duration", l.duration)).field(G::Field::newByte("Reacted", l.reacted))
+        .field(G::Field::newFloat("Duration", l.duration))
         .field(G::Field::newInt("Motion", l.motion)).field(G::Field::newVector("TargetOffset", l.targetOffset))
         .field(G::Field::newCExoString("TargetHook", l.targetHook))
         .field(G::Field::newByte("OwnTargetHook", l.ownsTargetHook))
-        .field(G::Field::newFloat("StopRadius", l.stopRadius)).build());
+        .field(G::Field::newFloat("StopRadius", l.stopRadius))
+        .field(G::Field::newInt("Surface", l.surface)).build());
     return G::Builder().type(0)
         .field(G::Field::newDword64("Id", id)).field(G::Field::newInt("Kind", kind))
         .field(G::Field::newDword("Caster", caster.id)).field(G::Field::newDword("Weapon", weapon.id))
         .field(G::Field::newInt("Spell", spellId)).field(G::Field::newInt("Path", path))
         .field(G::Field::newResRef("Model", model)).field(G::Field::newInt("Leg", leg))
-        .field(G::Field::newByte("Released", released)).field(G::Field::newByte("Initialized", initialized))
+        .field(G::Field::newByte("Released", released))
         .field(G::Field::newByte("Clockwise", clockwise)).field(G::Field::newFloat("Elapsed", elapsed))
         .field(G::Field::newVector("Position", position)).field(G::Field::newVector("Velocity", velocity))
          .field(G::Field::newVector("Acceleration", acceleration))
-        .field(G::Field::newByte("ParryBlocked", parryBlocked))
         .field(G::Field::newFloat("ActivationDelay", activationDelay))
         .field(G::Field::newFloat("TravelRate", travelRate))
         .field(G::Field::newCExoString("SourceHook", sourceHook))
@@ -1007,7 +1031,10 @@ bool SavedScheduledAction::bindObjectReferences(const Game &game) {
     const bool targetBound = target.isInvalid() || game.bindSavedObjectReference(target);
     const bool repositoryBound = repository.isInvalid() || game.bindSavedObjectReference(repository);
     const bool commandBound = !command || command->bindObjectReferences(game);
-    return targetBound && repositoryBound && commandBound;
+    // A scheduled item use whose item is gone is used up without casting.
+    const bool itemBound = !command || !command->cast || !(command->cast->flags & SavedCastAction::ItemCast) ||
+        command->cast->item.boundObject() != nullptr;
+    return targetBound && repositoryBound && commandBound && itemBound;
 }
 
 SavedActionRecord SavedActionRecord::fromGff(
@@ -1031,10 +1058,109 @@ SavedActionRecord SavedActionRecord::fromGff(
     return result;
 }
 
+// Whether the record holds exactly these parameters, in this order.
+static bool hasShape(const SavedActionRecord &record, std::initializer_list<SavedActionParameterType> types) {
+    using Type = SavedActionParameterType;
+    if (record.declaredParameterCount != types.size() || record.parameters.size() != types.size()) return false;
+    size_t index = 0;
+    for (Type type : types) {
+        const auto &parameter = record.parameters[index++];
+        if (parameter.type != static_cast<uint32_t>(type)) return false;
+        const bool holds = type == Type::Object    ? std::holds_alternative<SavedObjectReference>(parameter.payload)
+                           : type == Type::Integer ? std::holds_alternative<int32_t>(parameter.payload)
+                           : type == Type::String  ? std::holds_alternative<std::string>(parameter.payload)
+                                                   : std::holds_alternative<float>(parameter.payload);
+        if (!holds) return false;
+    }
+    return true;
+}
+
+// Skill actions: a mine worked on (25 disarm, 26 recover, 27 flag, 28 examine)
+// keeps its target; a mine set (29) keeps the kit, the target and a point; an
+// unlock (38) keeps the target, the item used and, until it first runs, that
+// item's property; a heal (56) keeps the patient, the item, an unused integer
+// and whether the healer may still walk up.
+static bool isSkillActionShape(const SavedActionRecord &record) {
+    using Type = SavedActionParameterType;
+    switch (record.actionId) {
+    case 25:
+    case 26:
+    case 27:
+    case 28:
+        return hasShape(record, {Type::Object});
+    case 29:
+        return hasShape(record, {Type::Object, Type::Object, Type::Float, Type::Float, Type::Float});
+    case 38:
+        return hasShape(record, {Type::Object, Type::Object}) || hasShape(record, {Type::Object, Type::Object, Type::Integer});
+    case 56:
+        return hasShape(record, {Type::Object, Type::Object, Type::Integer, Type::Integer});
+    default:
+        return false;
+    }
+}
+
+// Commands queued as they were given: a jump to a point (5: the point, its
+// area, a straight line, a search radius, the facing), a pick-up (7: the item,
+// a container, a slot), a put-down (9: the item and a point), a spoken line
+// (14: text and volume; 33: string reference and chat channel), a turn to face
+// an object (19) or a point (49), a door opened or closed (20, 21: the door and
+// how to walk up), a conversation resumed (32), a give (34: item, receiver,
+// count, how it was given), a take (35: item, giver), a lock (39) or use (40)
+// of an object, a jump to an object (48: the object and a straight line), an
+// appearance (52), a follow (55: the one followed, a run, the point heading
+// for, whether it caught up, the point last headed for; 58: its check, the
+// first four of those), a bark (62), a surrender (65) and a follow of the
+// owner (70: the range).
+static bool isQueuedCommandShape(const SavedActionRecord &record) {
+    using Type = SavedActionParameterType;
+    switch (record.actionId) {
+    case 5:
+        return hasShape(record, {Type::Float, Type::Float, Type::Float, Type::Object, Type::Integer,
+                                 Type::Float, Type::Float, Type::Float});
+    case 7:
+        return hasShape(record, {Type::Object, Type::Object, Type::Integer});
+    case 9:
+        return hasShape(record, {Type::Object, Type::Float, Type::Float, Type::Float, Type::Integer});
+    case 14:
+        return hasShape(record, {Type::String, Type::Integer});
+    case 20:
+    case 21:
+    case 48:
+        return hasShape(record, {Type::Object, Type::Integer});
+    case 32:
+    case 52:
+    case 65:
+        return hasShape(record, {});
+    case 33:
+        return hasShape(record, {Type::Integer, Type::Integer});
+    case 34:
+        return hasShape(record, {Type::Object, Type::Object, Type::Integer, Type::Integer});
+    case 35:
+        return hasShape(record, {Type::Object, Type::Object, Type::Integer});
+    case 19:
+    case 39:
+    case 40:
+        return hasShape(record, {Type::Object});
+    case 49:
+        return hasShape(record, {Type::Float, Type::Float, Type::Float});
+    case 55:
+        return hasShape(record, {Type::Object, Type::Integer, Type::Float, Type::Float, Type::Integer,
+                                 Type::Float, Type::Float});
+    case 58:
+        return hasShape(record, {Type::Object, Type::Integer, Type::Float, Type::Float});
+    case 62:
+        return hasShape(record, {Type::Integer});
+    case 70:
+        return hasShape(record, {Type::Float});
+    default:
+        return false;
+    }
+}
+
 SavedExecutionSupport SavedActionRecord::executionSupport() const {
     if (actionId == 15 && !cast) return decodeSpellCommand(*this)
         ? SavedExecutionSupport::Executable : SavedExecutionSupport::RepresentableButUnsupported;
-    if (actionId == 15 && cast) return cast->valid()
+    if ((actionId == 15 || actionId == 46) && cast) return cast->valid()
         ? SavedExecutionSupport::Executable : SavedExecutionSupport::RepresentableButUnsupported;
     // TSL writes an unequip with two trailing integers, always zero.
     const bool tslUnequip = actionId == 11 && declaredParameterCount == 5 && parameters.size() == 5 &&
@@ -1065,7 +1191,7 @@ SavedExecutionSupport SavedActionRecord::executionSupport() const {
     }
     if ((actionId == 69 || actionId == 71) && declaredParameterCount == 0 && parameters.empty())
         return SavedExecutionSupport::Executable;
-    if (actionId == 68 && declaredParameterCount == 1 && parameters.size() == 1 &&
+    if ((actionId == 67 || actionId == 68) && declaredParameterCount == 1 && parameters.size() == 1 &&
         parameters[0].type == static_cast<uint32_t>(SavedActionParameterType::Object) &&
         std::holds_alternative<SavedObjectReference>(parameters[0].payload))
         return SavedExecutionSupport::Executable;
@@ -1118,6 +1244,14 @@ SavedExecutionSupport SavedActionRecord::executionSupport() const {
     if (actionId == 30 && !parameters.empty() && std::holds_alternative<float>(parameters.front().payload)) {
         return SavedExecutionSupport::Executable;
     }
+    using Type = SavedActionParameterType;
+    if ((actionId == 3 && hasShape(*this, {Type::Object, Type::Integer, Type::Float, Type::Integer})) ||
+        (actionId == 44 &&
+         hasShape(*this, {Type::Float, Type::Float, Type::Float, Type::Integer, Type::Float, Type::Integer})) ||
+        (actionId == 45 && hasShape(*this, {Type::Float, Type::Float, Type::Float, Type::Object}))) {
+        return SavedExecutionSupport::Executable;
+    }
+    if (isSkillActionShape(*this) || isQueuedCommandShape(*this)) return SavedExecutionSupport::Executable;
     if (actionId == 37 && declaredParameterCount == 1 &&
         parameters.size() == 1 &&
         parameters.front().type ==
@@ -1130,14 +1264,15 @@ SavedExecutionSupport SavedActionRecord::executionSupport() const {
 
 std::shared_ptr<Action> SavedActionRecord::toRuntimeAction(
     Game &game, const SavedScriptSituationImporter *importer) const {
-    if (actionId == 15 && cast && cast->valid()) {
+    if ((actionId == 15 || actionId == 46) && cast && cast->valid()) {
         auto spell = game.getSpell(static_cast<SpellType>(cast->spellId));
         if (!spell) return nullptr;
+        // An item use keeps no progress across a load: it starts over from its
+        // command. One whose item is gone fails on its first frame, leaving
+        // its user posed, and the queue goes on.
+        const bool itemUse = (cast->flags & SavedCastAction::ItemCast) != 0;
         std::optional<std::shared_ptr<Item>> item;
-        if (cast->flags & SavedCastAction::ItemCast) {
-            item = std::dynamic_pointer_cast<Item>(cast->item.boundObject());
-            if (!*item && !(cast->flags & SavedCastAction::Released)) return nullptr;
-        }
+        if (itemUse) item = std::dynamic_pointer_cast<Item>(cast->item.boundObject());
         if (cast->flags & SavedCastAction::LocationTarget) {
             auto action = game.newAction<CastSpellAtLocationAction>(spell,
                 std::make_shared<Location>(cast->position, cast->facing), 0,
@@ -1146,7 +1281,9 @@ std::shared_ptr<Action> SavedActionRecord::toRuntimeAction(
                 item, cast->itemProperty >= 0 ? std::optional<size_t>(cast->itemProperty) : std::nullopt,
                 cast->itemCasterLevel >= 0 ? std::optional<int>(cast->itemCasterLevel) : std::nullopt,
                 std::nullopt, -1, (cast->flags & SavedCastAction::Fake) != 0);
-            action->restoreCastState(*cast); action->attachSavedAction(*this); return action;
+            if (itemUse) action->restartItemUse(*cast);
+            else action->restoreCastState(*cast);
+            action->attachSavedAction(*this); return action;
         }
         auto target = cast->target.boundObject();
         if (!target) return nullptr;
@@ -1156,7 +1293,9 @@ std::shared_ptr<Action> SavedActionRecord::toRuntimeAction(
             cast->itemProperty >= 0 ? std::optional<size_t>(cast->itemProperty) : std::nullopt,
             cast->itemCasterLevel >= 0 ? std::optional<int>(cast->itemCasterLevel) : std::nullopt,
             std::nullopt, -1, (cast->flags & SavedCastAction::Fake) != 0);
-        action->restoreCastState(*cast); action->attachSavedAction(*this); return action;
+        if (itemUse) action->restartItemUse(*cast);
+        else action->restoreCastState(*cast);
+        action->attachSavedAction(*this); return action;
     }
     if (executionSupport() != SavedExecutionSupport::Executable) {
         return nullptr;
@@ -1225,6 +1364,13 @@ std::shared_ptr<Action> SavedActionRecord::toRuntimeAction(
         action->attachSavedAction(*this);
         return action;
     }
+    if (actionId == 67) {
+        auto door = std::dynamic_pointer_cast<Door>(std::get<SavedObjectReference>(parameters[0].payload).boundObject());
+        if (!door) return nullptr;
+        auto action = game.newAction<DoorSaberAction>(std::move(door));
+        action->attachSavedAction(*this);
+        return action;
+    }
     if (actionId == 71) {
         auto action = game.newAction<SwitchWeaponsAction>();
         action->attachSavedAction(*this);
@@ -1232,6 +1378,175 @@ std::shared_ptr<Action> SavedActionRecord::toRuntimeAction(
     }
     if (actionId == 30) {
         auto action = game.newAction<WaitAction>(std::get<float>(parameters.front().payload));
+        action->attachSavedAction(*this);
+        return action;
+    }
+    if (actionId == 3) {
+        auto fleeFrom = std::get<SavedObjectReference>(parameters[0].payload).boundObject();
+        if (!fleeFrom) return nullptr;
+        auto action = game.newAction<MoveAwayFromObject>(
+            std::move(fleeFrom),
+            std::get<int32_t>(parameters[1].payload) != 0,
+            std::get<float>(parameters[2].payload),
+            std::get<int32_t>(parameters[3].payload));
+        action->attachSavedAction(*this);
+        return action;
+    }
+    if (actionId == 44) {
+        auto action = game.newAction<MoveAwayFromLocation>(
+            std::make_shared<Location>(glm::vec3(
+                                           std::get<float>(parameters[0].payload),
+                                           std::get<float>(parameters[1].payload),
+                                           std::get<float>(parameters[2].payload)),
+                                       0.0f),
+            std::get<int32_t>(parameters[3].payload) != 0,
+            std::get<float>(parameters[4].payload));
+        action->attachSavedAction(*this);
+        return action;
+    }
+    if (actionId == 45) {
+        if (!std::dynamic_pointer_cast<Area>(std::get<SavedObjectReference>(parameters[3].payload).boundObject())) {
+            return nullptr;
+        }
+        auto action = game.newAction<RandomWalkAction>(glm::vec3(
+            std::get<float>(parameters[0].payload),
+            std::get<float>(parameters[1].payload),
+            std::get<float>(parameters[2].payload)));
+        action->attachSavedAction(*this);
+        return action;
+    }
+    if (isSkillActionShape(*this)) {
+        auto object = [this](size_t index) {
+            return std::get<SavedObjectReference>(parameters[index].payload).boundObject();
+        };
+        std::shared_ptr<UseSkillAction> action;
+        switch (actionId) {
+        case 25:
+            action = game.newAction<UseSkillAction>(SkillType::Demolitions, object(0));
+            break;
+        case 26:
+            action = game.newAction<UseSkillAction>(SkillType::Demolitions, object(0), static_cast<int>(SubSkill::RecoverTrap));
+            break;
+        case 27:
+            action = game.newAction<UseSkillAction>(SkillType::Demolitions, object(0), static_cast<int>(SubSkill::FlagTrap));
+            break;
+        case 28:
+            action = game.newAction<UseSkillAction>(SkillType::Demolitions, object(0), static_cast<int>(SubSkill::ExamineTrap));
+            break;
+        case 29: {
+            // Without its kit the action is no longer a mine set.
+            auto kit = std::dynamic_pointer_cast<Item>(object(0));
+            if (!kit) return nullptr;
+            action = game.newAction<UseSkillAction>(SkillType::Demolitions, object(1), 0, std::move(kit));
+            break;
+        }
+        case 38:
+            action = game.newAction<UseSkillAction>(SkillType::Security, object(0), 0, std::dynamic_pointer_cast<Item>(object(1)));
+            break;
+        default:
+            action = game.newAction<UseSkillAction>(SkillType::TreatInjury, object(0), 0, std::dynamic_pointer_cast<Item>(object(1)));
+            if (std::get<int32_t>(parameters[3].payload) == 0) action->skipApproach();
+            break;
+        }
+        action->attachSavedAction(*this);
+        return action;
+    }
+    if (isQueuedCommandShape(*this)) {
+        auto object = [this](size_t index) {
+            return std::get<SavedObjectReference>(parameters[index].payload).boundObject();
+        };
+        auto integer = [this](size_t index) { return std::get<int32_t>(parameters[index].payload); };
+        auto real = [this](size_t index) { return std::get<float>(parameters[index].payload); };
+        std::shared_ptr<Action> action;
+        switch (actionId) {
+        case 5: {
+            if (!std::dynamic_pointer_cast<Area>(object(3))) return nullptr;
+            const glm::vec3 position(real(0), real(1), real(2));
+            action = game.newAction<JumpToLocationAction>(
+                std::make_shared<Location>(position, glm::vec3(real(6), real(7), 0.0f)));
+            break;
+        }
+        case 7:
+        case 9: {
+            auto item = std::dynamic_pointer_cast<Item>(object(0));
+            if (!item) return nullptr;
+            if (actionId == 7) action = game.newAction<PickUpItemAction>(std::move(item));
+            else action = game.newAction<PutDownItemAction>(std::move(item));
+            break;
+        }
+        case 14:
+            action = game.newAction<SpeakStringAction>(std::get<std::string>(parameters[0].payload), integer(1));
+            break;
+        case 19: {
+            auto target = object(0);
+            if (!target) return nullptr;
+            action = game.newAction<ChangeFacingAction>(std::move(target));
+            break;
+        }
+        case 49:
+            action = game.newAction<ChangeFacingAction>(glm::vec3(real(0), real(1), real(2)));
+            break;
+        case 20:
+        case 21: {
+            auto door = std::dynamic_pointer_cast<Door>(object(0));
+            if (!door) return nullptr;
+            if (actionId == 20) action = game.newAction<OpenDoorAction>(std::move(door));
+            else action = game.newAction<CloseDoorAction>(std::move(door));
+            break;
+        }
+        case 32:
+            action = game.newAction<ResumeConversationAction>();
+            break;
+        case 33: {
+            // The chat channel names the volume: a whisper, a shout, else talk.
+            const int channel = integer(1);
+            action = game.newAction<SpeakStringByStrRefAction>(integer(0), channel == 10 ? 1 : channel == 9 ? 2 : 0);
+            break;
+        }
+        case 34:
+        case 35: {
+            auto item = std::dynamic_pointer_cast<Item>(object(0));
+            auto other = object(1);
+            if (!item || !other) return nullptr;
+            if (actionId == 34) action = game.newAction<GiveItemAction>(std::move(item), std::move(other));
+            else action = game.newAction<TakeItemAction>(std::move(item), std::move(other));
+            break;
+        }
+        case 39:
+            action = game.newAction<LockObjectAction>(object(0));
+            break;
+        case 40:
+            action = game.newAction<OpenContainerAction>(object(0));
+            break;
+        case 48: {
+            auto target = object(0);
+            if (!target) return nullptr;
+            action = game.newAction<JumpToObjectAction>(std::move(target), integer(1) != 0);
+            break;
+        }
+        case 52:
+            action = game.newAction<AppearAction>();
+            break;
+        case 55:
+        case 58: {
+            // The follow distance is how far in front of the one followed the
+            // point heading for lies.
+            auto target = object(0);
+            if (!target) return nullptr;
+            const float distance = glm::distance(glm::vec2(real(2), real(3)), glm::vec2(target->position()));
+            action = game.newAction<FollowAction>(std::move(target), distance);
+            break;
+        }
+        case 62:
+            action = game.newAction<BarkStringAction>(integer(0));
+            break;
+        case 65:
+            action = game.newAction<SurrenderToEnemiesAction>();
+            break;
+        default: // 70
+            action = game.newAction<FollowOwnerAction>(real(0));
+            break;
+        }
         action->attachSavedAction(*this);
         return action;
     }
@@ -1290,7 +1605,8 @@ std::shared_ptr<Action> SavedActionRecord::toRuntimeAction(
             auto action = game.newAction<MoveToLocationAction>(
                 std::move(location), decoded->run,
                 decoded->forcedPending || decoded->forcedActive,
-                decoded->forcedPending ? decoded->timeout : 0.0f, state);
+                decoded->forcedPending ? decoded->timeout : 0.0f, state,
+                decoded->range, decoded->straight);
             action->attachSavedAction(*this);
             return action;
         }
@@ -1366,10 +1682,9 @@ bool SavedActionRecord::bindObjectReferences(const Game &game) {
     if (cast) {
         if (!(cast->flags & SavedCastAction::LocationTarget))
             allBound = game.bindSavedObjectReference(cast->target) && allBound;
-        if (cast->flags & SavedCastAction::ItemCast) {
-            bool itemBound = game.bindSavedObjectReference(cast->item);
-            if (!(cast->flags & SavedCastAction::Released)) allBound = itemBound && allBound;
-        }
+        // An item use whose item is gone still comes back; it fails as it
+        // runs.
+        if (cast->flags & SavedCastAction::ItemCast) game.bindSavedObjectReference(cast->item);
     }
     if (round) {
         game.bindSavedObjectReference(round->pauseOwner); game.bindSavedObjectReference(round->master);
@@ -1558,7 +1873,7 @@ SavedExecutionSupport SavedEventRecord::executionSupport() const {
          std::holds_alternative<std::monostate>(payload))) return SavedExecutionSupport::Executable;
     if (eventId == static_cast<uint32_t>(SavedEventType::SignalEvent)) {
         const auto *event = std::get_if<SavedScriptEvent>(&payload);
-        if (event && (event->type == 0 || event->type == 2 || event->type == 4 || event->type == 10 || event->type == 11 ||
+        if (event && (event->type == 0 || event->type == 2 || event->type == 4 || event->type == 7 || event->type == 10 || event->type == 11 ||
                       event->type == 12 || event->type == 13 || event->type == 17 ||
                       event->type == 18 || event->type == 19 || event->type == 20 || event->type == 21 ||
                       event->type == 22 || event->type == 23 || event->type == 25 ||

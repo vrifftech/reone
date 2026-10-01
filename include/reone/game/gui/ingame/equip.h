@@ -66,7 +66,9 @@ public:
     void openItems();
     void beginSession();
     void endSession();
-    bool browsingRoster() const { return _view.canBrowseCharacters; }
+    bool browsingRoster() const { return _backing && _backing->browsingRoster(); }
+    std::shared_ptr<Creature> browsedCharacter() const { return _backing ? _backing->browsedCharacter() : nullptr; }
+    int browsedRosterIndex() const { return _backing ? _backing->browsedRosterIndex() : -1; }
 
 private:
     static constexpr int kNumControlsBar = 5;

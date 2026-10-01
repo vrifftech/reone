@@ -128,8 +128,8 @@ void RenderPipelineBase::initSpeedBlurHistory() {
     _speedBlurHistory->init();
 }
 
-void RenderPipelineBase::applySpeedBlur(Framebuffer &output, Texture &outputColor, Framebuffer &scratch) {
-    if (!_speedBlur) {
+void RenderPipelineBase::applySpeedBlur(const FrameEffects &effects, Framebuffer &output, Texture &outputColor, Framebuffer &scratch) {
+    if (!effects.speedBlur) {
         _previousFrameWasSpeed = false;
         return;
     }
@@ -137,10 +137,10 @@ void RenderPipelineBase::applySpeedBlur(Framebuffer &output, Texture &outputColo
     const glm::ivec4 screenRect(0, 0, _targetSize.x, _targetSize.y);
     // The first blurred frame only fills the history.
     if (_previousFrameWasSpeed) {
-        _uniforms.setScreenEffect([this](auto &se) {
+        _uniforms.setScreenEffect([this, &effects](auto &se) {
             se.screenResolution = glm::vec2(_targetSize);
             se.screenResolutionRcp = 1.0f / se.screenResolution;
-            se.speedBlurRatio = _speedBlurRatio;
+            se.speedBlurRatio = effects.speedBlurRatio;
         });
         _context.useProgram(_shaderRegistry.get(ShaderProgramId::postSpeedBlur));
         _context.bindDrawFramebuffer(scratch, {0});
@@ -163,11 +163,11 @@ void RenderPipelineBase::applySpeedBlur(Framebuffer &output, Texture &outputColo
     _previousFrameWasSpeed = true;
 }
 
-void RenderPipelineBase::applyDistortionOverlays(Framebuffer &output, Texture &outputColor, Framebuffer &scratch) {
-    if (!_videoEffect || !_videoEffect->distortion) {
+void RenderPipelineBase::applyDistortionOverlays(const FrameEffects &effects, Framebuffer &output, Texture &outputColor, Framebuffer &scratch) {
+    if (!effects.videoEffect || !effects.videoEffect->distortion) {
         return;
     }
-    const VideoEffect &effect = *_videoEffect;
+    const VideoEffect &effect = *effects.videoEffect;
     if (effect.clairvoyance) {
         drawDistortionOverlay(*effect.distortion, *effect.clairvoyance, output, outputColor, scratch);
     }
@@ -207,11 +207,11 @@ void RenderPipelineBase::drawDistortionOverlay(Texture &distortion, Texture &ove
     _context.blitFramebuffer(scratch, output, screenRect, screenRect);
 }
 
-void RenderPipelineBase::applyVideoEffect(Framebuffer &output, Texture &outputColor, Framebuffer &scratch) {
-    if (!_videoEffect) {
+void RenderPipelineBase::applyVideoEffect(const FrameEffects &effects, Framebuffer &output, Texture &outputColor, Framebuffer &scratch) {
+    if (!effects.videoEffect) {
         return;
     }
-    const VideoEffect &effect = *_videoEffect;
+    const VideoEffect &effect = *effects.videoEffect;
     _uniforms.setScreenEffect([&effect](auto &se) {
         se.videoModulationR = effect.modulation.r;
         se.videoModulationG = effect.modulation.g;

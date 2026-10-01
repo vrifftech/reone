@@ -50,8 +50,19 @@ public:
     bool cancel(std::shared_ptr<Action> self, Object &actor) override;
 
     SkillType skill() const { return _skill; }
-    /** Security unlocks (38); Demolitions sets (29), disarms (25), recovers (26), flags (27) or examines (28) a mine. */
+    /**
+     * Security unlocks (38); Demolitions sets (29), disarms (25), recovers (26),
+     * flags (27) or examines (28) a mine; Treat Injury heals (56).
+     */
     uint32_t serializedActionId() const override;
+    /**
+     * Only what the skill is used on and with is kept: an action taken up
+     * again does all of its work afresh, and walks up again unless it is a
+     * heal that already had.
+     */
+    std::optional<SavedActionRecord> saveFacingState() const override;
+    /** A heal taken up again after its approach works where the healer stands. */
+    void skipApproach();
 
 private:
     SkillType _skill;
@@ -59,7 +70,7 @@ private:
     int _subSkill;
     std::shared_ptr<Item> _itemUsed;
 
-    // Demolitions: approach, then work for a while, then resolve.
+    // Demolitions and Treat Injury: approach, then work for a while, then resolve.
     int _phase {0};
     float _workTime {0.0f};
     // Security: whether the work at the lock has begun.
@@ -69,8 +80,9 @@ private:
     bool setsMine() const;
     void resolveMine(Creature &actor);
     void resolveSetMine(Creature &actor);
-    void reportSkill(Creature &actor, const Object *target, int actionStrRef, int roll, int rank, int dc,
-                     bool take20, int result) const;
+    void executeTreatInjury(Creature &actor, float dt);
+    void resolveHeal(Creature &actor, Creature &target);
+    void reportSkill(Creature &actor, int actionStrRef, int roll, int rank, int dc, int result) const;
 };
 
 } // namespace game

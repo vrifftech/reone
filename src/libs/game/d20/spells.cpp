@@ -255,6 +255,7 @@ void Spells::init() {
             }
         }
         spell->category = category;
+        spell->maxCR = spells->getInt(row, "maxcr");
         spell->impactScript = impactScript;
         spell->castAnimation = parseCastAnimation(castAnim);
         spell->castSound = castSound.empty() ? nullptr : _audioClips.get(castSound);

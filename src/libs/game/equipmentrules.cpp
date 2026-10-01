@@ -25,13 +25,11 @@
 #include "reone/game/object/module.h"
 #include "reone/game/party.h"
 #include "reone/game/types.h"
+#include "reone/game/combattables.h"
 #include "reone/game/d20/class.h"
 #include "reone/game/d20/spell.h"
 #include "reone/game/d20/spells.h"
 #include "reone/game/di/services.h"
-#include "reone/resource/2da.h"
-#include "reone/resource/di/services.h"
-#include "reone/resource/provider/2das.h"
 
 #include <algorithm>
 
@@ -95,7 +93,6 @@ static int getCandidateEquipSlot(int slot) {
 // A cast-spell property of this kind lets anyone use a droid- or human-only item.
 static constexpr uint16_t kRaceExemptCastSpell = 0x81;
 static constexpr int kAttributeLimitCostTable = 26;
-static const FeatType kProficiencyAll = static_cast<FeatType>(93);
 
 std::optional<int> equipmentRefusalFeedback(EquipmentCandidateReason reason) {
     switch (reason) {
@@ -113,16 +110,16 @@ std::optional<int> equipmentRefusalFeedback(EquipmentCandidateReason reason) {
 
 int minimumEquipLevel(const Creature &creature, const Item &item) {
     const uint32_t cost = item.cost(creature.game().baseItemCostMultiplier(item.baseItemType()));
-    auto table = creature.services().resource.twoDas.get("itemvalue");
-    const int rows = table ? table->getRowCount() : 0;
+    const auto &limits = creature.services().game.combatTables.itemValueLimits();
+    const int rows = static_cast<int>(limits.size());
     int row = 0;
-    while (row < rows && cost > static_cast<uint32_t>(table->getInt(row, "maxsingleitemvalue", 0))) ++row;
+    while (row < rows && cost > static_cast<uint32_t>(limits[row])) ++row;
     return row + 1;
 }
 
 bool hasEquipmentProficiency(const Creature &creature, const Item &item) {
     if (!item.isEquippable()) return false;
-    if (creature.hasEffectiveFeat(kProficiencyAll)) return true;
+    if (creature.hasEffectiveFeat(FeatType::ProficiencyAll)) return true;
     return std::all_of(item.requiredFeats().begin(), item.requiredFeats().end(), [&creature](FeatType feat) {
         return creature.hasEffectiveFeat(feat);
     });
@@ -150,7 +147,7 @@ static bool hasProperty(const Item &item, ItemProperty type) {
 // TSL passes when any limit matches the good-evil score; KotOR needs every
 // limit to name the creature's simple alignment.
 static bool meetsAlignmentLimits(const Creature &creature, const Item &item, bool tsl) {
-    if (!hasProperty(item, ItemProperty::UseLimitationAlignmentGroup) || creature.hasEffectiveFeat(kProficiencyAll)) return true;
+    if (!hasProperty(item, ItemProperty::UseLimitationAlignmentGroup) || creature.hasEffectiveFeat(FeatType::ProficiencyAll)) return true;
     const int goodEvil = creature.goodEvil();
     if (!tsl) {
         const int simple = goodEvil <= 40 ? 3 : (goodEvil >= 60 ? 2 : 1);
@@ -172,7 +169,7 @@ static bool meetsAlignmentLimits(const Creature &creature, const Item &item, boo
 }
 
 static bool meetsClassLimits(const Creature &creature, const Item &item) {
-    if (!hasProperty(item, ItemProperty::UseLimitationClass) || creature.hasEffectiveFeat(kProficiencyAll)) return true;
+    if (!hasProperty(item, ItemProperty::UseLimitationClass) || creature.hasEffectiveFeat(FeatType::ProficiencyAll)) return true;
     const auto &classes = creature.attributes().classLevels();
     return anyActiveProperty(item, ItemProperty::UseLimitationClass, [&classes](const Item::PropertyEntry &property) {
         return std::any_of(classes.begin(), classes.end(), [&property](const auto &entry) {
@@ -212,7 +209,7 @@ static bool meetsRaceLimits(const Creature &creature, const Item &item, bool tsl
 }
 
 static bool meetsFeatLimits(const Creature &creature, const Item &item) {
-    if (!hasProperty(item, ItemProperty::UseLimitationFeat) || creature.hasEffectiveFeat(kProficiencyAll)) return true;
+    if (!hasProperty(item, ItemProperty::UseLimitationFeat) || creature.hasEffectiveFeat(FeatType::ProficiencyAll)) return true;
     return allActiveProperties(item, ItemProperty::UseLimitationFeat, [&creature](const Item::PropertyEntry &property) {
         return creature.featRemainingUses(static_cast<FeatType>(property.subtype)) != 0;
     });
@@ -228,10 +225,11 @@ static bool meetsGenderLimits(const Creature &creature, const Item &item) {
 // Limited to named characters by tag, or to the player's own character.
 static bool meetsPlayerCharacterLimits(const Creature &creature, const Item &item) {
     if (!hasProperty(item, ItemProperty::LimitUseByPc)) return true;
-    auto table = creature.services().resource.twoDas.get("iprp_pc");
+    const auto &tables = creature.services().game.combatTables;
     return anyActiveProperty(item, ItemProperty::LimitUseByPc, [&](const Item::PropertyEntry &property) {
         if (property.subtype == 0) return creature.isPlayerCreated();
-        return table && boost::iequals(table->getString(property.subtype, "expectedtag"), creature.tag());
+        const auto tag = tables.playerCharacterLimitTag(property.subtype);
+        return tag && boost::iequals(*tag, creature.tag());
     });
 }
 
@@ -239,9 +237,7 @@ static bool meetsPlayerCharacterLimits(const Creature &creature, const Item &ite
 // a minimum base score.
 static bool meetsAttributeLimits(const Creature &creature, const Item &item) {
     if (!hasProperty(item, ItemProperty::LimitUseByAttribute)) return true;
-    auto &twoDas = creature.services().resource.twoDas;
-    auto costTables = twoDas.get("iprp_costtable");
-    auto values = costTables ? twoDas.get(boost::to_lower_copy(costTables->getString(kAttributeLimitCostTable, "name"))) : nullptr;
+    const auto *values = creature.services().game.combatTables.findCostTableAt(kAttributeLimitCostTable);
     return allActiveProperties(item, ItemProperty::LimitUseByAttribute, [&](const Item::PropertyEntry &property) {
         Ability ability;
         switch (property.subtype) {
@@ -253,12 +249,13 @@ static bool meetsAttributeLimits(const Creature &creature, const Item &item) {
         case 5: ability = Ability::Charisma; break;
         default: return true;
         }
-        const int required = values ? values->getInt(property.costValue, "value", 0) : 0;
+        const int required = values ? values->row(property.costValue).value.value_or(0) : 0;
         return creature.attributes().getAbilityScore(ability) >= required;
     });
 }
 
-// Bao-Dur cannot equip the Jedi robes.
+// Bao-Dur cannot equip the Jedi robes. The item description names him on a
+// shorter list, without base item 100.
 static bool isExcludedForCreature(const Creature &creature, const Item &item) {
     if (!boost::iequals(creature.tag(), "baodur")) return false;
     switch (item.baseItemType()) {

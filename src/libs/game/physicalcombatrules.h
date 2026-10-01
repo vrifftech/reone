@@ -142,6 +142,20 @@ constexpr int getAutoBalanceDamageFactor(
     return 1 + static_cast<int>(factor * multiplier);
 }
 
+/** The hit-point factor of a balanced creature: one plus the truncated single-
+ * precision product of VPMult and the levels the player character had above
+ * the second when it spawned. The float product lands exactly on whole numbers
+ * at several levels, so it must not be widened to double.
+ */
+constexpr int getAutoBalanceVitalityFactor(
+    std::uint8_t playerLevelAtSpawn,
+    float multiplier) {
+
+    int level = static_cast<int8_t>(playerLevelAtSpawn);
+    float factor = level >= 2 ? static_cast<float>(level - 2) : 0.0f;
+    return 1 + static_cast<int>(factor * multiplier);
+}
+
 /** Base and derived save stats are interpreted as signed bytes.
  * Effect/room/Survival modifiers are added AFTER the derived-byte boundary.
  */
@@ -157,7 +171,7 @@ inline int getSurvivalSavingThrowBonus(bool tsl, bool survival, int vitality, in
     if (!tsl || !survival) {
         return 0;
     }
-    // Both virtual HP returns are sign-extended from AX before division.
+    // Vitality and maximum vitality are taken as signed 16-bit values.
     vitality = static_cast<int16_t>(vitality);
     maximum = static_cast<int16_t>(maximum);
     if (maximum == 0) {
@@ -378,8 +392,6 @@ constexpr int getEffectiveArmorMaxDexterityBonus(
     return baseMaximum + itemAdjustment;
 }
 
-constexpr int kMaximumDodgeBonus = 10;
-
 constexpr int getTotalDefenseBonus(
     bool tsl,
     bool totalDefense,
@@ -491,17 +503,6 @@ constexpr bool isMeleePowerAttackFeat(FeatType feat) {
     case FeatType::PowerAttack:
     case FeatType::ImprovedPowerAttack:
     case FeatType::MasterPowerAttack:
-        return true;
-    default:
-        return false;
-    }
-}
-
-constexpr bool isMeleeFlurryFeat(FeatType feat) {
-    switch (feat) {
-    case FeatType::Flurry:
-    case FeatType::ImprovedFlurry:
-    case FeatType::MasterFlurry:
         return true;
     default:
         return false;
@@ -654,8 +655,8 @@ constexpr int getMeleeSpecialAttackSaveDC(
         return isMeleeCriticalStrikeFeat(feat) ? attackerLevel + strengthModifier : 0;
     }
 
-    // stores the level in a byte, reads Strength as a signed byte,
-    // then passes the completed DC as an unsigned 16-bit value.
+    // The level counts as an unsigned byte and Strength as a signed byte;
+    // the DC wraps to an unsigned 16-bit value.
     int levelByte = static_cast<std::uint8_t>(attackerLevel);
     int strengthByte = static_cast<std::uint8_t>(strengthModifier);
     int signedStrength = strengthByte < 0x80
@@ -671,23 +672,6 @@ constexpr int getMeleeSpecialAttackSaveDC(
         return 0;
     }
     return static_cast<std::uint16_t>(difficultyClass);
-}
-
-constexpr bool acBonusVsDamageTypeApplies(
-    std::uint16_t rawSubtype,
-    int damageFlags) {
-
-    // Both games compare the raw iprp_combatdam row with runtime flags.
-    switch (rawSubtype) {
-    case 1:
-        return damageFlags == 0;
-    case 2:
-        return damageFlags == static_cast<int>(DamageType::Bludgeoning);
-    case 4:
-        return damageFlags == static_cast<int>(DamageType::Piercing);
-    default:
-        return false;
-    }
 }
 
 } // namespace game

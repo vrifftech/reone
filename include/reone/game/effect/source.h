@@ -49,8 +49,8 @@ struct EffectSourceKey {
 
 EffectSourceKey getEffectSourceKey(const EffectInstance &effect);
 
-// Negative saving-throw modifiers accumulate per source, unlike strongest-only
-// modifier groups. Source capacity and final caps are title-specific.
+// Ability decreases add up within a source and increases keep the strongest per
+// source. Source capacity and final caps are title-specific.
 class AbilityEffectReducer {
 public:
     explicit AbilityEffectReducer(bool tsl) : _tsl(tsl) {}

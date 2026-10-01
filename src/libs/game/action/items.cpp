@@ -23,6 +23,8 @@
 #include "reone/game/party.h"
 #include "reone/game/statussummary.h"
 #include "reone/game/action/takeitem.h"
+#include "reone/game/action/pickupitem.h"
+#include "reone/game/action/putdownitem.h"
 #include "reone/game/action/equipitem.h"
 #include "reone/game/equipmentoperation.h"
 #include "reone/game/object/item.h"
@@ -82,6 +84,20 @@ void GiveItemAction::execute(std::shared_ptr<Action> self, Object &actor, float 
     complete();
 }
 
+// A give is kept as the item and the receiver, the whole stack, given by a
+// script; taken up again it walks up afresh.
+std::optional<SavedActionRecord> GiveItemAction::saveFacingState() const {
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 34;
+    result.declaredParameterCount = 4;
+    result.parameters = {
+        {3, SavedObjectReference::fromRuntimeId(_item->id())},
+        {3, SavedObjectReference::fromRuntimeId(_giveTo->id())},
+        {1, int32_t {-1}}, {1, int32_t {1}},
+    };
+    return result;
+}
+
 // A creature or placeable takes the item. A creature that takes it from a
 // party member reports the item lost in the status summary.
 void TakeItemAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
@@ -100,6 +116,46 @@ void TakeItemAction::execute(std::shared_ptr<Action> self, Object &actor, float 
         break;
     }
     complete();
+}
+
+std::optional<SavedActionRecord> TakeItemAction::saveFacingState() const {
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 35;
+    result.declaredParameterCount = 3;
+    result.parameters = {
+        {3, SavedObjectReference::fromRuntimeId(_item->id())},
+        {3, SavedObjectReference::fromRuntimeId(_takeFrom->id())},
+        {1, int32_t {1}},
+    };
+    return result;
+}
+
+// A pick-up is kept as the item, from no container and no inventory slot.
+std::optional<SavedActionRecord> PickUpItemAction::saveFacingState() const {
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 7;
+    result.declaredParameterCount = 3;
+    result.parameters = {
+        {3, SavedObjectReference::fromRuntimeId(_item->id())},
+        {3, SavedObjectReference::fromRuntimeId(kSavedRuntimeInvalidObjectId)},
+        {1, int32_t {0xff}},
+    };
+    return result;
+}
+
+// A put-down is kept as the item and where it goes down: at the feet of the one
+// holding it, or where it lies when nobody does.
+std::optional<SavedActionRecord> PutDownItemAction::saveFacingState() const {
+    auto holder = _game.getObjectById(_item->owner());
+    const glm::vec3 point = holder ? holder->position() : _item->position();
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 9;
+    result.declaredParameterCount = 5;
+    result.parameters = {
+        {3, SavedObjectReference::fromRuntimeId(_item->id())},
+        {2, point.x}, {2, point.y}, {2, point.z}, {1, int32_t {0}},
+    };
+    return result;
 }
 
 void EquipItemAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {

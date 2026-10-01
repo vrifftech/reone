@@ -110,9 +110,7 @@ void CastSpellAtLocationAction::execute(
         }
         if (_started && creature) {
             if (_ownsMovementRestriction) creature->setMovementRestricted(true);
-            if (_targetLocation)
-                _presenter.restore(*creature, *_spell, _itemType, nullptr,
-                    _targetLocation->position(), _schedule);
+            if (_targetLocation) _presenter.restore(*creature, *_spell, _schedule);
         }
     }
     // A party member at zero vitality stops casting; a cast that can no longer
@@ -202,6 +200,7 @@ void CastSpellAtLocationAction::execute(
             creature->setMovementRestricted(true);
         }
 
+        _services.game.projectiles.cancelSpell(_presentationId);
         _presentationId = _services.game.projectiles.beginSpell(actor, nullptr,
             _targetLocation->position(), *_spell, _projectilePathType, _game, _services);
         if (creature && !_item) creature->spellCastVisuals().showConjure(*creature, *_spell);
@@ -360,7 +359,7 @@ bool CastSpellAtLocationAction::continuePaidCast(Creature &caster, const Action 
 
 std::optional<SavedActionRecord> CastSpellAtLocationAction::saveFacingState() const {
     SavedActionRecord record = originalSavedAction().value_or(SavedActionRecord {});
-    record.actionId = 15; record.parameters.clear(); record.declaredParameterCount = 0;
+    record.actionId = _item ? 46 : 15; record.parameters.clear(); record.declaredParameterCount = 0;
     SavedCastAction state;
     state.spellId = static_cast<int>(_spell->type);
     state.casterLevel = _castContext.casterLevel; state.forceCost = _castContext.forcePointCost;
@@ -379,13 +378,11 @@ std::optional<SavedActionRecord> CastSpellAtLocationAction::saveFacingState() co
         (_commitAttempted ? SavedCastAction::CommitAttempted : 0u) |
         (_committed ? SavedCastAction::Committed : 0u) |
         (_dispatched ? SavedCastAction::Released : 0u) |
-        (_ownsMovementRestriction ? SavedCastAction::MovementOwned : 0u) |
-        (_itemConsumed ? SavedCastAction::ItemConsumed : 0u);
+        (_ownsMovementRestriction ? SavedCastAction::MovementOwned : 0u);
     state.flags |= SavedCastAction::LocationTarget;
     state.position = _targetLocation->position(); state.facing = _targetLocation->facing();
     if (_item) {
         state.flags |= SavedCastAction::ItemCast;
-        state.itemType = _itemType.value_or(-1);
         state.item = SavedObjectReference::fromRuntimeId(*_item ? (*_item)->id() : script::kObjectInvalid);
         _game.bindSavedObjectReference(state.item);
         state.itemProperty = _itemProperty ? static_cast<int>(*_itemProperty) : -1;
@@ -394,7 +391,14 @@ std::optional<SavedActionRecord> CastSpellAtLocationAction::saveFacingState() co
     record.cast = std::move(state);
     return record;
 }
+void CastSpellAtLocationAction::restartItemUse(const SavedCastAction &state) {
+    assert(_item);
+    _presentationId = state.presentationId;
+}
+
 void CastSpellAtLocationAction::restoreCastState(const SavedCastAction &state) {
+    // An item use starts over after a load instead.
+    assert(!_item);
     _schedule.restore(state);
     _associatedFeat = state.associatedFeat;
     _selection = state.selectedClass == -1 ? std::nullopt
@@ -407,16 +411,8 @@ void CastSpellAtLocationAction::restoreCastState(const SavedCastAction &state) {
     _committed = (state.flags & SavedCastAction::Committed) != 0;
     _dispatched = (state.flags & SavedCastAction::Released) != 0;
     _ownsMovementRestriction = (state.flags & SavedCastAction::MovementOwned) != 0;
-    _itemConsumed = (state.flags & SavedCastAction::ItemConsumed) != 0;
-    if (_item) _itemType = state.itemType;
     _restorePresentation = true;
-    // A started item use stays unclearable; a paid spell derives its
-    // clearability again on its next frame.
-    if (_started && _item) setClearable(false);
-    if (_itemConsumed && _item) {
-        _runtimeDependencies.erase(std::remove_if(_runtimeDependencies.begin(), _runtimeDependencies.end(),
-            [&](const auto &ref) { return ref.resolve().get() == _item->get(); }), _runtimeDependencies.end());
-    }
+    // A paid spell derives its clearability again on its next frame.
 }
 
 } // namespace game

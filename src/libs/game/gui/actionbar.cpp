@@ -229,8 +229,15 @@ void ActionBar::handleMouseButtonDown(ActionSlot &slot) {
             _feedback.announce(kNoBehaviorMessage);
         }
     } else if (ctxAction.type == ActionType::UseSkill) {
-        // A mine from the mines slot is set where the leader stands.
+        // A mine from the mines slot is set where the leader stands. Using the
+        // kit clears the leader's actions out of combat, and so does setting
+        // the mine whenever the area takes another, unless the leader is busy.
         queue(_game.newAction<UseSkillAction>(ctxAction.skill, leader, 0, ctxAction.item));
+        order = [this, leader, queued = std::move(order)]() {
+            auto area = _game.module() ? _game.module()->area() : nullptr;
+            if (!leader->isInCombat() || (area && area->playerCanSetMines())) leader->clearOrdersUnlessBusy();
+            queued();
+        };
     } else {
         assert((ctxAction.type == ActionType::CastSpellAtObject) && "unexpected action");
         // A leader without a Jedi class casts nothing. A power on the leader

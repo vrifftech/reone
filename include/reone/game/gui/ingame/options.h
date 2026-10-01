@@ -111,6 +111,24 @@ private:
     bool _feedbackOpen {false};
     int _feedbackDescribedRow {-1};
 
+    // Gameplay options panel, opened over the menu from BTN_GAMEPLAY. Only
+    // the difficulty level and mouse look are handled; the other options are
+    // drawn as laid out.
+    struct GameplayControls {
+        std::shared_ptr<gui::Button> BTN_BACK;
+        std::shared_ptr<gui::Button> BTN_DEFAULT;
+        std::shared_ptr<gui::Button> BTN_DIFFICULTY;
+        std::shared_ptr<gui::Button> BTN_DIFFLEFT;
+        std::shared_ptr<gui::Button> BTN_DIFFRIGHT;
+        std::shared_ptr<gui::ToggleButton> CB_INVERTCAM;
+        std::shared_ptr<gui::Label> LBL_TITLE;
+        std::shared_ptr<gui::ListBox> LB_DESC;
+    };
+
+    std::shared_ptr<gui::IGUI> _gameplayGUI;
+    GameplayControls _gameplayControls;
+    bool _gameplayOpen {false};
+
     void onGUILoaded() override;
 
     void loadFeedbackPanel();
@@ -118,6 +136,13 @@ private:
     void closeFeedbackPanel();
     void showFeedbackOptions();
     void showFeedbackDescription(int row);
+
+    void loadGameplayPanel();
+    void openGameplayPanel();
+    void closeGameplayPanel();
+    void lowerDifficulty();
+    void raiseDifficulty();
+    void showDifficulty();
 
     void loadAutoPausePanel();
     void openAutoPausePanel();

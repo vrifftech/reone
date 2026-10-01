@@ -77,6 +77,17 @@ struct VideoEffect {
     std::shared_ptr<graphics::Texture> fury;
 };
 
+/** The treatments laid over the whole finished frame. */
+struct FrameEffects {
+    /**
+     * The speed blur: each frame is blended with a 128x128 history of the
+     * earlier output, weighted by speedBlurRatio.
+     */
+    bool speedBlur {false};
+    float speedBlurRatio {0.75f};
+    std::optional<VideoEffect> videoEffect;
+};
+
 class IRenderPipeline {
 public:
     virtual ~IRenderPipeline() = default;
@@ -86,16 +97,8 @@ public:
     virtual void reset() = 0;
     virtual void inRenderPass(RenderPassName name, std::function<void(IRenderPass &)> block) = 0;
 
-    virtual graphics::Texture &render() = 0;
-
-    /**
-     * The speed blur: each frame is blended with a 128x128 history of the
-     * earlier output, weighted by \p ratio.
-     */
-    virtual void setSpeedBlur(bool enabled, float ratio) = 0;
-
-    /** The video effect laid over the finished frame, if any; a pipeline that shows no frame ignores it. */
-    virtual void setVideoEffect(std::optional<VideoEffect> effect) {}
+    /** Renders the frame and lays \p effects over it. */
+    virtual graphics::Texture &render(const FrameEffects &effects) = 0;
 };
 
 class IRenderPipelineFactory {
@@ -115,15 +118,6 @@ public:
 
     void inRenderPass(RenderPassName name, RenderPassCallback callback) override {
         _passCallbacks[name] = std::move(callback);
-    }
-
-    void setSpeedBlur(bool enabled, float ratio) override {
-        _speedBlur = enabled;
-        _speedBlurRatio = ratio;
-    }
-
-    void setVideoEffect(std::optional<VideoEffect> effect) override {
-        _videoEffect = std::move(effect);
     }
 
 protected:
@@ -149,13 +143,9 @@ protected:
     RenderPassName _passName {RenderPassName::None};
     std::map<RenderPassName, RenderPassCallback> _passCallbacks;
 
-    bool _speedBlur {false};
-    float _speedBlurRatio {0.0f};
     bool _previousFrameWasSpeed {false};
     std::shared_ptr<graphics::Texture> _speedBlurHistoryColor;
     std::unique_ptr<graphics::Framebuffer> _speedBlurHistory;
-
-    std::optional<VideoEffect> _videoEffect;
 
     RenderPipelineBase(glm::ivec2 targetSize,
                        graphics::GraphicsOptions &options,
@@ -181,20 +171,21 @@ protected:
     void applyFXAA(graphics::Texture &tex, graphics::Framebuffer &dst, const glm::ivec2 &size);
     void applySharpen(graphics::Texture &tex, graphics::Framebuffer &dst, const glm::ivec2 &size, float amount);
     /**
-     * Blends \p output with the history when the previous frame was blurred
-     * too, using \p scratch, then shrinks \p output into the history.
+     * When \p effects has the speed blur, blends \p output with the history
+     * if the previous frame was blurred too, using \p scratch, then shrinks
+     * \p output into the history.
      */
-    void applySpeedBlur(graphics::Framebuffer &output, graphics::Texture &outputColor, graphics::Framebuffer &scratch);
+    void applySpeedBlur(const FrameEffects &effects, graphics::Framebuffer &output, graphics::Texture &outputColor, graphics::Framebuffer &scratch);
     /** The 128x128 copy of earlier output the speed blur and the overlays read. */
     void initSpeedBlurHistory();
     void drawDistortionOverlay(graphics::Texture &distortion, graphics::Texture &overlay, graphics::Framebuffer &output, graphics::Texture &outputColor, graphics::Framebuffer &scratch);
-    /** Lays the video effect, if any, over \p output through \p scratch. */
-    void applyVideoEffect(graphics::Framebuffer &output, graphics::Texture &outputColor, graphics::Framebuffer &scratch);
+    /** Lays the video effect of \p effects, if any, over \p output through \p scratch. */
+    void applyVideoEffect(const FrameEffects &effects, graphics::Framebuffer &output, graphics::Texture &outputColor, graphics::Framebuffer &scratch);
     /**
-     * Lays the clairvoyance and then the fury overlay of the video effect, if
-     * any, over \p output through \p scratch.
+     * Lays the clairvoyance and then the fury overlay of the video effect of
+     * \p effects, if any, over \p output through \p scratch.
      */
-    void applyDistortionOverlays(graphics::Framebuffer &output, graphics::Texture &outputColor, graphics::Framebuffer &scratch);
+    void applyDistortionOverlays(const FrameEffects &effects, graphics::Framebuffer &output, graphics::Texture &outputColor, graphics::Framebuffer &scratch);
 };
 
 class RenderPipelineFactory : public IRenderPipelineFactory, boost::noncopyable {

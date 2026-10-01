@@ -39,7 +39,10 @@ void GUISounds::init() {
     // Rows 10 and 11: an item chosen for, or cleared from, an equipment slot.
     loadSound(*sounds, "Inventory_Select", _inventorySelect);
     loadSound(*sounds, "Inventory_Drop", _inventoryDrop);
-    // PlayGuiSound uses the indexed table: row 2 is rejection, row 6 is action.
+    // TSL only: the light and dark side stings.
+    loadSound(*sounds, "DarkSide", _darkSide);
+    loadSound(*sounds, "LightSide", _lightSide);
+    // Rows 2 and 6 are the refusal and acceptance sounds.
     if (sounds->getRowCount() > 2)
         _actionUnavailable = _audioClips.get(sounds->getString(2, "soundresref"));
     if (sounds->getRowCount() > 6)
@@ -65,6 +68,8 @@ void GUISounds::deinit() {
     _checkboxCheck.reset();
     _inventorySelect.reset();
     _inventoryDrop.reset();
+    _darkSide.reset();
+    _lightSide.reset();
 }
 
 } // namespace game

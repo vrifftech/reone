@@ -13,7 +13,6 @@
 #include <limits>
 #include <map>
 #include <set>
-#include <sstream>
 
 #include "reone/game/action.h"
 #include "reone/game/di/services.h"
@@ -399,10 +398,12 @@ std::shared_ptr<Gff> eventToGff(
         }
         put(*data, Gff::Field::newList(
                        "ObjectIDList", std::move(objects)));
-        // A saving-throw message names its saver by its seventh integer.
-        if (!value->saver.isInvalid()) {
-            auto integers = data->getList("IntList");
-            put(*integers.at(6), Gff::Field::newInt("IntegerValue", static_cast<int32_t>(value->saver.id)));
+        // A saving-throw message names its saver by its seventh integer, which
+        // is the invalid object once the saver is gone.
+        auto integers = data->getList("IntList");
+        if (data->getUint("Type") == kSavingThrowFeedbackMessageType && integers.size() > kFeedbackSaverIndex) {
+            put(*integers[kFeedbackSaverIndex],
+                Gff::Field::newInt("IntegerValue", static_cast<int32_t>(value->saver.id)));
             put(*data, Gff::Field::newList("IntList", std::move(integers)));
         }
     }
@@ -1029,7 +1030,7 @@ void ModuleSnapshotBuilder::normalizeEventReferences(
         for (auto &reference : feedback->objects) {
             reference.id = serializedReferenceId(reference, ids);
         }
-        if (!feedback->saver.isInvalid()) feedback->saver.id = serializedReferenceId(feedback->saver, ids);
+        feedback->saver.id = serializedReferenceId(feedback->saver, ids);
     }
 }
 
@@ -1176,6 +1177,9 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writeCreature(
     put(*result, Gff::Field::newDword("Experience", creature._xp));
     put(*result, Gff::Field::newInt("JoiningXP", creature._joiningXP));
     put(*result, Gff::Field::newByte("GoodEvil", creature._goodEvil));
+    // A field label holds sixteen characters, so the base alignment's is cut short.
+    if (_game.isTSL())
+        put(*result, Gff::Field::newChar("BaseCNPCAlignmen", creature._baseCNPCAlignment));
     put(*result, Gff::Field::newByte("Race", static_cast<uint8_t>(creature._race)));
     put(*result, Gff::Field::newByte("SubraceIndex", static_cast<uint8_t>(creature._subrace)));
     put(*result, Gff::Field::newByte("Disarmable", creature._disarmable));
@@ -1210,7 +1214,19 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writeCreature(
     }
     put(*result, Gff::Field::newByte(
         "MovementRate", static_cast<uint8_t>(std::clamp(creature._walkRate, 0, 255))));
-    put(*result, Gff::Field::newByte("Listening", creature._isListening));
+    put(*result, Gff::Field::newByte("Listening", creature._listening));
+    if (creature._listenExpressions.empty()) {
+        removeSaveField(*result, "ExpressionList");
+    } else {
+        std::vector<std::shared_ptr<Gff>> expressions;
+        for (const auto &expression : creature._listenExpressions) {
+            expressions.push_back(Gff::Builder().type(5)
+                .field(Gff::Field::newInt("ExpressionId", expression.number))
+                .field(Gff::Field::newCExoString("ExpressionString", expression.pattern))
+                .build());
+        }
+        put(*result, Gff::Field::newList("ExpressionList", std::move(expressions)));
+    }
     put(*result, Gff::Field::newByte("NaturalAC", creature._naturalAC));
     put(*result, Gff::Field::newShort("refbonus", creature._refBonus));
     put(*result, Gff::Field::newShort("willbonus", creature._willBonus));

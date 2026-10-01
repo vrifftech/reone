@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "reone/game/combattables.h"
 #include "reone/game/di/services.h"
 #include "reone/game/event.h"
 #include "reone/game/game.h"
@@ -28,7 +29,6 @@
 #include "reone/game/object/module.h"
 #include "reone/game/party.h"
 #include "reone/game/script/runner.h"
-#include "reone/game/twodautil.h"
 #include "reone/resource/2da.h"
 #include "reone/resource/di/services.h"
 #include "reone/resource/provider/2das.h"
@@ -229,11 +229,11 @@ void Encounter::setActive(bool active) {
 }
 
 void Encounter::setDifficulty(int difficultyIndex) {
-    auto table = _services.resource.twoDas.get("encdifficulty");
-    if (!table) {
+    const auto *difficulties = _services.game.combatTables.encounterDifficulties();
+    if (!difficulties) {
         _difficulty = 0;
-    } else if (difficultyIndex >= 0 && difficultyIndex < table->getRowCount()) {
-        _difficulty = static_cast<int>(table->getFloat(difficultyIndex, "value"));
+    } else if (difficultyIndex >= 0 && difficultyIndex < static_cast<int>(difficulties->size())) {
+        _difficulty = static_cast<int>((*difficulties)[difficultyIndex]);
     }
 }
 
@@ -373,10 +373,11 @@ void Encounter::chooseWaveByCount() {
     }
 }
 
-// One chosen creature appears per update: at the spawn points in turn when the
-// encounter has them and knows who entered, otherwise at the first open spot
-// in sight of the encounter's position. A creature that cannot appear yet is
-// tried again next update.
+// One chosen creature appears per update. When the encounter has spawn points
+// it appears round the point chosen for whoever entered, or round the world
+// origin when no one did; failing that, or without spawn points, it appears at
+// the first open spot in sight of the encounter's position. A creature that
+// cannot appear yet is tried again next update.
 void Encounter::spawnNext() {
     if (_pendingSpawns.empty()) return;
     auto module = _game.module();
@@ -438,7 +439,6 @@ void Encounter::spawnNext() {
     _pendingSpawns.erase(_pendingSpawns.begin());
     area->add(creature);
     area->signalEntered(*creature);
-    creature->runSpawnScript();
 }
 
 // A continuous encounter that resets re-arms once its reset time has passed
@@ -508,11 +508,11 @@ void Encounter::receiveExhaustedSignal() {
 
 float Encounter::creaturePoints(float challengeRating) const {
     if (challengeRating > 0.0f && challengeRating < 1.0f) {
-        const auto fractions = getRequiredTwoDA(_services.resource.twoDas, "fractionalcr");
-        if (challengeRating >= fractions->getFloat(0, "min")) return 1.0f;
-        if (challengeRating >= fractions->getFloat(1, "min")) return 1.0f / kCreaturePointBase;
-        if (challengeRating >= fractions->getFloat(2, "min")) return std::pow(kCreaturePointBase, -2.0f);
-        if (challengeRating >= fractions->getFloat(3, "min")) return std::pow(kCreaturePointBase, -3.0f);
+        const auto &tables = _services.game.combatTables;
+        if (challengeRating >= tables.fractionalChallengeMinimum(0)) return 1.0f;
+        if (challengeRating >= tables.fractionalChallengeMinimum(1)) return 1.0f / kCreaturePointBase;
+        if (challengeRating >= tables.fractionalChallengeMinimum(2)) return std::pow(kCreaturePointBase, -2.0f);
+        if (challengeRating >= tables.fractionalChallengeMinimum(3)) return std::pow(kCreaturePointBase, -3.0f);
         return std::pow(kCreaturePointBase, -4.0f);
     }
     if (challengeRating >= 0.0f && challengeRating <= kCreaturePointTableSize) {

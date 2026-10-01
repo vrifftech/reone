@@ -18,6 +18,7 @@
 #include "reone/game/object/trigger.h"
 
 #include "reone/game/animations.h"
+#include "reone/game/combattables.h"
 #include "reone/game/di/services.h"
 #include "reone/game/game.h"
 #include "reone/game/object/creature.h"
@@ -200,7 +201,6 @@ void Trigger::deserializeAll(
 
     // Not handled:
     // - OnClick
-    // - CreatorId (IDs are not deserialized)
     // - Cursor
     // - PortraitId
     // - VarTable
@@ -258,8 +258,8 @@ glm::vec3 Trigger::nearestPoint(const glm::vec3 &from) const {
         const glm::vec3 offset(from - _position);
         if (glm::dot(offset, offset) <= 1e-4f) return from;
         float radius = 1.0f;
-        if (auto ranges = _services.resource.twoDas.get("ranges"))
-            radius = ranges->getFloat(kTrapRadiusRange, "primaryrange", radius);
+        if (const auto *range = _services.game.combatTables.findRange(kTrapRadiusRange))
+            radius = range->primary.value_or(radius);
         return _position + glm::normalize(offset) * radius;
     }
     // Nearest point on the outline, edge by edge in vertex order.

@@ -143,19 +143,24 @@ public:
         _engine.init();
         // A creature update searches for mines with its Awareness rank, which
         // includes the racial Wisdom adjustment.
-        ON_CALL(_engine.resourceModule().twoDas(), get("skills"))
-            .WillByDefault(Return(std::shared_ptr<resource::TwoDA>(resource::TwoDA::Builder()
-                .columns({"label", "untrained", "keyability", "armorcheckpenalty"})
-                .row({"ComputerUse", "1", "INT", "0"})
-                .row({"Demolitions", "0", "INT", "1"})
-                .row({"Stealth", "0", "DEX", "1"})
-                .row({"Awareness", "1", "WIS", "0"})
-                .build())));
+        auto &skills = static_cast<MockSkills &>(_engine.services().game.skills);
+        auto skill = [](int untrained, Ability keyAbility) {
+            auto result = std::make_shared<Skill>();
+            result->untrained = untrained;
+            result->keyAbility = keyAbility;
+            return result;
+        };
+        ON_CALL(skills, getRequired(_)).WillByDefault(Return(nullptr));
+        ON_CALL(skills, getRequired(SkillType::ComputerUse)).WillByDefault(Return(skill(1, Ability::Intelligence)));
+        ON_CALL(skills, getRequired(SkillType::Demolitions)).WillByDefault(Return(skill(0, Ability::Intelligence)));
+        ON_CALL(skills, getRequired(SkillType::Stealth)).WillByDefault(Return(skill(0, Ability::Dexterity)));
+        ON_CALL(skills, getRequired(SkillType::Awareness)).WillByDefault(Return(skill(1, Ability::Wisdom)));
         ON_CALL(_engine.resourceModule().twoDas(), get("racialtypes"))
             .WillByDefault(Return(std::shared_ptr<resource::TwoDA>(resource::TwoDA::Builder()
                 .columns({"stradjust", "dexadjust", "conadjust", "intadjust", "wisadjust", "chaadjust"})
                 .row({"0", "0", "0", "0", "0", "0"})
                 .build())));
+        _engine.gameModule().combatTables().init(_engine.resourceModule().twoDas());
         ON_CALL(_engine.sceneModule().graphs(), get(_))
             .WillByDefault(ReturnRef(_sceneGraph));
         ON_CALL(_sceneGraph, testElevation(_, _))

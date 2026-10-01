@@ -25,6 +25,7 @@
 #include "reone/audio/clip.h"
 #include "reone/audio/di/services.h"
 #include "reone/audio/mixer.h"
+#include "reone/game/combattables.h"
 #include "reone/game/di/services.h"
 #include "reone/game/object/area.h"
 #include "reone/game/object/module.h"
@@ -37,7 +38,6 @@
 #include "reone/game/game.h"
 #include "reone/game/event.h"
 #include "reone/game/script/runner.h"
-#include "reone/game/twodautil.h"
 #include "reone/graphics/di/services.h"
 #include "reone/resource/2da.h"
 #include "reone/resource/di/services.h"
@@ -193,6 +193,8 @@ void Placeable::loadAppearance() {
     std::string modelName(boost::to_lower_copy(placeables->getString(_appearance, "modelname")));
     _hostileAppearance = placeables->getInt(_appearance, "hostile", 0) == 1;
     _preciseUse = placeables->getInt(_appearance, "preciseuse", 0) == 1;
+    _appearanceNameStrRef = placeables->getInt(_appearance, "strref", -1);
+    _soundAppType = placeables->getIntOpt(_appearance, "soundapptype");
 
     auto model = _services.resource.models.get(modelName);
     if (!model) {
@@ -360,7 +362,7 @@ void Placeable::enterDestroyedState() {
     _animationState = 10072;
     if (auto model = std::static_pointer_cast<ModelSceneNode>(_sceneNode)) {
         model->playAnimation(_services.game.animations.getNameById(307));
-        // Client death unloads the model's lights; scene nodes own them here.
+        // A destroyed placeable's lights go out.
         std::vector<scene::SceneNode *> pending {model.get()};
         while (!pending.empty()) {
             auto node = pending.back();
@@ -371,9 +373,15 @@ void Placeable::enterDestroyedState() {
     }
 }
 
+void Placeable::runConversationScript() {
+    // A placeable with no conversation script, or "default", runs the
+    // fallback one, which stays its own.
+    if (_onDialog.empty() || _onDialog == "default") _onDialog = kFallbackConversationScript;
+    _game.scriptRunner().run(_onDialog, _id);
+}
+
 void Placeable::runEndDialogScript() {
     _game.scriptRunner().run(_onEndDialogue, id());
-    _computerUseAdjustment = 0;
 }
 
 void Placeable::receiveDamagedSignal(const std::shared_ptr<Object> &damager) {
@@ -498,8 +506,7 @@ void Placeable::armMine(int trapType, int detectDC, int disarmDC, int ownerDemol
                     const std::shared_ptr<Creature> &setter, int blastBonus, bool blast) {
     _trapFlag = 1;
     _trapType = static_cast<uint8_t>(trapType);
-    if (auto traps = _services.resource.twoDas.get("traps"))
-        _onTrapTriggered = boost::to_lower_copy(traps->getString(_trapType, "trapscript"));
+    if (auto script = _services.game.combatTables.trapScript(_trapType)) _onTrapTriggered = *script;
     _trapDetectDC = static_cast<uint8_t>(detectDC);
     _disarmDC = static_cast<uint8_t>(disarmDC);
     _trapDetectable = true;
@@ -597,6 +604,7 @@ void Placeable::loadBodyBag(int appearance) {
     _disarmDC = 15;
     _openLockDC = 18;
     _appearance = appearance;
+    _appearanceNameStrRef = placeables->getInt(appearance, "strref", -1);
     _hitPoints = _maxHitPoints = kBodyBagHitPoints;
     _currentHitPoints = kBodyBagHitPoints;
     _hardness = _appearance == kRancorCorpseAppearance ? 1 : 5;
@@ -679,10 +687,9 @@ static constexpr float kBodilessOpeningWait = 0.5f;
 
 // The opened sound is the placeable sounds row named by the appearance's
 // sound type.
-static std::shared_ptr<audio::AudioClip> findOpenedSound(ServicesView &services, uint32_t appearance) {
-    const auto soundType = services.resource.twoDas.get("placeables")->getIntOpt(appearance, "soundapptype");
+static std::shared_ptr<audio::AudioClip> findOpenedSound(ServicesView &services, std::optional<int> soundType) {
     if (!soundType) return nullptr;
-    const std::string resRef = getRequiredTwoDA(services.resource.twoDas, "placeableobjsnds")->getString(*soundType, "opened");
+    const std::string &resRef = services.game.combatTables.objectOpenedSound(*soundType);
     return resRef.empty() ? nullptr : services.resource.audioClips.get(resRef);
 }
 
@@ -695,7 +702,7 @@ float Placeable::beginOpeningInventory() {
         auto swing = model->model().getAnimation(_services.game.animations.getNameById(kCloseToOpenRow));
         wait = swing ? swing->length() : 0.0f;
     }
-    auto sound = findOpenedSound(_services, _appearance);
+    auto sound = findOpenedSound(_services, _soundAppType);
     if (sound) {
         _services.audio.mixer.play(sound, audio::AudioType::Sound, 1.0f, false, _position);
         if (sound->duration() > wait && wait != 0.0f) wait = sound->duration();
@@ -712,7 +719,7 @@ void Placeable::completeOpeningInventory(Object &opener) {
 
 void Placeable::playOpenedSound() {
     _inventoryOpenPending = false;
-    if (auto sound = findOpenedSound(_services, _appearance)) {
+    if (auto sound = findOpenedSound(_services, _soundAppType)) {
         _services.audio.mixer.play(sound, audio::AudioType::Sound, 1.0f, false, _position);
     }
 }

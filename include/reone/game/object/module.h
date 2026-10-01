@@ -52,6 +52,7 @@ struct ModuleInfo {
     std::string onActivateItem;
     std::string onAcquireItem;
     std::string onUnacquireItem;
+    std::string onEquipItem;
     std::string onPlayerDeath;
     /** The hours the day starts and ends at; the hours outside them are night. */
     int dawnHour {0};
@@ -71,6 +72,7 @@ struct ModuleItemEvents {
     uint32_t acquiredFrom {script::kObjectInvalid};
     uint32_t lost {script::kObjectInvalid};
     uint32_t lostBy {script::kObjectInvalid};
+    uint32_t equipped {script::kObjectInvalid};
 };
 
 class Door;
@@ -97,9 +99,8 @@ public:
     }
 
     void load(std::string name, const resource::Gff &ifo, bool restoreSavedWorld = false);
-    // Structural load from records already validated by Game. Fresh-world
-    // spawn scripts are deliberately dispatched later via runSpawnScripts(),
-    // after the destination has crossed its publication boundary.
+    // Structural load from records already validated by Game. The creatures
+    // run their creation scripts on the area's first update.
     void load(
         std::string name,
         const resource::Gff &ifo,
@@ -115,10 +116,15 @@ public:
     // then enters the area.
     void signalLoaded();
     void runOnStartScript();
-    void runSpawnScripts();
 
     bool handle(const input::Event &event);
     void update(float dt);
+    /** The module's and its area's actions run with the clock stopped. */
+    void runObjectActions();
+    // A companion or puppet that stands outside the area runs its creation
+    // script on the first frame after it comes into being, as one in the area
+    // does, and also while the game is paused or a menu is open.
+    void runSpawnScriptsOutsideArea();
 
     std::vector<ContextAction> getContextActions(const std::shared_ptr<Object> &object) const;
     std::shared_ptr<Spell> mineForcePower(const Trigger &trigger, const Creature &leader) const;

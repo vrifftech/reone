@@ -151,13 +151,11 @@ public:
         return EffectApplicationResult::Retained;
     }
 
-    EffectRemovalResult onRemove(Object &, const EffectInstance &) override {
+    void onRemove(Object &, const EffectInstance &) override {
         ++removals;
-        return removalResult;
     }
 
     std::shared_ptr<Effect> nestedEffect;
-    EffectRemovalResult removalResult {EffectRemovalResult::Removed};
     bool calledBeforeAdmission {false};
     bool nestedAccepted {false};
     int removals {0};
@@ -378,16 +376,10 @@ TEST(EffectInstance, callbacks_follow_the_result_bearing_lifecycle_order) {
         object->effects()[0].applicationOrder,
         object->effects()[1].applicationOrder);
 
-    effect->removalResult = EffectRemovalResult::Retained;
-    object->removeEffect(effect);
-    EXPECT_EQ(object->effects().size(), 2);
-    EXPECT_EQ(effect->removals, 1);
-
-    effect->removalResult = EffectRemovalResult::Removed;
-    object->removeEffect(effect);
+    object->removeEffectApplication(object->findEffectInstance(*effect)->applicationOrder);
     ASSERT_EQ(object->effects().size(), 1);
     EXPECT_EQ(object->effects().front().effect, nested);
-    EXPECT_EQ(effect->removals, 2);
+    EXPECT_EQ(effect->removals, 1);
 }
 
 TEST(CombatEffectSource, independent_effects_use_canonical_effect_ids) {
@@ -759,13 +751,13 @@ TEST(CombatVisibility, see_invisible_and_ultravision_counter_distinct_types) {
     observer->applyEffect(seeInvisible, DurationType::Permanent);
     EXPECT_FALSE(normalTarget->isInvisibleTo(*observer));
     EXPECT_TRUE(darknessTarget->isInvisibleTo(*observer));
-    observer->removeEffect(seeInvisible);
+    observer->removeEffectApplication(observer->findEffectInstance(*seeInvisible)->applicationOrder);
 
     auto ultravision = std::make_shared<UltravisionEffect>();
     observer->applyEffect(ultravision, DurationType::Permanent);
     EXPECT_TRUE(normalTarget->isInvisibleTo(*observer));
     EXPECT_FALSE(darknessTarget->isInvisibleTo(*observer));
-    observer->removeEffect(ultravision);
+    observer->removeEffectApplication(observer->findEffectInstance(*ultravision)->applicationOrder);
     EXPECT_TRUE(darknessTarget->isInvisibleTo(*observer));
 }
 
@@ -778,6 +770,7 @@ TEST(CombatVisibility, unseen_and_invisible_attackers_remove_dexterity_and_dodge
             .columns({"stradjust", "dexadjust", "conadjust", "intadjust", "wisadjust", "chaadjust"})
             .row({"0", "0", "0", "0", "0", "0"})
             .build())));
+    engine.gameModule().combatTables().init(engine.resourceModule().twoDas());
     StubConsole console;
     Game game(GameID::KotOR, "", engine.options(), engine.services(), console);
     auto attacker = game.newCreature();
@@ -799,7 +792,7 @@ TEST(CombatVisibility, unseen_and_invisible_attackers_remove_dexterity_and_dodge
         InvisibilityType::Normal);
     attacker->applyEffect(invisibility, DurationType::Permanent);
     EXPECT_EQ(12, defender->getDefense(attacker.get(), 0));
-    attacker->removeEffect(invisibility);
+    attacker->removeEffectApplication(attacker->findEffectInstance(*invisibility)->applicationOrder);
     EXPECT_EQ(19, defender->getDefense(attacker.get(), 0));
 
     defender->setObjectSeen(attacker, false);
@@ -830,7 +823,7 @@ TEST(CombatVisibility, one_true_seeing_effect_counters_both_invisibility_familie
     EXPECT_FALSE(normalTarget->isInvisibleTo(*observer));
     EXPECT_FALSE(darknessTarget->isInvisibleTo(*observer));
 
-    observer->removeEffect(trueSeeing);
+    observer->removeEffectApplication(observer->findEffectInstance(*trueSeeing)->applicationOrder);
     EXPECT_TRUE(normalTarget->isInvisibleTo(*observer));
     EXPECT_TRUE(darknessTarget->isInvisibleTo(*observer));
 }
@@ -853,7 +846,7 @@ TEST(CombatVisibility, stacked_true_seeing_removal_clears_effect_bit) {
     observer->applyEffect(first, DurationType::Permanent);
     observer->applyEffect(second, DurationType::Permanent);
 
-    observer->removeEffect(first);
+    observer->removeEffectApplication(observer->findEffectInstance(*first)->applicationOrder);
 
     // In TSL, clearing bit 4 and setting bit 2 while another type-72 effect
     // remains restores ordinary invisibility while keeping Darkness visible.

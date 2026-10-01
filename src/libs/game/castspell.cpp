@@ -44,18 +44,18 @@ namespace game {
 
 static constexpr int kCatchAnimationId = 10161;
 
+// A wrist launcher worn on either arm.
+static bool wearsWristLauncher(const Creature &user) {
+    for (const int slot : {InventorySlots::rightArm, InventorySlots::leftArm}) {
+        const auto it = user.equipment().find(slot);
+        if (it != user.equipment().end() && it->second && it->second->itemType() == 48) return true;
+    }
+    return false;
+}
+
 SpellType itemSpellForActor(const Object &actor, SpellType propertySpell) {
     const auto *creature = dyn_cast<Creature>(&actor);
-    if (!actor.game().isTSL() || !creature) return propertySpell;
-    bool launcher = false;
-    for (const int slot : {InventorySlots::rightArm, InventorySlots::leftArm}) {
-        const auto it = creature->equipment().find(slot);
-        if (it != creature->equipment().end() && it->second->itemType() == 48) {
-            launcher = true;
-            break;
-        }
-    }
-    if (!launcher) return propertySpell;
+    if (!actor.game().isTSL() || !creature || !wearsWristLauncher(*creature)) return propertySpell;
     switch (static_cast<int>(propertySpell)) {
     case 87: return static_cast<SpellType>(246);
     case 88: return static_cast<SpellType>(247);
@@ -282,6 +282,17 @@ void SpellSchedule::restore(const SavedCastAction &record) {
     else if (_state == Effect) _state = WaitFinish;
 }
 
+// The clips a spell shows: a conjure one-shot, then the cast clip, which loops
+// unless it is a one-shot, each with its animation ID. Creature models only
+// conjure, and only the monster fury loop has a creature row.
+struct CastPresentation {
+    std::string conjure;
+    std::string cast;
+    bool castLoops {false};
+    int conjureId {-1};
+    int castId {-1};
+};
+
 static CastPresentation castClips(SpellCastAnimation code, bool creatureModel) {
     if (creatureModel) {
         switch (code) {
@@ -307,7 +318,7 @@ static CastPresentation castClips(SpellCastAnimation code, bool creatureModel) {
 }
 
 // The conjure's and the cast's animation IDs follow the code alone.
-CastPresentation castPresentation(SpellCastAnimation code, bool creatureModel) {
+static CastPresentation castPresentation(SpellCastAnimation code, bool creatureModel) {
     CastPresentation look = castClips(code, creatureModel);
     switch (code) {
     case SpellCastAnimation::Dark: look.conjureId = 10016; break;
@@ -330,17 +341,9 @@ CastPresentation castPresentation(SpellCastAnimation code, bool creatureModel) {
     return look;
 }
 
-// A wrist launcher worn on either arm.
-static bool wearsWristLauncher(const Creature &user) {
-    for (const int slot : {InventorySlots::rightArm, InventorySlots::leftArm}) {
-        const auto it = user.equipment().find(slot);
-        if (it != user.equipment().end() && it->second && it->second->itemType() == 48) return true;
-    }
-    return false;
-}
-
-ItemUsePresentation itemUsePresentation(const Creature &user, int itemType, const Spell &spell,
-                                        const Creature *targetCreature, const glm::vec3 &targetPosition) {
+static ItemUsePresentation itemUsePresentation(const Creature &user, int itemType, const Spell &spell,
+                                               const Creature *targetCreature,
+                                               const glm::vec3 &targetPosition) {
     const bool tsl = user.game().isTSL();
     // Only character and droid models use the item clips; others stand in their pose.
     const bool bodied = user.modelType() != Creature::ModelType::Creature;
@@ -586,24 +589,9 @@ void CastPresenter::updateItem(Creature &user, Creature *targetCreature,
 // one-shot the cast is still writing arrives anew and plays from its start;
 // any other creature comes back already showing it and returns to its loop at
 // once.
-void CastPresenter::restore(Creature &caster, const Spell &spell, std::optional<int> itemType, Creature *targetCreature,
-                            const glm::vec3 &targetPosition, const SpellSchedule &schedule) {
+void CastPresenter::restore(Creature &caster, const Spell &spell, const SpellSchedule &schedule) {
     const float time = schedule.time();
     const bool replays = caster.game().party().isMember(caster);
-    if (itemType) {
-        _item = itemUsePresentation(caster, *itemType, spell, targetCreature, targetPosition);
-        const auto &look = *_item;
-        if (time >= look.end || !look.hold || (look.onTarget && targetCreature && targetCreature != &caster)) return;
-        if (look.loopAt >= 0.0f && time >= look.loopAt) {
-            caster.holdCastAnimation("castoutlp1");
-            return;
-        }
-        caster.holdCastAnimation(look.loops ? look.clip : std::string());
-        // The clip is written until the item takes effect.
-        if (!look.loops && replays && time < look.impact)
-            caster.playFireForgetAnimation(look.clip, AnimationSource {look.clipId});
-        return;
-    }
     const auto look = castPresentation(spell.castAnimation, caster.modelType() == Creature::ModelType::Creature);
     const float castEnd = spell.conjTime + spell.castTime;
     if (time < spell.conjTime) {
@@ -700,12 +688,6 @@ uint32_t spellProjectileTimeMilliseconds(
     // return above passes through the Spiral adjustment.
     if (spell.projectilePath == ProjectilePathType::Spiral) milliseconds += 2500;
     return milliseconds;
-}
-
-float spellProjectileTime(const Spell &spell, const glm::vec3 &origin,
-                          const glm::vec3 &destination, ProjectilePathType overridePath,
-                          bool tsl) {
-    return spellProjectileTimeMilliseconds(spell, origin, destination, overridePath, tsl) / 1000.0f;
 }
 
 bool equipmentAllowsSpell(const Creature &caster, const Spell &spell) {

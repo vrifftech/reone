@@ -72,7 +72,8 @@ constexpr size_t getAbilityEffectSourceCapacity(bool tsl) {
 constexpr int getAbilityEffectIncreaseCap(bool tsl) { return tsl ? 60 : 20; }
 constexpr int getAbilityEffectDecreaseCap(bool tsl) { return tsl ? 90 : 30; }
 
-// Fresh application only. Save restoration requires its own load-mode contract.
+// A restored effect passes both dead flags as false: loading bypasses only the
+// dead and temporarily dead gates.
 constexpr bool admitsAbilityEffect(
     bool dead, bool temporarilyDead, int amount, bool decrease, bool plot) {
     return !dead && !temporarilyDead && amount > 0 && !(decrease && plot);
@@ -145,8 +146,6 @@ enum class EffectApplicationResult {
     Retained, // Publish the record; derived modifiers may read it thereafter.
 };
 
-enum class EffectRemovalResult { Retained, Removed };
-
 // Selectors for the script commands, not names for internal erasers.
 enum class ScriptEffectRemovalMatch { PackageId, Integer0, TypeAndFirstTwoIntegers };
 
@@ -174,7 +173,7 @@ public:
 
     /** Apply once; distinguish rejection, a completed operation, and retention. */
     virtual EffectApplicationResult onApply(Object &object, EffectInstance &instance);
-    virtual EffectRemovalResult onRemove(Object &object, const EffectInstance &instance);
+    virtual void onRemove(Object &object, const EffectInstance &instance);
     virtual void onUpdate(Object &object, const EffectInstance &instance, float dt);
     /** Release executable payload owned by the outgoing Area lifetime. */
     virtual void retireAreaRuntime(

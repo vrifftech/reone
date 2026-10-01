@@ -29,9 +29,10 @@
 #include "reone/game/object/placeable.h"
 #include "reone/game/party.h"
 #include "reone/game/savedruntime.h"
-#include "reone/game/action/pauseconversation.h"
 #include "reone/game/action/resumeconversation.h"
 #include "reone/game/action/barkstring.h"
+#include "reone/game/action/speakstring.h"
+#include "reone/game/action/speakstringbystrref.h"
 
 namespace reone {
 
@@ -64,7 +65,7 @@ bool StartConversationAction::approach(Creature &speaker, float dt) {
         _approaching = true;
     }
     const Creature::UseRange use = speaker.useRange(*_objectToConverse);
-    if (!speaker.navigateTo(use.point, true, use.range + kConversationUseRangeExtra, dt)) return false;
+    if (!speaker.navigateTo(use.point, true, use.range + kConversationUseRangeExtra, dt, _objectToConverse.get())) return false;
     const glm::vec3 offset(_objectToConverse->position() - speaker.position());
     return glm::dot(offset, offset) <= kConversationStartDistance * kConversationStartDistance;
 }
@@ -185,6 +186,8 @@ void StartConversationAction::execute(std::shared_ptr<Action> self, Object &acto
         complete();
         return;
     }
+    // While the world is held, a conversation waits to start.
+    if (_game.holdsWorld()) return;
 
     auto actorPtr = _game.getObjectById(actor.id());
 
@@ -301,20 +304,60 @@ std::optional<SavedActionRecord> StartConversationAction::saveFacingState() cons
     return result;
 }
 
-void PauseConversationAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
-    _game.pauseConversationBy(actor);
-    complete();
-}
-
 void ResumeConversationAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
     _game.resumeConversationBy(actor);
     complete();
+}
+
+std::optional<SavedActionRecord> ResumeConversationAction::saveFacingState() const {
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 32;
+    result.declaredParameterCount = 0;
+    result.parameters.clear();
+    return result;
+}
+
+void SpeakStringAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
+    // A creature that speaks gives up stealth. The words reach listeners as
+    // SpeakString's do.
+    if (auto *creature = dyn_cast<Creature>(&actor)) creature->setStealthMode(false);
+    if (auto *area = actor.spatialArea()) area->broadcastDialog(actor, _stringToSpeak, _talkVolume);
+    complete();
+}
+
+std::optional<SavedActionRecord> SpeakStringAction::saveFacingState() const {
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 14;
+    result.declaredParameterCount = 2;
+    result.parameters = {{4, _stringToSpeak}, {1, int32_t {_talkVolume}}};
+    return result;
+}
+
+// The volume is kept as the chat channel it speaks on: a whisper, a shout, or
+// talk for anything else.
+std::optional<SavedActionRecord> SpeakStringByStrRefAction::saveFacingState() const {
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 33;
+    result.declaredParameterCount = 2;
+    result.parameters = {
+        {1, int32_t {_strRef}},
+        {1, int32_t {_talkVolume == 1 ? 10 : _talkVolume == 2 ? 9 : 8}},
+    };
+    return result;
 }
 
 void BarkStringAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
     // TODO: implement
 
     complete();
+}
+
+std::optional<SavedActionRecord> BarkStringAction::saveFacingState() const {
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 62;
+    result.declaredParameterCount = 1;
+    result.parameters = {{1, int32_t {_strRef}}};
+    return result;
 }
 
 } // namespace game

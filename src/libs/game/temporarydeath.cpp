@@ -35,6 +35,10 @@ static constexpr double kDeathSlowSpan = 0.8;
 static constexpr float kDeathPanelTimeScale = 0.25f;
 // The first title's death message.
 static constexpr int kStrRefDeathMessage = 42351;
+// A script ending the game with the end-game GUI keeps it up this long: the
+// sequel never counts it down, the first title counts it in world time.
+static constexpr float kEndGameGuiDelayTSL = 60.0f;
+static constexpr float kEndGameGuiDelayKotOR = 5.0f;
 
 void Game::updateTemporaryDeath() {
     const auto area = _module ? _module->area() : nullptr;
@@ -136,6 +140,18 @@ void Game::runDeathSequence() {
     const Camera *view = getActiveCamera();
     const glm::mat4 viewTransform(view ? view->sceneNode()->absoluteTransform() : glm::mat4(1.0f));
     exitFreeLook();
+    displayDeathMessage();
+    const auto area = _module ? _module->area() : nullptr;
+    auto *camera = area ? area->getCamera<ThirdPersonCamera>(CameraType::ThirdPerson) : nullptr;
+    const auto fallen = getObjectById(_lastPartyMemberTempKilled);
+    if (camera && fallen && fallen->type() == ObjectType::Creature) {
+        camera->startDeathOrbit(fallen, viewTransform);
+        _cameraType = CameraType::ThirdPerson;
+    }
+    _globalFade.request(GlobalFade::Direction::Out, kDeathFadeWait, kDeathFadeLength, glm::vec3(0.0f));
+}
+
+void Game::displayDeathMessage() {
     setRelativeMouseMode(false);
     changeScreen(Screen::Death);
     if (isTSL()) {
@@ -152,14 +168,34 @@ void Game::runDeathSequence() {
         // Queue end-game so the GUI isn't destroyed in its own callback.
         _deathMessage->show(_services.resource.strings.getText(kStrRefDeathMessage), nullptr, [this]() { requestEndGame(); });
     }
-    const auto area = _module ? _module->area() : nullptr;
-    auto *camera = area ? area->getCamera<ThirdPersonCamera>(CameraType::ThirdPerson) : nullptr;
-    const auto fallen = getObjectById(_lastPartyMemberTempKilled);
-    if (camera && fallen && fallen->type() == ObjectType::Creature) {
-        camera->startDeathOrbit(fallen, viewTransform);
-        _cameraType = CameraType::ThirdPerson;
+}
+
+bool Game::isDeathMessageDisplayed() const {
+    if (isTSL()) return _deathDisplay && _deathDisplay->isPresented();
+    return _deathMessage && _deathMessage->isVisible();
+}
+
+// Ending the game with the end-game GUI puts the first title's game over, so
+// the world slows as after a party wipe and a fallen party starts no death
+// sequence of its own. It plays no movie and stops nothing; the world and its
+// scripts run on until the game returns to the main menu.
+void Game::endGame(bool showGui) {
+    _endGamePending = true;
+    _showEndGameGui = showGui;
+    _endGameDelay = showGui ? (isTSL() ? kEndGameGuiDelayTSL : kEndGameGuiDelayKotOR) : 0.0f;
+    if (showGui && !isTSL()) {
+        _gameOver = true;
+        _deathSequenceStarting = true;
     }
-    _globalFade.request(GlobalFade::Direction::Out, kDeathFadeWait, kDeathFadeLength, glm::vec3(0.0f));
+}
+
+// The credits go over whatever is on screen and take every input while they
+// are up; the world and its scripts run on underneath.
+void Game::startCreditSequence(bool transparentBackground, const std::string &music) {
+    if (_credits) return;
+    _credits = std::make_unique<CreditsGUI>(*this, _services, transparentBackground, music);
+    _credits->init();
+    _areaMusic.stopSounds();
 }
 
 void Game::hurryDeathSequence() {
@@ -167,8 +203,9 @@ void Game::hurryDeathSequence() {
 }
 
 // The first title slows the world while its game is over, and ends the game
-// once the fade to black has finished or an end was asked for. The sequel's
-// gameover panel slows the world for as long as it is up.
+// once the fade to black has finished or an end was asked for, and the death
+// message of a scripted end has had its time. The sequel's gameover panel
+// slows the world for as long as it is up.
 void Game::updateDeathSequence() {
     if (isTSL()) {
         _deathTimeScale = _deathDisplay && _deathDisplay->isPresented() ? kDeathPanelTimeScale : 1.0f;
@@ -188,11 +225,12 @@ void Game::updateDeathSequence() {
                           ? kDeathSlowestSpeed
                           : -std::log(_deathSequenceSeconds * (1.0f / kDeathSlowSeconds)) / _deathSlowRate + kDeathSlowestSpeed;
     if (_globalFade.fading() && !_endGamePending) return;
+    if (_endGameDelay > 0.0f) return;
     _deathTimeScale = 1.0f;
     _gameOver = false;
     _deathSequenceStarting = true;
     _globalFade.stop();
-    _endGamePending = true;
+    requestEndGame();
     if (_deathMessage) _deathMessage->hide();
 }
 

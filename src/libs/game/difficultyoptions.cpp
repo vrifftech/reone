@@ -63,7 +63,11 @@ void DifficultyOptions::init() {
 }
 
 const DifficultyOption &DifficultyOptions::get(int difficulty) const {
-    assert(difficulty >= 0 && difficulty < static_cast<int>(_options.size()) && "difficulty option out of range");
+    // The stored level is not range-checked, so a hand-edited one can point
+    // past the table.
+    static const DifficultyOption missing {-1, "", 0.0f};
+    assert(difficulty >= 0 && "difficulty option out of range");
+    if (difficulty >= static_cast<int>(_options.size())) return missing;
     return _options[difficulty];
 }
 

@@ -30,6 +30,8 @@ class Texture;
 }
 namespace reone::game {
 
+class Creature;
+
 enum class InventoryFilter {
     All,
     New,
@@ -126,9 +128,9 @@ public:
     virtual std::string interfaceText(int strRef) const = 0;
     /**
      * The leader uses a listed item at once. Returns the message shown instead
-     * when the use is refused. A backing without usable items refuses nothing.
+     * when the use is refused.
      */
-    virtual std::optional<int> useItem(uint64_t) { return std::nullopt; }
+    virtual std::optional<int> useItem(uint64_t) = 0;
 };
 
 class IEquipmentMenuBacking {
@@ -140,16 +142,30 @@ public:
     virtual void endEquipment() = 0;
     virtual void nextCharacter() = 0;
     virtual void previousCharacter() = 0;
+    /** The screen browses the whole roster instead of the party. */
+    virtual bool browsingRoster() const = 0;
+    /** While the roster is browsed, the character shown, if it still exists. */
+    virtual std::shared_ptr<Creature> browsedCharacter() const = 0;
+    /**
+     * While the roster is browsed, the roster index of the companion shown;
+     * -1 for the player character or when the roster is not browsed.
+     */
+    virtual int browsedRosterIndex() const = 0;
     // Gives control to the party member at the index, or to the next member
     // standing when negative.
     virtual void changeCharacter(int member) = 0;
-    // A negative slot requests the normal overview.
+    /**
+     * What the screen shows with no slot open: the character, the equipped
+     * items' icons and the hands' damage and attack, with no item list.
+     */
+    virtual EquipmentView readEquipmentOverview() = 0;
+    // A negative slot lists every equippable item.
     virtual EquipmentView readEquipment(int slot) = 0;
     // Delivery does not imply completion. Read the correlated result separately.
     // Handle zero explicitly requests clearing the selected slot.
     virtual void equip(uint64_t revision, uint64_t handle, int slot) = 0;
     virtual std::optional<EquipmentRequestResult> equipmentResult() const = 0;
-    // Swaps the shown character's weapon sets at once.
+    // Asks for the shown character's weapon sets to be swapped.
     virtual void switchWeapons() = 0;
 };
 

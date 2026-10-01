@@ -51,8 +51,8 @@ float stepKeyboardTurn(float &velocity, float &previousInput, float input, float
  */
 float mouseFrameStrength(float travel);
 
-/** Mouse sensitivity at the default setting: the degrees a full-strength frame is worth. */
-constexpr float kDefaultMouseSensitivity = 44.0f / 100.0f * 45.0f + 10.0f;
+/** The degrees a full-strength frame of mouse travel is worth at a sensitivity setting. */
+float mouseSensitivity(uint8_t setting);
 
 class Camera : public Object {
 public:
@@ -112,14 +112,18 @@ public:
     void releaseViewAngleHold(uint32_t hold);
 
     float facing() const { return _facing; }
-    bool isMouseLookMode() const { return _mouseLookMode; }
+    /**
+     * Whether the mouse turns the camera: while the right button or a Ctrl key
+     * is held, or, with the Mouse Look option, while neither is.
+     */
+    bool isMouseLookMode() const;
 
 protected:
     int _cameraId {0};
     float _fieldOfView {0.0f};
 
     float _facing {0.0f};
-    bool _mouseLookMode {false};
+    bool _mouseLookHeld {false};
 
     int _projectionWidth {-1};
     int _projectionHeight {-1};

@@ -261,8 +261,6 @@ struct SavedCastAction {
     float facing {0.0f};
     int itemProperty {-1};
     int itemCasterLevel {-1};
-    // The used item's base item type, kept for a use that outlives its item.
-    int itemType {-1};
     int casterLevel {0};
     int metaMagic {255};
     int castingClass {kUnselectedCastingClass};
@@ -282,7 +280,7 @@ struct SavedCastAction {
     enum Flag : uint32_t {
         LocationTarget = 1, ItemCast = 2, Cheat = 4, Instant = 8,
         Started = 16, CommitAttempted = 32, Committed = 64,
-        Released = 128, MovementOwned = 256, ItemConsumed = 512, Fake = 1024
+        Released = 128, MovementOwned = 256, Fake = 1024
     };
     bool valid() const;
     static SavedCastAction fromGff(const resource::Gff &, const SerializedIdentityContext &);
@@ -313,12 +311,12 @@ struct SavedProjectile {
         glm::vec3 origin {0.0f};
         glm::vec3 destination {0.0f};
         float duration {0.0f};
-        bool reacted {false};
         int motion {1}; // homing, ballistic, accelerating, spiral, linked, burst
         glm::vec3 targetOffset {0.0f};
         std::string targetHook;
         bool ownsTargetHook {false};
         float stopRadius {0.0f};
+        int surface {-1}; // a grenade leg's ground material at its destination
     };
     uint64_t id {0};
     int kind {0}; // 0: spell; 1: saber route; 2: combat broadcast
@@ -330,13 +328,11 @@ struct SavedProjectile {
     std::vector<Leg> legs;
     int leg {0};
     bool released {false};
-    bool initialized {false};
     bool clockwise {false};
     float elapsed {0.0f};
     glm::vec3 position {0.0f};
     glm::vec3 velocity {0.0f};
     glm::vec3 acceleration {0.0f};
-    bool parryBlocked {false};
     float activationDelay {0.0f};
     float travelRate {0.0f};
     std::string sourceHook;
@@ -360,7 +356,10 @@ struct SavedWeaponImpact {
     std::shared_ptr<resource::Gff> toGff() const;
 };
 
-
+/**
+ * An attack record's 25 saved fields. The saved structure is kept whole, so
+ * fields the game does not use are written back as they were read.
+ */
 struct SavedCombatAttack {
     SavedStruct data;
     // Live event nodes borrow the attack record; loaded nodes own a new record.
@@ -514,11 +513,10 @@ struct SavedBroadcastAoo {
     SavedObjectReference target;
 };
 
-/**
- * All 25 serialized attack fields, with a compatibility shadow for unknown
- * extensions. Preserving fields does not implement their reaction or client
- * consumers.
- */
+/** The type of a feedback-log message that reports a saving throw. */
+constexpr uint32_t kSavingThrowFeedbackMessageType = 1;
+/** A saving-throw message names its saver by its seventh integer. */
+constexpr size_t kFeedbackSaverIndex = 6;
 
 /**
  * A queued feedback-log message: its type, integer, float, object and

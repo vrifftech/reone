@@ -100,7 +100,8 @@ constexpr int kRocketItemType = 49;
 constexpr int kDroidPlatingItemType = 15;
 // TSL gauntlets list damage like a weapon.
 constexpr int kGauntletsBaseItem = 45;
-// Items that only Bao-Dur may use.
+// Items whose description names Bao-Dur among the party member requirements.
+// Bao-Dur also cannot equip base item 100, which is not on this list.
 constexpr int kBaoDurItems[] {35, 36, 37, 97, 98, 99, 102};
 constexpr int kBaoDurNpc = 1;
 
@@ -391,9 +392,9 @@ private:
         if (listed) _text += "\n";
     }
 
-    // Once Bao-Dur has joined, the items only he may use say so.
+    // Once Bao-Dur has joined, the listed items name him.
     void addPartyMemberRequirements() {
-        if (_game.party().persistedState().influence[kBaoDurNpc] == -1) return;
+        if (_game.party().influence(kBaoDurNpc) == -1) return;
         const int baseItem = _item.baseItemType();
         if (std::find(std::begin(kBaoDurItems), std::end(kBaoDurItems), baseItem) == std::end(kBaoDurItems)) return;
         _text += gui(kPartyMemberRequirementsStrRef) + ":\n" + gui(kBaoDurNameStrRef) + "\n\n";
@@ -518,8 +519,7 @@ private:
     }
 
     void addRange() {
-        auto baseItems = requiredTable("baseitems");
-        if (baseItems->getInt(_item.baseItemType(), "rangedweapon", 0) == 0) return;
+        if (!_item.isRangedWeapon()) return;
         _text += str(boost::format("%s: %dm\n") % gui(kRangeStrRef) % static_cast<int>(_item.attackRange())) + "\n";
     }
 

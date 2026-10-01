@@ -127,8 +127,6 @@ void presentSpellRelease(Object &caster, const Spell &spell);
 uint32_t spellProjectileTimeMilliseconds(
     const Spell &spell, const glm::vec3 &origin, const glm::vec3 &destination,
     ProjectilePathType path, bool tsl);
-float spellProjectileTime(const Spell &spell, const glm::vec3 &origin,
-                          const glm::vec3 &destination, ProjectilePathType path, bool tsl = true);
 ProjectilePathType effectiveProjectilePath(const Spell &spell, ProjectilePathType overridePath);
 
 bool queueSpellImpact(Game &game, const Spell &spell, Object &caster,
@@ -217,19 +215,6 @@ private:
     float _catchTime {0.0f};
 };
 
-// The clips a spell shows: a conjure one-shot, then the cast clip, which loops
-// unless it is a one-shot, each with its animation ID. Creature models only
-// conjure, and only the monster fury loop has a creature row.
-struct CastPresentation {
-    std::string conjure;
-    std::string cast;
-    bool castLoops {false};
-    int conjureId {-1};
-    int castId {-1};
-};
-
-CastPresentation castPresentation(SpellCastAnimation code, bool creatureModel);
-
 // What using an item shows, by its base item type: the clip and its animation ID, whether it loops,
 // whether the user is posed instead of holding it, whether it is drawn on the
 // creature it is used on, when the droid utility turns to its loop, when the
@@ -244,9 +229,6 @@ struct ItemUsePresentation {
     float impact {0.001f};
     float end {1.5f};
 };
-
-ItemUsePresentation itemUsePresentation(const Creature &user, int itemType, const Spell &spell,
-                                        const Creature *targetCreature, const glm::vec3 &targetPosition);
 
 /**
  * The models a spell shows on its caster's head, hand and feet. The conjure
@@ -302,8 +284,7 @@ public:
     void update(Creature &caster, const Spell &spell, std::optional<int> itemType, Creature *targetCreature,
                 const glm::vec3 &targetPosition, const SpellSchedule &schedule, SpellSchedule::State state);
     /** Shows again what a restored cast was showing. */
-    void restore(Creature &caster, const Spell &spell, std::optional<int> itemType, Creature *targetCreature,
-                 const glm::vec3 &targetPosition, const SpellSchedule &schedule);
+    void restore(Creature &caster, const Spell &spell, const SpellSchedule &schedule);
 
 private:
     std::optional<ItemUsePresentation> _item;

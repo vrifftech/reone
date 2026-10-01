@@ -102,9 +102,12 @@ public:
 
     void playShotSound(int variant, glm::vec3 position);
     void playImpactSound(int variant, glm::vec3 position);
-    void powerUp(glm::vec3 position);
-    void powerDown(glm::vec3 position);
+    // The power-up and power-down sounds play only with the transition; the
+    // item's lit state and its hum change either way.
+    void powerUp(glm::vec3 position, bool transition);
+    void powerDown(glm::vec3 position, bool transition);
     void updatePoweredSoundPosition(glm::vec3 position);
+    bool isPowered() const { return _isPowered; }
 
     bool isEquippable() const;
     bool isEquippable(int slot) const;
@@ -125,6 +128,8 @@ public:
     bool isEquipped() const { return _equipped; }
     bool isLightsaber() const { return _baseItem >= 8 && _baseItem <= 10; }
     bool isRanged() const { return _weaponType == WeaponType::Ranged; }
+    /** The base item counts as a ranged weapon for battle-circle rules. */
+    bool isRangedWeapon() const { return _rangedWeapon; }
     /** A mine kit: a trap-kit base item carrying a usable Trap property. */
     bool isMineKit() const;
 
@@ -198,15 +203,26 @@ public:
     bool isPropertyActive(const PropertyEntry &property) const;
     static bool isPropertyActive(uint32_t upgrades, uint8_t upgradeType);
     bool hasActiveProperty(ItemProperty type) const;
+    /** Whether an item is used through a property of this type: a cast spell, security spike, trap or computer spike. */
+    static bool isUseProperty(uint16_t propertyName);
+    /**
+     * The base armour class of armour worn as the body model, plus the raw
+     * values of the armour class bonus properties; with installedUpgradesOnly,
+     * a bonus tied to an upgrade that is not installed is left out.
+     */
+    int armorValue(bool installedUpgradesOnly) const;
     uint32_t upgrades() const { return _upgrades; }
 
     void enableSniperBonus() { _sniperBonus = true; }
     void enableRapidShotBonus() { _rapidShotBonus = true; }
     void enableDoorCutting() { _doorCutting = true; }
+    void enableDoorSabering() { _doorSabering = true; }
     bool sniperBonus() const { return _sniperBonus; }
     bool rapidShotBonus() const { return _rapidShotBonus; }
     /** Whether the item's hits cut doors, as set when it was worn with a Door Cutting property. */
     bool cutsDoors() const { return _doorCutting; }
+    /** Whether the item burns through locked doors, as set when it was worn with a Door Sabering property. */
+    bool sabersDoors() const { return _doorSabering; }
 
     bool hasDisguise() const { return _disguiseAppearance >= 0; }
     int disguiseAppearance() const { return _disguiseAppearance; }
@@ -265,6 +281,7 @@ private:
     int _weaponMaterialType {0};
     std::string _armorType;
     WeaponType _weaponType {WeaponType::None};
+    bool _rangedWeapon {false};
     WeaponWield _weaponWield {WeaponWield::None};
     CreatureSize _weaponSize {CreatureSize::Invalid};
 
@@ -273,6 +290,7 @@ private:
     bool _sniperBonus {false};
     bool _rapidShotBonus {false};
     bool _doorCutting {false};
+    bool _doorSabering {false};
     std::shared_ptr<AmmunitionType> _ammunitionType;
     bool _poweredItem {false};
     bool _isPowered {false};
@@ -286,6 +304,8 @@ private:
     FeatType _weaponFocusFeat {FeatType::Invalid};
     FeatType _weaponSpecializationFeat {FeatType::Invalid};
     int _baseDefense {0};
+    // The base item is drawn as the wearer's body model.
+    bool _bodyModel {false};
     int _maxDexterityBonus {-1};
     ACBonus _acBonusType {ACBonus::Invalid};
 

@@ -38,13 +38,50 @@
 #include "reone/game/action/followowner.h"
 #include "reone/game/action/jumptolocation.h"
 #include "commonactions.h"
+#include "reone/game/action/changefacing.h"
 #include "reone/game/action/jumptoobject.h"
 #include "reone/game/object/door.h"
 #include "reone/game/action/randomwalk.h"
+#include "reone/game/action/wait.h"
 
 namespace reone {
 
 namespace game {
+
+// A jump lands on the first safe spot within this distance of its destination.
+static constexpr float kJumpSearchRadius = 20.0f;
+// A forced move that runs out of time puts the mover down on its destination
+// only when that spot itself is safe.
+static constexpr float kForcedPointJumpRadius = 1.0f;
+
+// Facing along a direction; a direction too short to have one faces along +x.
+static float facingAlong(const glm::vec3 &direction) {
+    static constexpr float kShortestDirection = 1e-9f;
+    if (glm::length(direction) < kShortestDirection) return facingAlong(glm::vec3(1.0f, 0.0f, 0.0f));
+    return -std::atan2(direction.x, direction.y);
+}
+
+// A jump onto a waypoint takes its facing. A jump to a door lands behind the
+// door's closed-state use point nearest its back, twice the jumper's creature
+// personal space further back, facing away from the door. A jump onto anything
+// else lands on it facing along +x. The trail keeps the facing the jumper had
+// before it jumped.
+static void jumpToObject(Creature &jumper, Object &target, bool clearLine, Game &game) {
+    glm::vec3 destination(target.position());
+    float facing;
+    if (target.type() == ObjectType::Waypoint) {
+        facing = target.getFacing();
+    } else if (auto *door = dyn_cast<Door>(&target)) {
+        const float doorFacing = door->getFacing();
+        const glm::vec3 doorForward(-std::sin(doorFacing), std::cos(doorFacing), 0.0f);
+        const float spacing = 2.0f * jumper.creaturePersonalSpace();
+        destination = door->nearestActionPoint(door->position() - doorForward, true) - spacing * doorForward;
+        facing = facingAlong(destination - door->position());
+    } else {
+        facing = facingAlong(glm::vec3(1.0f, 0.0f, 0.0f));
+    }
+    jumpToPositionFacing(jumper, destination, facing, jumper.getFacing(), kJumpSearchRadius, clearLine, game);
+}
 
 MoveToObjectAction::MoveToObjectAction(
     Game &game, ServicesView &services, std::shared_ptr<Object> moveTo,
@@ -128,17 +165,14 @@ void MoveToObjectAction::execute(std::shared_ptr<Action> self, Object &actor, fl
         bool expired =
             _game.worldTimeMilliseconds() >= _forcedState.expiryMilliseconds;
         if (expired) {
-            actor.setPosition(_forcedState.destination);
-            if (auto module = _game.module(); module && module->area() &&
-                module->area()->id() == _forcedState.areaId) {
-                module->area()->landObject(actor);
-            }
+            // Out of time, the mover jumps to the object as a jump to it does.
+            jumpToObject(*creatureActor, *_moveTo, true, _game);
             complete();
             return;
         }
     }
 
-    bool reached = creatureActor->navigateTo(dest, _run, closeTo, dt);
+    bool reached = creatureActor->navigateTo(dest, _run, closeTo, dt, _moveTo.get());
     if (!reached) {
         return;
     }
@@ -266,17 +300,20 @@ void MoveToLocationAction::execute(std::shared_ptr<Action> self, Object &actor, 
         bool expired =
             _game.worldTimeMilliseconds() >= _forcedState.expiryMilliseconds;
         if (expired) {
-            actor.setPosition(destination);
+            // Out of time, the mover is put down on its destination, facing
+            // along +x, if that spot is safe and still in the area the move
+            // began in; otherwise it stays where it is.
             if (auto module = _game.module(); module && module->area() &&
                 module->area()->id() == _forcedState.areaId) {
-                module->area()->landObject(actor);
+                const float facing = facingAlong(glm::vec3(1.0f, 0.0f, 0.0f));
+                jumpToPositionFacing(*creatureActor, destination, facing, facing, kForcedPointJumpRadius, true, _game);
             }
             complete();
             return;
         }
     }
 
-    bool reached = creatureActor->navigateTo(destination, _run, 1.0f, dt);
+    bool reached = creatureActor->navigateTo(destination, _run, _closeRange, dt, nullptr, _straight);
     if (reached) {
         complete();
     }
@@ -319,7 +356,8 @@ std::optional<SavedActionRecord> MoveToLocationAction::saveFacingState() const {
     result.actionId = 1;
     result.declaredParameterCount = 13;
     int32_t flags = (_run ? 1 : 0) |
-                    (_force && !_forcedState.active ? 4 : 0);
+                    (_force && !_forcedState.active ? 4 : 0) |
+                    (_straight ? 8 : 0);
     result.parameters = {
         {2, _destination->position().x},
         {2, _destination->position().y},
@@ -327,7 +365,7 @@ std::optional<SavedActionRecord> MoveToLocationAction::saveFacingState() const {
         {3, SavedObjectReference::fromRuntimeId(areaId)},
         {3, SavedObjectReference::fromRuntimeId(kSavedRuntimeInvalidObjectId)},
         {1, flags},
-        {2, 0.0f},
+        {2, _closeRange},
         {1, int32_t {0}},
         {2, _force && !_forcedState.active ? _timeout : 0.0f},
         {2, 0.0f},
@@ -345,18 +383,47 @@ void MoveToPointAction::execute(std::shared_ptr<Action> self, Object &actor, flo
         return;
     }
 
-    bool reached = creatureActor->navigateTo(_point, _run, 1.0f, dt);
+    bool reached = creatureActor->navigateTo(_point, _run, _range, dt);
     if (reached) {
         complete();
     }
 }
 
+// The walk is kept as an ordinary walk to its point in the current area,
+// ending as near the point as it does.
+std::optional<SavedActionRecord> MoveToPointAction::saveFacingState() const {
+    auto module = _game.module();
+    if (!module || !module->area()) {
+        return std::nullopt;
+    }
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 1;
+    result.declaredParameterCount = 13;
+    result.parameters = {
+        {2, _point.x}, {2, _point.y}, {2, _point.z},
+        {3, SavedObjectReference::fromRuntimeId(module->area()->id())},
+        {3, SavedObjectReference::fromRuntimeId(kSavedRuntimeInvalidObjectId)},
+        {1, int32_t {_run ? 1 : 0}}, {2, _range}, {1, int32_t {0}}, {2, 0.0f},
+        {2, 0.0f}, {2, 0.0f}, {1, int32_t {0}}, {1, int32_t {0}},
+    };
+    return result;
+}
+
+// A creature moving away pauses this long before each leg, less when the
+// player controls it.
+static constexpr float kMoveAwayLegPause = 0.3f;
+static constexpr float kControlledMoveAwayLegPause = 0.1f;
+
 // Sends the creature on its way to the point that takes it the range away from
-// a threat, ahead of the action that sent it; the action runs again once the
-// creature gets there.
+// a threat, ahead of the action that sent it: a short pause, then a walk in a
+// straight line onto the point. The action runs again once the creature gets
+// there.
 static void moveAwayFrom(Game &game, const Action &action, Creature &creature, const glm::vec3 &threat, float range, bool run) {
     const glm::vec3 point = game.module()->area()->computeAwayPoint(creature, threat, range);
-    creature.addActionBefore(action, game.newAction<MoveToLocationAction>(std::make_shared<Location>(point, 0.0f), run));
+    auto leg = game.newAction<MoveToLocationAction>(std::make_shared<Location>(point, 0.0f), run, false, -1.0f, 0.0f, true);
+    creature.addActionBefore(action, leg);
+    const bool controlled = game.party().getLeader().get() == &creature;
+    creature.addActionBefore(*leg, game.newAction<WaitAction>(controlled ? kControlledMoveAwayLegPause : kMoveAwayLegPause));
 }
 
 void MoveAwayFromObject::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
@@ -387,6 +454,37 @@ void MoveAwayFromLocation::execute(std::shared_ptr<Action> self, Object &actor, 
     moveAwayFrom(_game, *this, creature, _moveAwayFrom->position(), _moveAwayRange, _run);
 }
 
+std::optional<SavedActionRecord> MoveAwayFromObject::saveFacingState() const {
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 3;
+    result.declaredParameterCount = 4;
+    result.parameters = {
+        {3, SavedObjectReference::fromRuntimeId(_fleeFrom->id())},
+        {1, int32_t {_run ? 1 : 0}},
+        {2, _moveAwayRange},
+        {1, int32_t {_attemptsLeft}},
+    };
+    return result;
+}
+
+std::optional<SavedActionRecord> MoveAwayFromLocation::saveFacingState() const {
+    // The record also carries a count of legs, which this action never uses.
+    static constexpr int32_t kUnusedAttempts = 10;
+    const glm::vec3 &position = _moveAwayFrom->position();
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 44;
+    result.declaredParameterCount = 6;
+    result.parameters = {
+        {2, position.x},
+        {2, position.y},
+        {2, position.z},
+        {1, int32_t {_run ? 1 : 0}},
+        {2, _moveAwayRange},
+        {1, kUnusedAttempts},
+    };
+    return result;
+}
+
 void FollowAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
     auto creatureActor = _game.getObjectById<Creature>(actor.id());
     if (!creatureActor) {
@@ -398,9 +496,24 @@ void FollowAction::execute(std::shared_ptr<Action> self, Object &actor, float dt
     float distance2 = creatureActor->getSquareDistanceTo(glm::vec2(dest));
     bool run = distance2 > kDistanceWalk * kDistanceWalk;
 
-    if (creatureActor->navigateTo(dest, run, _followDistance, dt)) {
+    if (creatureActor->navigateTo(dest, run, _followDistance, dt, _follow.get())) {
         complete();
     }
+}
+
+// A follow is kept as the one followed and the point the follow distance in
+// front of it, which is also where the follower last headed.
+std::optional<SavedActionRecord> FollowAction::saveFacingState() const {
+    const float facing = _follow->getFacing();
+    const glm::vec3 point = _follow->position() + _followDistance * glm::vec3(-std::sin(facing), std::cos(facing), 0.0f);
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 55;
+    result.declaredParameterCount = 7;
+    result.parameters = {
+        {3, SavedObjectReference::fromRuntimeId(_follow->id())}, {1, int32_t {1}},
+        {2, point.x}, {2, point.y}, {1, int32_t {0}}, {2, point.x}, {2, point.y},
+    };
+    return result;
 }
 
 static constexpr float kGlanceDistance = 8.0f;
@@ -466,52 +579,142 @@ std::optional<SavedActionRecord> FollowLeaderAction::saveFacingState() const {
     return result;
 }
 
+// A puppet keeps near its owner. Within the range, measured across the ground,
+// it waits; farther away it runs to the owner, behind whatever else it was
+// told to do, and then follows again. The order never ends by itself; a
+// creature that is no longer a puppet drops it.
 void FollowOwnerAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
-    // TODO: implement
-
+    auto &puppet = cast<Creature>(actor);
+    if (!puppet.isPuppet()) {
+        complete();
+        return;
+    }
+    auto owner = _game.party().puppetOwner(puppet);
+    if (!owner || puppet.getSquareDistanceTo(glm::vec2(owner->position())) < _range * _range) return;
+    puppet.addAction(_game.newAction<MoveToObjectAction>(owner, true, _range, false, -1.0f, true));
+    puppet.addAction(_game.newAction<FollowOwnerAction>(_range));
     complete();
 }
 
+std::optional<SavedActionRecord> FollowOwnerAction::saveFacingState() const {
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 70;
+    result.declaredParameterCount = 1;
+    result.parameters = {{2, _range}};
+    return result;
+}
+
+// A jump to a location always lands where the jumper could walk straight to it from.
 void JumpToLocationAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
     const float facing = objectFacingFromScript(_location->facing());
-    jumpToPositionFacing(actor, _location->position(), facing, facing, _game);
+    jumpToPositionFacing(cast<Creature>(actor), _location->position(), facing, facing, kJumpSearchRadius, true, _game);
     complete();
 }
 
-// Facing along a direction; a direction too short to have one faces along +x.
-static float facingAlong(const glm::vec3 &direction) {
-    static constexpr float kShortestDirection = 1e-9f;
-    if (glm::length(direction) < kShortestDirection) return facingAlong(glm::vec3(1.0f, 0.0f, 0.0f));
-    return -std::atan2(direction.x, direction.y);
-}
-
-// A jump onto a waypoint takes its facing. A jump to a door lands behind the
-// door's closed-state use point nearest its back, twice the jumper's creature
-// personal space further back, facing away from the door. A jump onto anything
-// else lands on it facing along +x. The trail keeps the facing the jumper had
-// before it jumped.
-void JumpToObjectAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
-    glm::vec3 destination(_toJumpTo->position());
-    float facing;
-    if (_toJumpTo->type() == ObjectType::Waypoint) {
-        facing = _toJumpTo->getFacing();
-    } else if (auto *door = dyn_cast<Door>(_toJumpTo.get())) {
-        const float doorFacing = door->getFacing();
-        const glm::vec3 doorForward(-std::sin(doorFacing), std::cos(doorFacing), 0.0f);
-        const float spacing = 2.0f * cast<Creature>(actor).creaturePersonalSpace();
-        destination = door->nearestActionPoint(door->position() - doorForward, true) - spacing * doorForward;
-        facing = facingAlong(destination - door->position());
-    } else {
-        facing = facingAlong(glm::vec3(1.0f, 0.0f, 0.0f));
+// A jump is kept as the point in the current area, a straight line to it, the
+// search radius and the facing.
+std::optional<SavedActionRecord> JumpToLocationAction::saveFacingState() const {
+    auto module = _game.module();
+    if (!module || !module->area()) {
+        return std::nullopt;
     }
-    jumpToPositionFacing(actor, destination, facing, actor.getFacing(), _game);
+    const glm::vec3 &position = _location->position();
+    const glm::vec3 orientation = _location->saveOrientation();
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 5;
+    result.declaredParameterCount = 8;
+    result.parameters = {
+        {2, position.x}, {2, position.y}, {2, position.z},
+        {3, SavedObjectReference::fromRuntimeId(module->area()->id())},
+        {1, int32_t {1}}, {2, kJumpSearchRadius}, {2, orientation.x}, {2, orientation.y},
+    };
+    return result;
+}
+
+void JumpToObjectAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
+    jumpToObject(cast<Creature>(actor), *_toJumpTo, _walkStraightLine, _game);
     complete();
 }
 
-void RandomWalkAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
-    // TODO: implement
+std::optional<SavedActionRecord> JumpToObjectAction::saveFacingState() const {
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 48;
+    result.declaredParameterCount = 2;
+    result.parameters = {
+        {3, SavedObjectReference::fromRuntimeId(_toJumpTo->id())},
+        {1, int32_t {_walkStraightLine ? 1 : 0}},
+    };
+    return result;
+}
 
+void ChangeFacingAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
+    auto &creature = cast<Creature>(actor);
+    if (_target) {
+        creature.turnToward(*_target);
+    } else {
+        creature.turnToward(_point);
+    }
     complete();
+}
+
+// A turn is kept as the object faced, or as the point faced.
+std::optional<SavedActionRecord> ChangeFacingAction::saveFacingState() const {
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    if (_target) {
+        result.actionId = 19;
+        result.declaredParameterCount = 1;
+        result.parameters = {{3, SavedObjectReference::fromRuntimeId(_target->id())}};
+    } else {
+        result.actionId = 49;
+        result.declaredParameterCount = 3;
+        result.parameters = {{2, _point.x}, {2, _point.y}, {2, _point.z}};
+    }
+    return result;
+}
+
+// A walker stands this long after each try at a walk, and this long, without
+// walking, while its AI runs at the lowest level.
+static constexpr float kRandomWalkPause = 3.0f;
+static constexpr float kRandomWalkIdlePause = 15.0f;
+
+// Each time the walk comes up it throws away whatever was queued behind it,
+// then goes back behind a pause, and, when it finds a point near its home that
+// the walker can walk straight to, behind a walk to that point too. It never
+// ends by itself.
+void RandomWalkAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
+    auto *walker = dyn_cast<Creature>(&actor);
+    if (!walker) {
+        complete();
+        return;
+    }
+    walker->removeActionsBehind(*this);
+    if (walker->aiLevel() <= 0) {
+        walker->addActionBefore(*this, _game.newAction<WaitAction>(kRandomWalkIdlePause));
+        return;
+    }
+    auto pause = _game.newAction<WaitAction>(kRandomWalkPause);
+    walker->addActionBefore(*this, pause);
+    if (auto point = _game.module()->area()->randomWalkPoint(*walker, _home)) {
+        walker->addActionBefore(*pause, _game.newAction<MoveToLocationAction>(
+                                            std::make_shared<Location>(*point, 0.0f), false, false, -1.0f, 0.0f, true));
+    }
+}
+
+std::optional<SavedActionRecord> RandomWalkAction::saveFacingState() const {
+    auto module = _game.module();
+    if (!module || !module->area()) {
+        return std::nullopt;
+    }
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 45;
+    result.declaredParameterCount = 4;
+    result.parameters = {
+        {2, _home.x},
+        {2, _home.y},
+        {2, _home.z},
+        {3, SavedObjectReference::fromRuntimeId(module->area()->id())},
+    };
+    return result;
 }
 
 } // namespace game

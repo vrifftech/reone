@@ -239,19 +239,22 @@ struct SnapshotFixture : Test {
         // regenerate; ability modifiers include the racial adjustments.
         auto &twoDas = engine.resourceModule().twoDas();
         EXPECT_CALL(twoDas, get(_)).Times(AnyNumber());
-        EXPECT_CALL(twoDas, get("skills"))
-            .Times(AnyNumber())
-            .WillRepeatedly(Return(std::shared_ptr<resource::TwoDA>(resource::TwoDA::Builder()
-                .columns({"label", "untrained", "keyability", "armorcheckpenalty"})
-                .row({"ComputerUse", "1", "INT", "0"})
-                .row({"Demolitions", "0", "INT", "1"})
-                .row({"Stealth", "0", "DEX", "1"})
-                .row({"Awareness", "1", "WIS", "0"})
-                .row({"Persuade", "1", "CHA", "0"})
-                .row({"Repair", "1", "INT", "0"})
-                .row({"Security", "0", "WIS", "0"})
-                .row({"TreatInjury", "1", "WIS", "0"})
-                .build())));
+        auto &skills = static_cast<MockSkills &>(engine.services().game.skills);
+        auto skill = [](int untrained, Ability keyAbility) {
+            auto result = std::make_shared<Skill>();
+            result->untrained = untrained;
+            result->keyAbility = keyAbility;
+            return result;
+        };
+        ON_CALL(skills, getRequired(_)).WillByDefault(Return(nullptr));
+        ON_CALL(skills, getRequired(SkillType::ComputerUse)).WillByDefault(Return(skill(1, Ability::Intelligence)));
+        ON_CALL(skills, getRequired(SkillType::Demolitions)).WillByDefault(Return(skill(0, Ability::Intelligence)));
+        ON_CALL(skills, getRequired(SkillType::Stealth)).WillByDefault(Return(skill(0, Ability::Dexterity)));
+        ON_CALL(skills, getRequired(SkillType::Awareness)).WillByDefault(Return(skill(1, Ability::Wisdom)));
+        ON_CALL(skills, getRequired(SkillType::Persuade)).WillByDefault(Return(skill(1, Ability::Charisma)));
+        ON_CALL(skills, getRequired(SkillType::Repair)).WillByDefault(Return(skill(1, Ability::Intelligence)));
+        ON_CALL(skills, getRequired(SkillType::Security)).WillByDefault(Return(skill(0, Ability::Wisdom)));
+        ON_CALL(skills, getRequired(SkillType::TreatInjury)).WillByDefault(Return(skill(1, Ability::Wisdom)));
         EXPECT_CALL(twoDas, get("racialtypes"))
             .Times(AnyNumber())
             .WillRepeatedly(Return(std::shared_ptr<resource::TwoDA>(resource::TwoDA::Builder()
@@ -265,6 +268,7 @@ struct SnapshotFixture : Test {
                 .row({"InCombat", "0.0", "0.0"})
                 .row({"OutOfCombat", "0.0", "1.0"})
                 .build())));
+        engine.gameModule().combatTables().init(twoDas);
         area = game.newArea();
         player = game.newCreature();
         TestGameModule::configureModuleSnapshot(

@@ -19,6 +19,8 @@
 
 #include "reone/graphics/texture.h"
 
+#include "../types.h"
+
 namespace reone {
 
 namespace game {
@@ -27,6 +29,9 @@ struct Skill {
     std::string name;
     std::string description;
     std::shared_ptr<graphics::Texture> icon;
+    // Bit 0 lets a creature without ranks use the skill.
+    int untrained {0};
+    Ability keyAbility {Ability::Strength};
 };
 
 } // namespace game

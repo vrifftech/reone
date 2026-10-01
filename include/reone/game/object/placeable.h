@@ -109,6 +109,8 @@ public:
     // END Traps
 
     int appearance() const { return _appearance; }
+    /** The name of the placeable's appearance, shown for a placeable that has none of its own. */
+    int appearanceNameStrRef() const { return _appearanceNameStrRef; }
     Faction faction() const { return _faction; }
     void setFaction(Faction faction) { _faction = faction; }
     /** The placeable's own saving throw from its template; effects never change it. */
@@ -116,6 +118,8 @@ public:
     std::shared_ptr<scene::WalkmeshSceneNode> walkmesh() const { return _walkmesh; }
     /** Whether a creature steps right up to the placeable's use point to use it. */
     bool isPreciseUse() const { return _preciseUse; }
+    /** The placeableobjsnds.2da row the placeable's look sounds as when struck. */
+    int soundAppType() const { return _soundAppType.value_or(0); }
     /**
      * The point a creature at from goes to in order to use the placeable: the
      * nearer of its walkmesh's two use points, the second one on a tie; the
@@ -131,7 +135,6 @@ public:
     void receiveDamagedSignal(const std::shared_ptr<Object> &damager);
     void receiveDeathSignal(uint32_t killerId);
     void receiveAttackEvent(uint32_t attackerId, const AttackEventFields *fields);
-    int computerUseAdjustment() const { return _computerUseAdjustment; }
     void runEndDialogScript();
     void update(float dt) override;
 
@@ -199,6 +202,7 @@ public:
     void onClosed(uint32_t closerId);
     void runOnUsed(std::shared_ptr<Object> usedBy);
     void runOnInvDisturbed(uint32_t triggerrer, InventoryDisturbType type, uint32_t item);
+    void setOnDialog(std::string onDialog) { _onDialog = std::move(onDialog); }
 
     // END Scripts
 
@@ -244,10 +248,13 @@ private:
     bool _usable {false};
     bool _hostileAppearance {false};
     bool _preciseUse {false};
+    // Nothing when the appearance leaves it blank.
+    std::optional<int> _soundAppType;
     bool _static {false};
     bool _notBlastable {false};
     bool _groundPile {false};
     uint32_t _appearance {0};
+    int _appearanceNameStrRef {-1};
     uint8_t _hardness {0};
     uint8_t _fort {0};
     uint8_t _will {0};
@@ -292,12 +299,11 @@ private:
     bool _inventoryOpenPending {false};
     // The loop that follows the open-state clip running now.
     std::string _openStateLoop;
-    // Runtime dialog input: constructed and cleared to zero. Do not derive a
-    // nonzero value from unrelated lock, trap or skill-effect parameters.
-    int _computerUseAdjustment {0};
     std::shared_ptr<scene::WalkmeshSceneNode> _walkmesh;
 
     // Scripts
+
+    void runConversationScript() override;
 
     // END Scripts
 

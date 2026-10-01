@@ -212,6 +212,20 @@ public:
     int lastForfeitViolation() const { return _persistedState.forfeitViolation; }
     void setLastForfeitViolation(int condition) { _persistedState.forfeitViolation = condition; }
 
+    /** The companions' base influence (TSL), read when the game starts. */
+    const std::shared_ptr<resource::TwoDA> &influenceTable() const { return _influenceTable; }
+
+    /**
+     * A party NPC's influence (TSL), -1 while never set. An index outside the
+     * party NPCs reads 0 and ignores writes.
+     */
+    int influence(int npc) const {
+        return npc >= 0 && npc < static_cast<int>(kMaxNpcCount) ? _persistedState.influence[npc] : 0;
+    }
+    void setInfluence(int npc, int value) {
+        if (npc >= 0 && npc < static_cast<int>(kMaxNpcCount)) _persistedState.influence[npc] = value;
+    }
+
     /** Roster index of the actor standing in for the PC, or kNpcPlayer. */
     int controlledNpc() const { return _persistedState.controlledNpc; }
 
@@ -240,6 +254,8 @@ public:
     void endStealth();
     /** Members other than the player's own creature. */
     int companionCount() const;
+    /** Companions travelling with the party: neither the player character nor a companion standing in for it. */
+    bool isCompanion(const Member &member) const;
 
     // Members
 
@@ -375,6 +391,8 @@ public:
     bool assignPuppet(int puppet, int npc);
     std::optional<int> assignedNpcForPuppet(int puppet) const;
     std::shared_ptr<Creature> puppetOwner(int puppet) const;
+    /** The owner of the puppet the creature is bound to, or none. */
+    std::shared_ptr<Creature> puppetOwner(const Creature &puppet) const;
 
     /** Complete live object graph retained by the session across Areas. */
     std::vector<std::shared_ptr<Object>> runtimeObjects() const;
@@ -582,11 +600,10 @@ private:
         const std::shared_ptr<Creature> &creature);
 
     std::shared_ptr<resource::TwoDA> _npcTable;
+    std::shared_ptr<resource::TwoDA> _influenceTable;
 
     // Apply the party XP pool value to every current member's creature XP.
     void syncMembersXP();
-    /** Companions travelling with the party: neither the player character nor a companion standing in for it. */
-    bool isCompanion(const Member &member) const;
     /** PercentXP of an npc.2da row; a missing table or cell counts as 100. */
     int percentXP(int row) const;
     /** Pay a creature its share of an award. */

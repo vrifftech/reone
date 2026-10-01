@@ -34,6 +34,7 @@
 #include "castspell.h"
 #include "action/playanimation.h"
 #include "effect.h"
+#include "listenpattern.h"
 #include "runtimeref.h"
 #include "saveprovenance.h"
 #include "savedruntime.h"
@@ -102,6 +103,11 @@ public:
         const SerializedIdentityContext &identityContext);
 
     virtual void update(float dt);
+    /**
+     * Runs the action queue on a frame with the clock stopped: what takes no
+     * time is done, what takes time waits.
+     */
+    virtual void runActions();
     virtual void damage(
         int amount,
         const std::shared_ptr<Object> &damager);
@@ -110,7 +116,6 @@ public:
         int amount,
         const std::shared_ptr<Object> &damager,
         std::optional<DamageReaction> reaction);
-    void heal(int amount);
 
     void face(const Object &other);
     void face(const glm::vec3 &point);
@@ -124,8 +129,6 @@ public:
     bool isMinOneHP() const { return _minOneHP; }
     virtual bool isDead() const { return _dead; }
     bool isDestroyable() const { return _destroyable; }
-    bool isRaiseable() const { return _raiseable; }
-    bool isSelectableWhenDead() const { return _selectableWhenDead; }
     void setRaiseable(bool value) { _raiseable = value; }
     void setDestroyability(bool destroyable, bool raiseable, bool selectableWhenDead);
 
@@ -173,8 +176,10 @@ public:
     const std::string &conversation() const { return _conversation; }
     bool plotFlag() const { return _plot; }
     /**
-     * Damage immunity is kept per damage type: the lowest (most vulnerable)
-     * of the types in \p flags, within -100..100.
+     * Damage immunity is kept per damage type. For several types in \p flags,
+     * the types are taken in bit order: a running value of 0 takes the next
+     * type's value, and otherwise only a lower value replaces it. The result
+     * is within -100..100.
      */
     int damageImmunity(int flags) const;
     /** Stores \p value, within -100..100, for the lowest type in \p flags only. */
@@ -266,7 +271,6 @@ public:
      * commandable afterwards.
      */
     void clearAllEffects(bool retainOwn = false);
-    void removeEffect(const std::shared_ptr<Effect> &effect);
     void queueScriptEffectRemoval(ScriptEffectRemovalMatch match, const EffectInstance &value);
     /**
      * Applies an effect value. A linked package that leaves nothing on the
@@ -353,6 +357,8 @@ public:
     bool addActionBefore(const Action &parent, std::shared_ptr<Action> action);
     /** Drops the actions queued directly behind one, while they match. */
     void removeActionsBehind(const Action &action, const std::function<bool(const Action &)> &matches);
+    /** Drops every action queued behind one, unsupported records included, without cancelling them. */
+    void removeActionsBehind(const Action &action);
     bool hasOrdinaryActionsPending() const { return !_actions.nodes.empty(); }
     uint32_t currentSerializedActionId() const {
         return _actions.nodes.empty() ? 0xffff : _actions.nodes.front()->actionId;
@@ -372,7 +378,6 @@ public:
     std::shared_ptr<Action> getCurrentAction() const;
 
     const OrdinaryActionQueue &actions() const { return _actions; }
-    uint16_t allocateActionGroup(uint16_t request) { return _actions.allocateGroup(request); }
     std::vector<SavedActionRecord> saveActionSnapshot() const;
     void requeueActionNode(const OrdinaryActionQueue::Node &node);
     /** Moves a queued node behind every other queued node. */
@@ -468,6 +473,48 @@ public:
     void clearOnHeartbeat() { _onHeartbeat.clear(); }
 
     // END Scripts
+
+    // Listening
+
+    /** A pattern the object listens for and the number it answers with. */
+    struct ListenExpression {
+        int32_t number {0};
+        // The last pattern that parsed, in lower case; this is what is saved.
+        std::string pattern;
+        // Nothing while the last pattern set failed to parse: it matches nothing.
+        std::optional<ListenPattern> parsed;
+    };
+
+    bool isListening() const { return _listening; }
+    void setListening(bool listening) { _listening = listening; }
+    const std::vector<ListenExpression> &listenExpressions() const { return _listenExpressions; }
+    /**
+     * Sets the pattern for a number. A number already in use keeps its place
+     * and takes the new pattern; a new number goes last.
+     */
+    void setListenPattern(const std::string &pattern, int32_t number);
+    /**
+     * The number of the first pattern, in the order they were set, that
+     * matches; pieces receives that match's pieces.
+     */
+    std::optional<int32_t> testListenExpressions(const std::string &str, std::vector<std::string> &pieces) const;
+
+    uint32_t lastSpeaker() const { return _lastSpeaker; }
+    int32_t listenPatternNumber() const { return _listenPatternNumber; }
+    const std::vector<std::string> &matchedSubstrings() const { return _matchedSubstrings; }
+    /**
+     * A conversation event: a shout the object heard, or a request to talk.
+     * The caller becomes the last speaker, the second integer the pattern
+     * number, and the strings after the first, up to the count the first
+     * integer gives, the matched pieces. Then the object's conversation
+     * script runs.
+     */
+    void receiveConversationEvent(
+        uint32_t callerId,
+        const std::vector<int32_t> &integers,
+        const std::vector<std::string> &strings);
+
+    // END Listening
 
 protected:
     friend class Game;
@@ -612,6 +659,24 @@ protected:
 
     // END Local variables
 
+    // Listening
+
+    // An object whose conversation script is "default" runs this one, as do
+    // a creature and a placeable whose script is empty; a door with an empty
+    // script runs nothing.
+    static constexpr const char *kFallbackConversationScript = "k_hen_dialogue01";
+
+    bool _listening {false};
+    std::vector<ListenExpression> _listenExpressions;
+    // None of these is saved.
+    uint32_t _lastSpeaker {script::kObjectInvalid};
+    int32_t _listenPatternNumber {0};
+    std::vector<std::string> _matchedSubstrings;
+
+    virtual void runConversationScript() {}
+
+    // END Listening
+
     Object(uint32_t id, ObjectType type, std::string sceneName,
            Game &game, ServicesView &services);
 
@@ -635,6 +700,7 @@ protected:
     void removeCompletedActions();
 
     void executeActions(float dt);
+    void executeActionsIfAble(float dt);
 
     // END Actions
 

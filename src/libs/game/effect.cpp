@@ -178,15 +178,6 @@ uint16_t serializedEffectType(EffectType type) {
     case EffectType::Blindness: return 73;
     case EffectType::Concealment: return 76;
     case EffectType::BonusFeat: return 83;
-    case EffectType::Confused:
-    case EffectType::Frightened:
-    case EffectType::Stunned:
-    case EffectType::Paralyze:
-    case EffectType::Sleep:
-    case EffectType::DroidStun:
-    case EffectType::Choke:
-    case EffectType::Horrified:
-    case EffectType::WhirlWind: return 8;
     case EffectType::Slow: return 3;
     case EffectType::Entangle: return 18;
     case EffectType::MovementSpeedDecrease: return 29;
@@ -601,8 +592,7 @@ EffectApplicationResult Effect::onApply(Object &, EffectInstance &) {
     return EffectApplicationResult::Retained;
 }
 
-EffectRemovalResult Effect::onRemove(Object &, const EffectInstance &) {
-    return EffectRemovalResult::Removed;
+void Effect::onRemove(Object &, const EffectInstance &) {
 }
 
 void Effect::onUpdate(Object &, const EffectInstance &, float) {
@@ -626,23 +616,6 @@ EffectInstance Effect::saveFacingInstance() const {
     result.creatorId = kSavedEffectInvalidObjectId;
     result.spellId = _saveFacingSpellId;
     result.integerParameters = _saveFacingIntegers;
-    // Script state effects share serialized type 8; the semantic state belongs in
-    // its first integer, not in the type field.
-    if (result.serializedType == 8) {
-        result.integerParameters.resize(std::max<size_t>(1, result.integerParameters.size()));
-        switch (_type) {
-        case EffectType::Confused: result.integerParameters[0] = 1; break;
-        case EffectType::Frightened: result.integerParameters[0] = 2; break;
-        case EffectType::Stunned: result.integerParameters[0] = 4; break;
-        case EffectType::Paralyze: result.integerParameters[0] = 5; break;
-        case EffectType::Sleep: result.integerParameters[0] = 6; break;
-        case EffectType::DroidStun: result.integerParameters[0] = 3; break;
-        case EffectType::Choke: result.integerParameters[0] = 7; break;
-        case EffectType::Horrified: result.integerParameters[0] = 8; break;
-        case EffectType::WhirlWind: result.integerParameters[0] = 10; break;
-        default: break;
-        }
-    }
     result.floatParameters = _saveFacingFloats;
     result.stringParameters = _saveFacingStrings;
     // Preserve the exact candidate binding even while its owner graph remains
@@ -1198,7 +1171,7 @@ constexpr int kDispelResistance = 11;
 // A dispel reaches magical effects that last for a time or for good.
 bool isDispellable(const EffectInstance &effect) {
     const auto lifetime = effect.durationType();
-    return effect.semanticSubType() == 0x8 &&
+    return effect.semanticSubType() == kMagicalEffectCategory &&
            (lifetime == DurationType::Temporary || lifetime == DurationType::Permanent);
 }
 
@@ -1284,13 +1257,12 @@ EffectApplicationResult TimeStopEffect::onApply(Object &object, EffectInstance &
     return EffectApplicationResult::Applied;
 }
 
-EffectRemovalResult TimeStopEffect::onRemove(Object &object, const EffectInstance &) {
+void TimeStopEffect::onRemove(Object &object, const EffectInstance &) {
     // Ending a Time Stop always flips the stop; a stop left without an
     // excluded caster ends at the next module update.
     auto &game = object.game();
     game.toggleTimeStop();
     game.removeTimeStopExclusion(object);
-    return EffectRemovalResult::Removed;
 }
 
 void LinkEffectsEffect::setSubType(uint16_t category) {

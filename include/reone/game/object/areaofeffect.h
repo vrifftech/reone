@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2023 The reone project contributors
+ * Copyright (c) 2026 The reone project contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -82,8 +82,6 @@ public:
     /** Only a temporary duration runs out. */
     void setDuration(DurationType type, float seconds);
 
-    int areaEffectId() const { return _areaEffectId; }
-    Shape shape() const { return _shape; }
     std::shared_ptr<Object> creator() const { return savedReference(kCreatorReference); }
     std::shared_ptr<Object> carrier() const { return savedReference(kCarrierReference); }
     std::shared_ptr<Object> lastEntered() const { return savedReference(kLastEnteredReference); }

@@ -135,7 +135,6 @@ void AttackObjectAction::execute(std::shared_ptr<Action> self, Object &actor, fl
         finish(attacker);
         return;
     }
-    attacker.setAttemptedAttackTarget(target->id());
     // A creature outside the party cannot go on attacking one it does not see.
     if (!attacker.hasDetectedTarget(*target)) {
         finish(attacker);
@@ -155,6 +154,8 @@ void AttackObjectAction::execute(std::shared_ptr<Action> self, Object &actor, fl
     case AttackApproachStep::Reached:
         break;
     }
+    // While the world is held, an attack in reach waits.
+    if (_game.holdsWorld()) return;
 
     attacker.setDesiredFacingToward(target->position());
 
@@ -262,6 +263,8 @@ bool AttackObjectAction::cancel(std::shared_ptr<Action> self, Object &actor) {
     _attacks.discardPending();
     _attacks.clearHistory();
     attacker.clearCurrentAttackTarget();
+    // An attack cleared before its round took it up forgets the attempted target.
+    if (!locked()) attacker.setAttemptedAttackTarget(script::kObjectInvalid);
     finish(attacker);
     return true;
 }

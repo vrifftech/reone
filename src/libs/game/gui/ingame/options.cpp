@@ -19,6 +19,8 @@
 
 #include <array>
 
+#include "reone/game/difficultyoptions.h"
+#include "reone/game/di/services.h"
 #include "reone/game/game.h"
 #include "reone/gui/guis.h"
 #include "reone/gui/control/button.h"
@@ -70,26 +72,33 @@ void OptionsMenu::onGUILoaded() {
     _controls.BTN_FEEDBACK->setOnClick([this]() {
         openFeedbackPanel();
     });
+    _controls.BTN_GAMEPLAY->setOnClick([this]() {
+        openGameplayPanel();
+    });
     loadAutoPausePanel();
     loadFeedbackPanel();
+    loadGameplayPanel();
 }
 
 bool OptionsMenu::handle(const input::Event &event) {
-    if (!_autoPauseOpen && !_feedbackOpen) return GameGUI::handle(event);
+    if (!_autoPauseOpen && !_feedbackOpen && !_gameplayOpen) return GameGUI::handle(event);
     // The panels are modal; Escape leaves them the same way as Back.
     if (event.type == input::EventType::KeyDown && event.key.code == input::KeyCode::Escape) {
         if (_autoPauseOpen) closeAutoPausePanel();
         if (_feedbackOpen) closeFeedbackPanel();
+        if (_gameplayOpen) closeGameplayPanel();
         return true;
     }
     if (_autoPauseOpen) _autoPauseGUI->handle(event);
     if (_feedbackOpen) _feedbackGUI->handle(event);
+    if (_gameplayOpen) _gameplayGUI->handle(event);
     return true;
 }
 
 void OptionsMenu::update(float dt) {
     GameGUI::update(dt);
     if (_autoPauseOpen) _autoPauseGUI->update(dt);
+    if (_gameplayOpen) _gameplayGUI->update(dt);
     if (_feedbackOpen) {
         _feedbackGUI->update(dt);
         // A row describes itself when it gains focus.
@@ -102,14 +111,18 @@ void OptionsMenu::render() {
     GameGUI::render();
     if (_autoPauseOpen) _autoPauseGUI->render();
     if (_feedbackOpen) _feedbackGUI->render();
+    if (_gameplayOpen) _gameplayGUI->render();
 }
 
 void OptionsMenu::clearSelection() {
     if (_autoPauseOpen) closeAutoPausePanel();
     if (_feedbackOpen) closeFeedbackPanel();
+    if (_gameplayOpen) closeGameplayPanel();
     GameGUI::clearSelection();
     _game.saveAutoPauseOptions();
     _game.saveFeedbackOptions();
+    _game.saveDifficultyLevel();
+    _game.saveMouseOptions();
 }
 
 void OptionsMenu::loadFeedbackPanel() {
@@ -201,6 +214,112 @@ void OptionsMenu::showFeedbackDescription(int row) {
     _feedbackControls.LB_DESC->clearItems();
     _feedbackControls.LB_DESC->addTextLinesAsItems(
         _services.resource.strings.getText(_feedbackRows[static_cast<size_t>(row)].descriptionStrRef));
+}
+
+// The difficulty level's description.
+static constexpr int kDifficultyDescriptionStrRef = 42265;
+// The level the Default button restores.
+static constexpr uint8_t kDefaultDifficultyLevel = 1;
+static constexpr int kMouseLookDescriptionStrRef = 48014;
+static constexpr int kMouseLookDescriptionStrRefTSL = 48697;
+
+void OptionsMenu::loadGameplayPanel() {
+    _gameplayGUI = _services.gui.guis.get(guiResRef("optgameplay"), [this](IGUI &gui) { preload(gui); });
+    if (!_gameplayGUI) {
+        throw ResourceNotFoundException("GUI not found: " + guiResRef("optgameplay"));
+    }
+    auto find = [this](const std::string &tag) { return _gameplayGUI->findControl(tag); };
+    auto &controls = _gameplayControls;
+    controls.BTN_BACK = std::static_pointer_cast<Button>(find("BTN_BACK"));
+    controls.BTN_DEFAULT = std::static_pointer_cast<Button>(find("BTN_DEFAULT"));
+    controls.BTN_DIFFICULTY = std::static_pointer_cast<Button>(find("BTN_DIFFICULTY"));
+    controls.BTN_DIFFLEFT = std::static_pointer_cast<Button>(find("BTN_DIFFLEFT"));
+    controls.BTN_DIFFRIGHT = std::static_pointer_cast<Button>(find("BTN_DIFFRIGHT"));
+    controls.CB_INVERTCAM = std::static_pointer_cast<ToggleButton>(find("CB_INVERTCAM"));
+    controls.LBL_TITLE = std::static_pointer_cast<Label>(find("LBL_TITLE"));
+    controls.LB_DESC = std::static_pointer_cast<ListBox>(find("LB_DESC"));
+
+    if (_game.isTSL()) {
+        useK2ShellTitle(controls.LBL_TITLE);
+        enableK2ButtonBodyFill(controls.BTN_BACK);
+        enableK2ButtonBodyFill(controls.BTN_DEFAULT);
+        controls.LB_DESC->setTintBorderFill(true);
+    }
+
+    // The level changes at once; the configuration is written when the options close.
+    controls.BTN_DIFFLEFT->setOnClick([this]() {
+        lowerDifficulty();
+    });
+    controls.BTN_DIFFRIGHT->setOnClick([this]() {
+        raiseDifficulty();
+    });
+    controls.BTN_DIFFICULTY->setOnSelectionChanged([this](bool selected) {
+        if (!selected) return;
+        showDifficulty();
+        _gameplayControls.LB_DESC->clearItems();
+        _gameplayControls.LB_DESC->addTextLinesAsItems(
+            _services.resource.strings.getText(kDifficultyDescriptionStrRef));
+    });
+    // The mouse look box changes the option at once and describes itself
+    // when it gains focus.
+    controls.CB_INVERTCAM->setOnClick([this]() {
+        _gameplayControls.CB_INVERTCAM->toggle();
+        _game.setMouseLook(_gameplayControls.CB_INVERTCAM->isOn());
+    });
+    controls.CB_INVERTCAM->setOnSelectionChanged([this](bool selected) {
+        if (!selected) return;
+        _gameplayControls.LB_DESC->clearItems();
+        _gameplayControls.LB_DESC->addTextLinesAsItems(_services.resource.strings.getText(
+            _game.isTSL() ? kMouseLookDescriptionStrRefTSL : kMouseLookDescriptionStrRef));
+    });
+    // The defaults are the normal difficulty and mouse look off.
+    controls.BTN_DEFAULT->setOnClick([this]() {
+        _game.setClientDifficulty(kDefaultDifficultyLevel);
+        _game.setMouseLook(false);
+        showDifficulty();
+        _gameplayControls.CB_INVERTCAM->setOn(false);
+    });
+    controls.BTN_BACK->setOnClick([this]() {
+        closeGameplayPanel();
+    });
+}
+
+void OptionsMenu::openGameplayPanel() {
+    showDifficulty();
+    _gameplayControls.CB_INVERTCAM->setOn(_game.mouseLook());
+    _gameplayControls.LB_DESC->clearItems();
+    _gameplayOpen = true;
+}
+
+void OptionsMenu::closeGameplayPanel() {
+    _gameplayGUI->clearSelection();
+    _gameplayOpen = false;
+}
+
+void OptionsMenu::lowerDifficulty() {
+    const uint8_t level = _game.clientDifficulty();
+    if (level == 0) return;
+    _game.setClientDifficulty(level - 1);
+    showDifficulty();
+}
+
+// The last row of the table is not a level the player can pick. Only that
+// exact row stops the step, so a stored level beyond it keeps rising.
+void OptionsMenu::raiseDifficulty() {
+    const uint8_t level = _game.clientDifficulty();
+    if (level == _services.game.difficultyOptions.count() - 2) return;
+    _game.setClientDifficulty(level + 1);
+    showDifficulty();
+}
+
+// The level's name, with an arrow on each side that has a level to step to.
+void OptionsMenu::showDifficulty() {
+    const auto &controls = _gameplayControls;
+    const int level = _game.clientDifficulty();
+    const int nameStrRef = _services.game.difficultyOptions.get(level).nameStrRef;
+    if (nameStrRef != -1) controls.BTN_DIFFICULTY->setTextMessage(_services.resource.strings.getText(nameStrRef));
+    controls.BTN_DIFFLEFT->setVisible(level != 0);
+    controls.BTN_DIFFRIGHT->setVisible(level != _services.game.difficultyOptions.count() - 2);
 }
 
 void OptionsMenu::loadAutoPausePanel() {

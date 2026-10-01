@@ -19,15 +19,13 @@
 
 #include "reone/resource/types.h"
 
-#include <map>
-#include <memory>
+#include <vector>
 
 namespace reone {
 
 namespace resource {
 
 class ITwoDAs;
-class TwoDA;
 
 } // namespace resource
 
@@ -66,8 +64,7 @@ public:
 private:
     resource::GameID _gameId;
     resource::ITwoDAs &_twoDas;
-    std::shared_ptr<resource::TwoDA> _table;
-    mutable std::map<int, AutoBalanceRow> _rows;
+    std::vector<AutoBalanceRow> _rows;
 };
 
 } // namespace game

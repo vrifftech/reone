@@ -32,6 +32,9 @@ struct Feat {
     std::string description;
     std::shared_ptr<graphics::Texture> icon;
     int category {0}; // talent category
+    int usesPerDay {0}; // zero for a feat whose uses are not counted
+    int maxCR {0}; // the challenge rating that ranks the feat as a talent
+    uint32_t exclusion {0}; // talent inclusion mask
     uint32_t minCharLevel {0};
     FeatType preReqFeat1 {FeatType::Invalid};
     FeatType preReqFeat2 {FeatType::Invalid};

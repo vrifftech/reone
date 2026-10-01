@@ -112,6 +112,7 @@ public:
 
     const std::string &getOnOpen() const { return _onOpen; }
     const std::string &getOnFailToOpen() const { return _onFailToOpen; }
+    void setOnDialog(std::string onDialog) { _onDialog = std::move(onDialog); }
 
     // Traps
 
@@ -164,6 +165,8 @@ public:
     bool isPreciseUse() const { return _preciseUse; }
     /** Whether the door's look blocks sight (a see-through door does not block a sight line that may pass one). */
     bool blocksSight() const { return _blocksSight; }
+    /** The placeableobjsnds.2da row the door's look sounds as when struck. */
+    int soundAppType() const { return _soundAppType; }
 
     /**
      * The point a creature at from goes to in order to use the door: of the
@@ -255,6 +258,7 @@ private:
 
     bool _preciseUse {false};
     bool _blocksSight {true};
+    int _soundAppType {0};
 
     // Walkmeshes
 
@@ -266,6 +270,8 @@ private:
     // END Walkmeshes
 
     // Scripts
+
+    void runConversationScript() override;
 
     // END Scripts
 

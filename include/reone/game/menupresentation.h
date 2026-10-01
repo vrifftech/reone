@@ -59,6 +59,29 @@ uint16_t loadFeedbackOptions(const std::filesystem::path &path, uint16_t options
 /** Write the feedback keys into the configuration's Game Options section, keeping every other line. */
 void saveFeedbackOptions(const std::filesystem::path &path, uint16_t options);
 
+/** The difficulty level in the configuration's Game Options section, or level when the key is absent. */
+uint8_t loadDifficultyLevel(const std::filesystem::path &path, uint8_t level);
+/** Write the difficulty level into the configuration's Game Options section, keeping every other line. */
+void saveDifficultyLevel(const std::filesystem::path &path, uint8_t level);
+
+/** Each bit of the unlocked planet songs opens one group of the main menu's music list; there are eleven. */
+constexpr int kAllPlanetSongs = 0x7FF;
+/** Write the unlocked planet songs into the configuration's Game Options section, keeping every other line. */
+void saveUnlockedPlanetSongs(const std::filesystem::path &path, int songs);
+
+/** The mouse options, stored in the configuration's Game Options section. */
+struct MouseOptions {
+    /** The mouse turns the camera unless the right button or a Ctrl key is held. */
+    bool mouseLook {false};
+    /** How far a frame of mouse travel turns the camera, 0 to 255. */
+    uint8_t sensitivity {44};
+
+    /** The defaults with the configuration's keys applied; absent keys keep their defaults. */
+    static MouseOptions load(const std::filesystem::path &path);
+    /** Write both keys into the configuration's Game Options section, keeping every other line. */
+    void save(const std::filesystem::path &path) const;
+};
+
 /** Situations that pause play on their own, stored in the configuration's Autopause Options section. */
 struct AutoPauseOptions {
     bool endOfCombatRound {false};

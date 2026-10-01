@@ -110,10 +110,8 @@ static void describeActivation(Game &game, const Creature &leader, const Item &i
 }
 
 // TSL appearances can lock slots; a locked hand also locks its alternate.
-static bool isEquipmentSlotLocked(ServicesView &services, const Creature &creature, int slot) {
-    auto appearances = services.resource.twoDas.get("appearance");
-    if (!appearances) return false;
-    const auto locked = static_cast<uint32_t>(appearances->getInt(creature.appearance(), "equipslotslocked", 0));
+static bool isEquipmentSlotLocked(const Creature &creature, int slot) {
+    const uint32_t locked = creature.equipSlotsLocked();
     if (slot == InventorySlots::leftWeapon2) slot = InventorySlots::leftWeapon;
     if (slot == InventorySlots::rightWeapon2) slot = InventorySlots::rightWeapon;
     return (locked & equipmentSlotMask(slot)) != 0;
@@ -300,14 +298,19 @@ public:
         _browseRoster = _game.isTSL() && module && boost::iequals(module->name(), "003EBO");
         _browseIndex = -1;
         _browseSubject = _browseRoster ? _game.party().player() : nullptr;
-        _game.setInventoryMenuCharacter(-1);
     }
 
     void endEquipment() override {
         _browseRoster = false;
+        _browseIndex = -1;
         _browseSubject.reset();
-        _game.setInventoryMenuCharacter(-1);
     }
+
+    bool browsingRoster() const override { return _browseRoster; }
+    std::shared_ptr<Creature> browsedCharacter() const override {
+        return _browseRoster ? _browseSubject.resolve() : nullptr;
+    }
+    int browsedRosterIndex() const override { return _browseRoster ? _browseIndex : -1; }
 
     void nextCharacter() override {
         if (!_browseRoster) return;
@@ -316,15 +319,16 @@ public:
         static const std::array<const char *, 12> tags {{
             "atton", "baodur", "mand", "g0t0", "handmaiden", "hk47",
             "kreia", "mira", "t3m4", "visasmarr", "hanharr", "disciple"}};
+        int index = _browseIndex;
         for (int attempts = 0; attempts < 12; ++attempts) {
-            if (++_browseIndex == 12) { selectCharacter(-1, _game.party().player()); return; }
-            if (!_game.party().isMemberAvailable(_browseIndex)) continue;
+            if (++index == 12) { selectCharacter(-1, _game.party().player()); return; }
+            if (!_game.party().isMemberAvailable(index)) continue;
             const auto module = _game.module();
             const auto area = module ? module->area() : nullptr;
-            auto creature = area ? std::dynamic_pointer_cast<Creature>(area->getObjectByTag(tags[_browseIndex])) : nullptr;
+            auto creature = area ? std::dynamic_pointer_cast<Creature>(area->getObjectByTag(tags[index])) : nullptr;
             if (!creature) continue;
-            _game.party().bindRosterCreature({RosterKind::Npc, _browseIndex}, creature);
-            selectCharacter(_browseIndex, creature);
+            _game.party().bindRosterCreature({RosterKind::Npc, index}, creature);
+            selectCharacter(index, creature);
             return;
         }
     }
@@ -344,14 +348,15 @@ public:
 
     void previousCharacter() override {
         if (!_browseRoster) return;
+        int index = _browseIndex;
         for (int attempts = 0; attempts < 12; ++attempts) {
-            if (--_browseIndex == -1) { selectCharacter(-1, _game.party().player()); return; }
-            if (_browseIndex == -2) _browseIndex = 11;
-            if (!_game.party().isMemberAvailable(_browseIndex)) continue;
+            if (--index == -1) { selectCharacter(-1, _game.party().player()); return; }
+            if (index == -2) index = 11;
+            if (!_game.party().isMemberAvailable(index)) continue;
             // Reverse roster navigation does not create a missing creature.
-            auto creature = _game.party().getAvailableMember(_browseIndex);
+            auto creature = _game.party().getAvailableMember(index);
             if (!creature) continue;
-            selectCharacter(_browseIndex, creature);
+            selectCharacter(index, creature);
             return;
         }
     }
@@ -401,9 +406,9 @@ public:
         return std::nullopt;
     }
 
-    EquipmentView readEquipment(int slot) override {
+    EquipmentView readEquipmentOverview() override {
         bindSubject();
-        _slot = slot;
+        _slot = -1;
         EquipmentView view;
         view.canBrowseCharacters = _browseRoster;
         view.revision = _revision;
@@ -457,6 +462,16 @@ public:
                 describeHand(right2.get(), true, view.offDamage2, raised, view.offAttack2, raised);
             describeHand(right2.get(), false, view.mainDamage2, raised, view.mainAttack2, raised);
         }
+        return view;
+    }
+
+    EquipmentView readEquipment(int slot) override {
+        EquipmentView view = readEquipmentOverview();
+        _slot = slot;
+        auto owner = _owner.resolve();
+        auto subject = _subject.resolve();
+        if (!owner || !subject)
+            return view;
         // A slot opens unless the area restricts play, the slot is locked, it
         // is the armour slot in direct combat, it is the off hand under a
         // large weapon, or nothing can go in it.
@@ -471,7 +486,7 @@ public:
             auto module = _game.module();
             auto area = module ? module->area() : nullptr;
             if (area && area->playerRestrictMode()) return refuse(kRestrictModeSlotStrRef);
-            if (tsl && isEquipmentSlotLocked(_services, *subject, slot)) return refuse(kLockedSlotStrRef);
+            if (tsl && isEquipmentSlotLocked(*subject, slot)) return refuse(kLockedSlotStrRef);
             if (slot == InventorySlots::body && isArmorChangeRefused(*subject)) return refuse(kArmorInCombatSlotStrRef);
             if (!evaluateEquipmentSlotActivation(*subject, slot).available) return refuse(kOffHandUnderLargeWeaponStrRef);
         }
@@ -486,7 +501,7 @@ public:
         const int otherHand = isMainHandWeaponSlot(slot) ? getPairedOffHandSlot(slot) : getPairedMainHandSlot(slot);
         auto other = weaponHand && !alternateHand ? subject->getEquippedItem(otherHand) : nullptr;
         const bool offHandLocked = tsl && isMainHandWeaponSlot(slot) &&
-                                   isEquipmentSlotLocked(_services, *subject, getPairedOffHandSlot(slot));
+                                   isEquipmentSlotLocked(*subject, getPairedOffHandSlot(slot));
         for (const auto &item : owner->items()) {
             if (!live(item) || item == equipped)
                 continue;
@@ -557,6 +572,8 @@ public:
         // doing; one that is fighting takes up its round's target again.
         subject->clearAllActions(true);
         _game.combat().discardEquipment(*subject);
+        // The item leaving the slot goes out at once, whatever the slot.
+        subject->putOutItemLeavingSlot(slot);
         auto outcome = applyEquipmentOperation(_game, *subject, *owner, item, slot);
         if (auto target = subject->isInCombat() ? subject->getRoundTarget() : nullptr)
             _game.combat().scheduleAttack(*subject, target);
@@ -613,7 +630,6 @@ private:
     void selectCharacter(int npc, const std::shared_ptr<Creature> &creature) {
         _browseIndex = npc;
         _browseSubject = creature;
-        _game.setInventoryMenuCharacter(npc);
     }
     std::shared_ptr<Creature> selectedSubject() const {
         return _browseRoster ? _browseSubject.resolve() : _game.party().getLeader();

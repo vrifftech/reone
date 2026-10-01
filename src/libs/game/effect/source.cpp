@@ -45,13 +45,6 @@ EffectSourceKey getEffectSourceKey(const EffectInstance &effect) {
     return {EffectSourceKind::Independent, effect.id};
 }
 
-} // namespace game
-
-} // namespace reone
-
-namespace reone {
-namespace game {
-
 void EffectModifierReducer::addIncrease(
     EffectSourceKey source, int subtype, int amount) {
     add(_increases, source, subtype, amount);
@@ -178,7 +171,6 @@ int AbilityEffectReducer::total() const {
            total(_decreases, getAbilityEffectDecreaseCap(_tsl));
 }
 
-
-
 } // namespace game
+
 } // namespace reone

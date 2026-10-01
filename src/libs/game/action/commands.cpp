@@ -15,6 +15,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include "reone/game/action/appear.h"
 #include "reone/game/action/docommand.h"
 
 #include "reone/script/executioncontext.h"
@@ -199,7 +200,7 @@ std::optional<SavedActionRecord> PlayAnimationAction::saveFacingState() const {
     result.parameters = {
         SavedActionParameter {
             static_cast<uint32_t>(SavedActionParameterType::Object),
-            SavedObjectReference::fromRuntimeId(
+            SavedObjectReference::rawValue(
                 static_cast<uint32_t>(_animation))},
         SavedActionParameter {
             static_cast<uint32_t>(SavedActionParameterType::Float), _speed},
@@ -213,6 +214,22 @@ std::optional<SavedActionRecord> PlayAnimationAction::saveFacingState() const {
             static_cast<uint32_t>(SavedActionParameterType::Integer),
             static_cast<int32_t>(_looping.value_or(isAnimationLooping(_animation)) ? 1 : 0)},
     };
+    return result;
+}
+
+void AppearAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
+    _timer.update(dt);
+    if (!_timer.elapsed()) return;
+    if (auto *creature = dyn_cast<Creature>(&actor)) creature->resumeStateDrivenAnimation();
+    complete();
+}
+
+// An appearance taken up again holds the creature for its full two seconds.
+std::optional<SavedActionRecord> AppearAction::saveFacingState() const {
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 52;
+    result.declaredParameterCount = 0;
+    result.parameters.clear();
     return result;
 }
 
@@ -239,6 +256,14 @@ void SurrenderToEnemiesAction::execute(std::shared_ptr<Action> self, Object &act
     auto &creature = static_cast<Creature &>(actor);
     if (!creature.isPC()) creature.surrenderToEnemies(false);
     complete();
+}
+
+std::optional<SavedActionRecord> SurrenderToEnemiesAction::saveFacingState() const {
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    result.actionId = 65;
+    result.declaredParameterCount = 0;
+    result.parameters.clear();
+    return result;
 }
 
 } // namespace game

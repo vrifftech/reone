@@ -40,15 +40,6 @@ static constexpr float kRotationAcceleration = 1.0f;
 static constexpr float kMouseRotationSpeed = 0.001f;
 static constexpr float kTargetPadding = 0.05f;
 
-// Combat camera keyboard turning: rate in degrees per second and the
-// acceleration and braking that approach it.
-static constexpr float kCombatTurnRate = 200.0f;
-static constexpr float kCombatTurnAcceleration = 500.0f;
-static constexpr float kCombatTurnDeceleration = 2000.0f;
-// The longest step an accelerated rate integrates at once.
-static constexpr float kAcceleratedRateMaxStep = 0.2f;
-// Mouse travel per full-strength frame.
-static constexpr float kMouseFullTravel = 100.0f;
 // Clearance kept around the combat camera, and the extra lift it may take.
 static constexpr float kCombatPersonalSpace = 0.35f;
 static constexpr float kCombatLiftAllowance = 0.15f;
@@ -126,10 +117,12 @@ bool ThirdPersonCamera::handle(const input::Event &event) {
     }
 }
 
+// The turn keys work whether or not the mouse turns the camera. Either Ctrl
+// key, like the right button, turns the camera with the mouse while held.
 bool ThirdPersonCamera::handleKeyDown(const input::KeyEvent &event) {
     switch (event.code) {
     case input::KeyCode::A:
-        if (!event.repeat && !_mouseLookMode) {
+        if (!event.repeat) {
             _rotateCCW = true;
             _rotateCW = false;
             _rotationSpeed = kMinRotationSpeed;
@@ -137,13 +130,17 @@ bool ThirdPersonCamera::handleKeyDown(const input::KeyEvent &event) {
         }
         break;
     case input::KeyCode::D:
-        if (!event.repeat && !_mouseLookMode) {
+        if (!event.repeat) {
             _rotateCCW = false;
             _rotateCW = true;
             _rotationSpeed = kMinRotationSpeed;
             return true;
         }
         break;
+    case input::KeyCode::LeftControl:
+    case input::KeyCode::RightControl:
+        _mouseLookHeld = true;
+        return true;
     default:
         break;
     }
@@ -154,17 +151,15 @@ bool ThirdPersonCamera::handleKeyDown(const input::KeyEvent &event) {
 bool ThirdPersonCamera::handleKeyUp(const input::KeyEvent &event) {
     switch (event.code) {
     case input::KeyCode::A:
-        if (!_mouseLookMode) {
-            _rotateCCW = false;
-            return true;
-        }
-        break;
+        _rotateCCW = false;
+        return true;
     case input::KeyCode::D:
-        if (!_mouseLookMode) {
-            _rotateCW = false;
-            return true;
-        }
-        break;
+        _rotateCW = false;
+        return true;
+    case input::KeyCode::LeftControl:
+    case input::KeyCode::RightControl:
+        _mouseLookHeld = false;
+        return true;
     default:
         break;
     }
@@ -173,13 +168,15 @@ bool ThirdPersonCamera::handleKeyUp(const input::KeyEvent &event) {
 }
 
 bool ThirdPersonCamera::handleMouseMotion(const input::MouseMotionEvent &event) {
-    if (_mouseLookMode && event.xrel != 0) releaseLookAt();
+    const bool mouseLook = isMouseLookMode();
+    if (mouseLook && event.xrel != 0) releaseLookAt();
     // The combat camera turns once a frame by the travel gathered here.
-    if (_mouseLookMode && _combat) {
+    if (mouseLook && _combat) {
         _mouseTurn += static_cast<float>(event.xrel);
         return false;
     }
-    if (_mouseLookMode) {
+    // A held turn key wins over the mouse.
+    if (mouseLook && !_rotateCW && !_rotateCCW) {
         _facing -= kMouseRotationSpeed * event.xrel;
         _facing = glm::mod(_facing, glm::two_pi<float>());
         updateSceneNode();
@@ -187,12 +184,11 @@ bool ThirdPersonCamera::handleMouseMotion(const input::MouseMotionEvent &event) 
     return false;
 }
 
+// The right button and the Ctrl keys share one hold: any press starts it and
+// any release ends it.
 bool ThirdPersonCamera::handleMouseButtonDown(const input::MouseButtonEvent &event) {
     if (event.button == input::MouseButton::Right) {
-        _mouseLookMode = true;
-        _rotateCCW = false;
-        _rotateCW = false;
-        _game.setRelativeMouseMode(true);
+        _mouseLookHeld = true;
         return true;
     }
     return false;
@@ -200,8 +196,7 @@ bool ThirdPersonCamera::handleMouseButtonDown(const input::MouseButtonEvent &eve
 
 bool ThirdPersonCamera::handleMouseButtonUp(const input::MouseButtonEvent &event) {
     if (event.button == input::MouseButton::Right) {
-        _mouseLookMode = false;
-        _game.setRelativeMouseMode(false);
+        _mouseLookHeld = false;
         return true;
     }
     return false;
@@ -236,51 +231,6 @@ void ThirdPersonCamera::update(float dt) {
     updateSceneNode();
 }
 
-// Acceleration for a velocity and an input: the acceleration gain with input,
-// the braking gain without, both pulling toward the rate.
-static float rateAcceleration(float velocity, float input, float rate, float acceleration, float deceleration) {
-    const float gain = input == 0.0f ? deceleration : acceleration;
-    return gain * input - (gain / rate) * velocity;
-}
-
-// One Runge-Kutta step from rest position: the first stage takes the previous
-// frame's input, the middle stages their average and the last this frame's.
-// The half-step states are halved sums, (v + a*h)/2.
-float stepAcceleratedRate(
-    float &velocity, float &previousInput, float input, float dt,
-    float rate, float acceleration, float deceleration) {
-    const float h = dt < kAcceleratedRateMaxStep ? dt : kAcceleratedRateMaxStep;
-    const float mid = (previousInput + input) * 0.5f;
-    const float v0 = velocity;
-    const float x0 = 0.0f;
-    auto accelerate = [&](float v, float u) { return rateAcceleration(v, u, rate, acceleration, deceleration); };
-
-    const float dv1 = accelerate(v0, previousInput) * h;
-    const float dx1 = h * v0;
-    const float v1 = (v0 + dv1) * 0.5f;
-    const float dv2 = accelerate(v1, mid) * h;
-    const float dx2 = v1 * h;
-    const float v2 = (v0 + dv2) * 0.5f;
-    const float dv3 = accelerate(v2, mid) * h;
-    const float dx3 = v2 * h;
-    const float v3 = v0 + dv3;
-    const float dv4 = accelerate(v3, input) * h;
-    const float dx4 = h * v3;
-
-    velocity = v0 + (((dv2 * 0.33333334f + dv1 * 0.16666667f) + dv3 * 0.33333334f) + dv4 * 0.16666667f);
-    previousInput = input;
-    return x0 + (((dx2 * 0.33333334f + dx1 * 0.16666667f) + dx3 * 0.33333334f) + dx4 * 0.16666667f);
-}
-
-float stepKeyboardTurn(float &velocity, float &previousInput, float input, float dt) {
-    return stepAcceleratedRate(velocity, previousInput, input, dt,
-        kCombatTurnRate, kCombatTurnAcceleration, kCombatTurnDeceleration);
-}
-
-float mouseFrameStrength(float travel) {
-    return std::clamp(-travel / kMouseFullTravel, -1.0f, 1.0f);
-}
-
 float ThirdPersonCamera::integrateCombatTurn(float input, float dt) {
     return stepKeyboardTurn(_turnVelocity, _turnInput, input, dt);
 }
@@ -291,8 +241,8 @@ float ThirdPersonCamera::integrateCombatTurn(float input, float dt) {
 void ThirdPersonCamera::updateCombatTurn(float dt) {
     const float input = _rotateCCW ? 1.0f : (_rotateCW ? -1.0f : 0.0f);
     float turned;
-    const float mouse = _mouseLookMode
-        ? mouseFrameStrength(_mouseTurn) * kDefaultMouseSensitivity
+    const float mouse = isMouseLookMode()
+        ? mouseFrameStrength(_mouseTurn) * mouseSensitivity(_game.options().game.mouse.sensitivity)
         : 0.0f;
     _mouseTurn = 0.0f;
     if (input == 0.0f && mouse != 0.0f) {
@@ -388,8 +338,7 @@ void ThirdPersonCamera::updateSceneNode() {
 void ThirdPersonCamera::stopMovement() {
     _rotateCCW = false;
     _rotateCW = false;
-    if (_mouseLookMode) _game.setRelativeMouseMode(false);
-    _mouseLookMode = false;
+    _mouseLookHeld = false;
 }
 
 void ThirdPersonCamera::setTargetPosition(glm::vec3 position) {

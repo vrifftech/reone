@@ -11,6 +11,7 @@
 #include "reone/game/savedruntime.h"
 #include "reone/system/arrayref.h"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstddef>
@@ -517,6 +518,57 @@ static int getCombatFeedbackBroadcastCount(
             canReceiveCombatFeedback(*leader, *targetCreature));
     }
     return broadcasts;
+}
+
+static constexpr int kStrRefDamageTaken = 1402;
+static constexpr int kStrRefDamageDealt = 1403;
+
+void addDamageFeedback(Game &game, ServicesView &services, const Object *creator, const Object &damaged,
+                       const std::array<int, 15> &amounts) {
+    const auto leader = game.party().getLeader();
+    if (!leader) return;
+    // A damaged creature tells its own side; a creator of another faction
+    // tells its side too. A door or container leaves it to a creature
+    // creator.
+    const auto *creatorCreature = creator ? dyn_cast<const Creature>(creator) : nullptr;
+    const auto *damagedCreature = dyn_cast<const Creature>(&damaged);
+    int broadcasts = 0;
+    if (damagedCreature) {
+        broadcasts += static_cast<int>(canReceiveCombatFeedback(*leader, *damagedCreature));
+        if (creatorCreature && creatorCreature->faction() != damagedCreature->faction())
+            broadcasts += static_cast<int>(canReceiveCombatFeedback(*leader, *creatorCreature));
+    } else if (creatorCreature) {
+        broadcasts += static_cast<int>(canReceiveCombatFeedback(*leader, *creatorCreature));
+    }
+    if (broadcasts == 0) return;
+
+    // The line names the creator and the damaged object, or only the damaged
+    // object when the creator is gone, with the total; then, in parentheses,
+    // the physical damage and each other damage type present.
+    const auto total = std::to_string(amounts[DamageEffect::kTotal]);
+    std::string text = creator
+        ? game.getFeedbackText(kStrRefDamageDealt, {{0, creator->name()}, {1, damaged.name()}, {2, total}})
+        : game.getFeedbackText(kStrRefDamageTaken, {{0, damaged.name()}, {1, total}});
+    text += " (";
+    bool first = true;
+    const auto addPiece = [&](int strRef, int amount) {
+        if (!first) text += " ";
+        text += game.getFeedbackText(strRef, {{0, std::to_string(amount)}});
+        first = false;
+    };
+    if (amounts[0] >= 0 || amounts[1] >= 0 || amounts[2] >= 0)
+        addPiece(kStrRefPhysicalDamage, std::max(0, amounts[0]) + std::max(0, amounts[1]) + std::max(0, amounts[2]));
+    static constexpr int kTypeStrRefs[] {
+        kStrRefUniversalDamage, kStrRefAcidDamage, kStrRefColdDamage, kStrRefLightSideDamage,
+        kStrRefElectricalDamage, kStrRefFireDamage, kStrRefDarkSideDamage, kStrRefSonicDamage,
+        kStrRefIonDamage, kStrRefEnergyDamage, kStrRefPoisonDamage};
+    for (size_t slot = 3; slot < DamageEffect::kTotal; ++slot) {
+        if (amounts[slot] >= 0) addPiece(kTypeStrRefs[slot - 3], amounts[slot]);
+    }
+    text += ")";
+    for (int i = 0; i < broadcasts; ++i)
+        game.messageLog().add(MessageLog::kFeedbackMessageType, MessageLog::Style::Normal, text,
+                              MessageLog::Buffer::Combat);
 }
 
 static void addEffectOutcomeFeedback(

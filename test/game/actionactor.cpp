@@ -298,13 +298,23 @@ TEST(ActionActor, a_creature_actor_keeps_following_the_leader) {
     // and healing skill, and searches for mines.
     ON_CALL(fixture.engine.resourceModule().twoDas(), get("regeneration"))
         .WillByDefault(Return(std::shared_ptr<TwoDA>(TwoDA::Builder().build())));
-    ON_CALL(fixture.engine.resourceModule().twoDas(), get("skills"))
-        .WillByDefault(Return(std::shared_ptr<TwoDA>(TwoDA::Builder().build())));
+    ON_CALL(static_cast<MockSkills &>(fixture.engine.services().game.skills), getRequired(_))
+        .WillByDefault(Return(nullptr));
     ON_CALL(fixture.engine.resourceModule().twoDas(), get("racialtypes"))
         .WillByDefault(Return(std::shared_ptr<resource::TwoDA>(resource::TwoDA::Builder()
             .columns({"stradjust", "dexadjust", "conadjust", "intadjust", "wisadjust", "chaadjust"})
             .row({"0", "0", "0", "0", "0", "0"})
             .build())));
+    // The game reads its rule tables when it starts; the others are missing.
+    EXPECT_CALL(fixture.engine.resourceModule().twoDas(),
+                get(AnyOf(StartsWith("iprp_"), "gameeffects", "forceshields", "forceadjust",
+                          "excitedduration", "poison", "statescripts", "removefxondeath", "exptable",
+                          "xptable", "npc", "appearancesndset", "weaponsounds", "placeableobjsnds",
+                          "bodybag", "traps", "fractionalcr", "regeneration", "racialtypes", "ranges",
+                          "effecticon", "itemvalue", "videoeffects", "stringtokens", "tutorial", "feedbacktext",
+                          "aiscripts", "dialoganimations", "animations", "encdifficulty")))
+        .Times(AnyNumber());
+    fixture.engine.gameModule().combatTables().init(fixture.engine.resourceModule().twoDas());
     ASSERT_TRUE(fixture.game.party().addAvailableMember(0, walker));
     ASSERT_TRUE(fixture.game.party().addMember(0, walker));
     fixture.queueAsCaller(walker, kActionFollowLeader);

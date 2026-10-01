@@ -34,6 +34,7 @@
 #include "reone/system/randomutil.h"
 
 #include "reone/game/animationutil.h"
+#include "reone/game/combattables.h"
 #include "reone/game/di/services.h"
 #include "reone/game/game.h"
 #include "reone/game/party.h"
@@ -560,7 +561,7 @@ void DialogGUI::updateParticipantAnimations() {
         if (previous != _previousAnimations.end() && previous->second == anim.animation) continue;
         auto creature = participantCreature(anim.participant);
         if (creature && !canPlayDialogAnimations(*creature)) continue;
-        if (creature && isDialogAnimation(_services.resource.twoDas, anim.animation)) {
+        if (creature && isDialogAnimation(_services.game.combatTables, anim.animation)) {
             creature->setHeadLookSuspended(false);
             creature->lookAt(nullptr, 0.0f);
         }

@@ -1,6 +1,20 @@
-/* Copyright (c) 2026 The reone project contributors
- * SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (c) 2026 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
+
 #include "reone/game/effect/haste.h"
 #include "reone/game/effect/beam.h"
 #include "reone/game/effect/visual.h"
@@ -8,6 +22,7 @@
 #include "reone/game/effect/knockdown.h"
 #include <cmath>
 #include "reone/game/combatfeedback.h"
+#include "reone/game/combattables.h"
 #include "reone/game/effect/paralyze.h"
 #include "reone/game/effect/sleep.h"
 #include "reone/game/effect/stunned.h"
@@ -16,8 +31,6 @@
 #include "reone/game/effect/movementspeeddecrease.h"
 #include "reone/game/effect/savingthrowdecrease.h"
 #include "reone/game/game.h"
-#include "reone/game/twodautil.h"
-#include "reone/resource/2da.h"
 #include "reone/game/combat.h"
 #include "reone/game/object/creature.h"
 #include "reone/game/effect/blind.h"
@@ -32,9 +45,6 @@
 #include <algorithm>
 
 namespace reone::game {
-static bool hasImplementedStateConsumer(CreatureState state) {
-    return stateHasConsumer(state);
-}
 
 bool hasStateSpecificImmunity(const Creature &target, CreatureState state,
                              const Creature *creator) {
@@ -127,7 +137,7 @@ EffectApplicationResult CreatureStateEffect::onApply(Object &object, EffectInsta
     if (!creature) return EffectApplicationResult::Retained;
     if ((_state == CreatureState::MindTrick || _state == CreatureState::DroidScramble) && !object.game().isTSL())
         return EffectApplicationResult::Rejected;
-    if (!hasImplementedStateConsumer(_state))
+    if (!stateHasConsumer(_state))
         return instance.restoring ? EffectApplicationResult::Retained : EffectApplicationResult::Rejected;
     auto creator = instance.boundCreator();
     const bool bypass = instance.integerParameter(1) != 0;
@@ -158,15 +168,13 @@ EffectApplicationResult CreatureStateEffect::onApply(Object &object, EffectInsta
         ? StateApplicationResult::Applied : StateApplicationResult::Dormant;
     return EffectApplicationResult::Retained;
 }
-EffectRemovalResult CreatureStateEffect::onRemove(Object &object, const EffectInstance &instance) {
+void CreatureStateEffect::onRemove(Object &object, const EffectInstance &instance) {
     if (auto *creature = dyn_cast<Creature>(&object)) {
         // Losing any state makes the creature commandable again; a state that
         // remains takes that back when it is laid again.
         creature->setCommandable(true);
         creature->rebuildStateEffects(nullptr, instance.applicationOrder);
     }
-
-    return EffectRemovalResult::Removed;
 }
 
 CreatureStateInternalEffect::CreatureStateInternalEffect(CreatureState state) :
@@ -212,7 +220,7 @@ EffectApplicationResult CreatureStateInternalEffect::onApply(Object &object, Eff
     object.applyEffectPackage(members);
     return EffectApplicationResult::Retained;
 }
-EffectRemovalResult CreatureStateInternalEffect::onRemove(Object &object, const EffectInstance &instance) {
+void CreatureStateInternalEffect::onRemove(Object &object, const EffectInstance &instance) {
     if (auto *creature = dyn_cast<Creature>(&object)) {
         const int state = instance.integerParameter(0);
         // Including during load.
@@ -222,8 +230,6 @@ EffectRemovalResult CreatureStateInternalEffect::onRemove(Object &object, const 
         // and looks around anew.
         if (!creature->isPC()) creature->perceiveAfresh();
     }
-
-    return EffectRemovalResult::Removed;
 }
 CreatureAIStateEffect::CreatureAIStateEffect(int mask) : CopyableEffect(EffectType::Invalid) {
     setSaveFacingInteger(0, mask);
@@ -237,14 +243,12 @@ EffectApplicationResult CreatureAIStateEffect::onApply(Object &object, EffectIns
     creature->recomputeAIStateEffects(creature->effectAIStateMask() & instance.integerParameter(0));
     return EffectApplicationResult::Retained;
 }
-EffectRemovalResult CreatureAIStateEffect::onRemove(Object &object, const EffectInstance &instance) {
+void CreatureAIStateEffect::onRemove(Object &object, const EffectInstance &instance) {
     if (auto *creature = dyn_cast<Creature>(&object)) {
         // Removal does not revive an already-zero cached AI word.
         if (creature->effectAIStateMask() != 0)
             creature->recomputeAIStateEffects(0xffff, instance.applicationOrder);
     }
-
-    return EffectRemovalResult::Removed;
 }
 EffectIconMarkerEffect::EffectIconMarkerEffect(int iconId) : CopyableEffect(EffectType::Invalid) {
     setSaveFacingInteger(0, iconId);
@@ -259,17 +263,14 @@ EffectApplicationResult EffectIconMarkerEffect::onApply(Object &object, EffectIn
     // Only an icon whose row gives its picture and priority is shown; TSL
     // also needs its side and name.
     const int row = instance.integerParameter(0);
-    const auto icons = getRequiredTwoDA(object.services().resource.twoDas, "effecticon");
-    if (icons->getString(row, "iconresref").empty() || !icons->getIntOpt(row, "priority") ||
-        (object.game().isTSL() && (!icons->getIntOpt(row, "good") || !icons->getIntOpt(row, "namestrref"))))
+    const auto icon = object.services().game.combatTables.effectIcon(row);
+    if (!icon.hasIcon || !icon.priority || (object.game().isTSL() && (!icon.good || !icon.nameStrRef)))
         return EffectApplicationResult::Rejected;
     creature->addEffectIcon(row);
     return EffectApplicationResult::Retained;
 }
-EffectRemovalResult EffectIconMarkerEffect::onRemove(Object &object, const EffectInstance &instance) {
+void EffectIconMarkerEffect::onRemove(Object &object, const EffectInstance &instance) {
     if (auto *creature = dyn_cast<Creature>(&object)) creature->removeEffectIcon(instance.integerParameter(0));
-
-    return EffectRemovalResult::Removed;
 }
 VisualEffectMarkerEffect::VisualEffectMarkerEffect(int visualEffectId) : CopyableEffect(EffectType::Visual) {
     setSaveFacingInteger(0, visualEffectId);
@@ -290,11 +291,10 @@ EffectApplicationResult LimitMovementSpeedEffect::onApply(Object &object, Effect
     }
     return EffectApplicationResult::Retained;
 }
-EffectRemovalResult LimitMovementSpeedEffect::onRemove(Object &object, const EffectInstance &instance) {
+void LimitMovementSpeedEffect::onRemove(Object &object, const EffectInstance &instance) {
     if (auto *creature = dyn_cast<Creature>(&object)) {
         creature->setRunLimited(hasMovementLimitSurvivor(object.effects(), instance.applicationOrder));
     }
-    return EffectRemovalResult::Removed;
 }
 EffectInstance WalkAnimationEffect::saveFacingInstance() const {
     auto record = Effect::saveFacingInstance();
@@ -317,7 +317,7 @@ static EffectInstance makeStatePackage(Object &target, const std::shared_ptr<Eff
     record.effect = effect;
     record.id = target.game().allocateEffectId();
     record.setDuration(DurationType::Temporary, duration);
-    record.subType = static_cast<uint16_t>((record.subType & ~uint16_t(0x18)) | 0x08);
+    record.subType = static_cast<uint16_t>((record.subType & ~uint16_t(0x18)) | kMagicalEffectCategory);
     record.exposed = 1;
     return record;
 }
@@ -329,7 +329,7 @@ static void applyStateVisual(Object &target, int visual,
 }
 StateApplicationResult applyStatePackage(Object &target, CreatureState state, float duration,
                                         const std::shared_ptr<Object> &creator) {
-    if (!hasImplementedStateConsumer(state)) return StateApplicationResult::Rejected;
+    if (!stateHasConsumer(state)) return StateApplicationResult::Rejected;
     std::shared_ptr<CreatureStateEffect> root;
     switch (state) {
     case CreatureState::Stun: root = std::make_shared<StunnedEffect>(); break;
@@ -419,14 +419,13 @@ EffectApplicationResult KnockdownEffect::onApply(Object &object, EffectInstance 
     return EffectApplicationResult::Retained;
 }
 
-EffectRemovalResult KnockdownEffect::onRemove(Object &object, const EffectInstance &) {
+void KnockdownEffect::onRemove(Object &object, const EffectInstance &) {
     // A creature that is still alive stands ready and takes commands again.
     if (auto *creature = dyn_cast<Creature>(&object);
         creature && !creature->isDead() && !creature->isTemporarilyDead()) {
         creature->setCommandable(true);
         creature->showPauseReadyAnimation(false);
     }
-    return EffectRemovalResult::Removed;
 }
 
 EffectApplicationResult BlindEffect::onApply(Object &object, EffectInstance &instance) {
@@ -457,10 +456,9 @@ EffectApplicationResult BlindEffect::onApply(Object &object, EffectInstance &ins
     return EffectApplicationResult::Retained;
 }
 
-EffectRemovalResult BlindEffect::onRemove(Object &object, const EffectInstance &instance) {
+void BlindEffect::onRemove(Object &object, const EffectInstance &instance) {
     if (auto *creature = dyn_cast<Creature>(&object))
         creature->restoreBlindnessCounter(instance.integerParameter(0), instance.applicationOrder);
-    return EffectRemovalResult::Removed;
 }
 
 EffectApplicationResult EntangleEffect::onApply(Object &object, EffectInstance &instance) {
@@ -494,11 +492,10 @@ EffectApplicationResult EntangleEffect::onApply(Object &object, EffectInstance &
     return EffectApplicationResult::Retained;
 }
 
-EffectRemovalResult EntangleEffect::onRemove(Object &object, const EffectInstance &) {
+void EntangleEffect::onRemove(Object &object, const EffectInstance &) {
     if (auto *creature = dyn_cast<Creature>(&object); creature && !creature->isPC()) {
         creature->perceiveAfresh();
     }
-    return EffectRemovalResult::Removed;
 }
 
 EffectApplicationResult InvisibilityEffect::onApply(
@@ -506,10 +503,6 @@ EffectApplicationResult InvisibilityEffect::onApply(
     EffectInstance &) {
 
     return EffectApplicationResult::Retained;
-}
-
-EffectRemovalResult InvisibilityEffect::onRemove(Object &, const EffectInstance &) {
-    return EffectRemovalResult::Removed;
 }
 
 ParalyzeEffect::ParalyzeEffect(bool bypassPackageInspection) :
@@ -621,7 +614,7 @@ EffectApplicationResult TrueSeeingEffect::onApply(Object &object, EffectInstance
     return EffectApplicationResult::Retained;
 }
 
-EffectRemovalResult TrueSeeingEffect::onRemove(
+void TrueSeeingEffect::onRemove(
     Object &object,
     const EffectInstance &instance) {
 
@@ -633,8 +626,6 @@ EffectRemovalResult TrueSeeingEffect::onRemove(
         EffectType::TrueSeeing,
         Creature::kTrueSeeingCounter,
         true);
-
-    return EffectRemovalResult::Removed;
 }
 
 EffectApplicationResult SeeInvisibleEffect::onApply(Object &object, EffectInstance &) {
@@ -644,7 +635,7 @@ EffectApplicationResult SeeInvisibleEffect::onApply(Object &object, EffectInstan
     return EffectApplicationResult::Retained;
 }
 
-EffectRemovalResult SeeInvisibleEffect::onRemove(
+void SeeInvisibleEffect::onRemove(
     Object &object,
     const EffectInstance &instance) {
 
@@ -653,8 +644,6 @@ EffectRemovalResult SeeInvisibleEffect::onRemove(
         instance,
         EffectType::SeeInvisible,
         Creature::kSeeInvisibleCounter);
-
-    return EffectRemovalResult::Removed;
 }
 
 EffectApplicationResult UltravisionEffect::onApply(Object &object, EffectInstance &instance) {
@@ -680,7 +669,7 @@ EffectApplicationResult VisionEffect::onApply(Object &, EffectInstance &) {
     return EffectApplicationResult::Applied;
 }
 
-EffectRemovalResult UltravisionEffect::onRemove(
+void UltravisionEffect::onRemove(
     Object &object,
     const EffectInstance &instance) {
 
@@ -689,8 +678,6 @@ EffectRemovalResult UltravisionEffect::onRemove(
         instance,
         EffectType::Ultravision,
         Creature::kUltravisionCounter);
-
-    return EffectRemovalResult::Removed;
 }
 
 } // namespace reone::game

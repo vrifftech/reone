@@ -17,8 +17,8 @@
 
 #include "reone/game/animations.h"
 #include "reone/game/attack.h"
+#include "reone/game/twodautil.h"
 #include "reone/resource/2da.h"
-#include "reone/resource/exception/notfound.h"
 #include "reone/resource/provider/2das.h"
 #include "reone/system/exception/validation.h"
 #include "reone/system/logutil.h"
@@ -180,24 +180,11 @@ void Animations::parseCombatAnim(TwoDA &combatAnimDa) {
             }
         }
     }
-
-    _combatAnimationsLoaded = true;
 }
 
 void Animations::init() {
-    std::shared_ptr<TwoDA> animDa(_twoDas.get("animations"));
-    if (!animDa) {
-        return;
-    }
-
-    parseAnims(*animDa);
-
-    std::shared_ptr<TwoDA> combatAnimDa(_twoDas.get("combatanimations"));
-    if (!combatAnimDa) {
-        return;
-    }
-
-    parseCombatAnim(*combatAnimDa);
+    parseAnims(*getRequiredTwoDA(_twoDas, "animations"));
+    parseCombatAnim(*getRequiredTwoDA(_twoDas, "combatanimations"));
 }
 
 void Animations::clear() {
@@ -205,7 +192,6 @@ void Animations::clear() {
     _animIndexByName.clear();
     _attackResults.clear();
     _meleeImpactTimes.clear();
-    _combatAnimationsLoaded = false;
 }
 
 std::string Animations::getNameById(uint32_t id) const {
@@ -218,30 +204,31 @@ std::string Animations::getNameById(uint32_t id) const {
 std::string Animations::getReactionAnimation(const std::string &attackAnim,
                                              CreatureWieldType targetWield,
                                              uint16_t reaction) const {
+    // A swing without a row, or a row with no clip for the reaction and the
+    // target's wield, makes the target play the first row (walk).
+    uint32_t id = kNoAnim;
     auto it = _attackResults.find({attackAnim, targetWield});
-    if (it == _attackResults.end()) {
-        return std::string();
+    if (it != _attackResults.end()) {
+        switch (reaction) {
+        case 10011:
+            id = it->second.dodge;
+            break;
+        case 10012:
+            id = it->second.parry;
+            break;
+        case 10014:
+            id = it->second.damage;
+            break;
+        default:
+            break;
+        }
     }
-    switch (reaction) {
-    case 10011:
-        return getNameById(it->second.dodge);
-    case 10012:
-        return getNameById(it->second.parry);
-    case 10014:
-        return getNameById(it->second.damage);
-    default:
-        return std::string();
-    }
+    return getNameById(id == kNoAnim ? 0 : id);
 }
 
 int Animations::getMeleeImpactTime(
     const std::string &attackAnim,
     size_t attackIndex) const {
-
-    if (!_combatAnimationsLoaded) {
-        throw ResourceNotFoundException("2DA not found: combatanimations");
-    }
-
     // A swing with no timing row or cell lands at once.
     auto it = _meleeImpactTimes.find(attackAnim);
     if (it == _meleeImpactTimes.end()) return 0;

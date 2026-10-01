@@ -24,6 +24,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "types.h"
+
 namespace reone {
 
 namespace resource {
@@ -96,8 +98,123 @@ struct PoisonData {
     std::array<int, 6> abilityDamage {};
 };
 
+/** A trap type's detect and disarm DC modifiers (traps.2da). A blank cell, or a row outside it, is zero. */
+struct TrapDCModifiers {
+    int detect {0};
+    int disarm {0};
+};
+
 /**
- * The tables the combat rules read on every attack, hit and effect, parsed
+ * A creature sound set (appearancesndset.2da). Sound names are lower case; a
+ * blank or missing cell is zero or empty.
+ */
+struct CreatureSoundSet {
+    // The weaponsounds.2da row of the creature's own weapons.
+    int weapon {0};
+    std::string armorType;
+    std::string fallDirt;
+    std::string fallHard;
+    std::string fallMetal;
+    std::string fallWater;
+};
+
+/** A body bag (bodybag.2da). A blank cell, or a row outside it, has no value. */
+struct BodyBagRow {
+    std::optional<int> appearance;
+    std::optional<int> nameStrRef;
+    bool corpse {false};
+};
+
+/**
+ * Vitality and Force regeneration (regeneration.2da). KotOR reads its in and
+ * out of combat rows; TSL reads its values by label. A blank or missing cell,
+ * row or label is zero.
+ */
+struct RegenerationRates {
+    // Percent of the maximum per second: in combat, then out of combat.
+    std::array<float, 2> healthRegen {};
+    std::array<float, 2> forceRegen {};
+    float timePerHitPoint {0.0f};
+    float inCombatHitPointBase {0.0f};
+    float outOfCombatHitPointBase {0.0f};
+    float constitutionBonus {0.0f};
+    float skillRankBonus {0.0f};
+    float forcePointTime {0.0f};
+    float inCombatForcePointBase {0.0f};
+    float outOfCombatForcePointBase {0.0f};
+    float wisdomBonus {0.0f};
+};
+
+/** A race's name text (racialtypes.2da). A blank cell, or a race outside the table, is -1. */
+struct RacialTypeNames {
+    int name {-1};
+    int converName {-1};
+    int converNameLower {-1};
+};
+
+/** A ranges.2da row. A blank cell has no value. */
+struct RangeRow {
+    std::optional<float> primary;
+    std::optional<float> secondary;
+};
+
+/** An effect icon (effecticon.2da). A blank cell, or a row outside the table, has no value. */
+struct EffectIconRow {
+    bool hasIcon {false};
+    std::optional<int> priority;
+    std::optional<bool> good;
+    std::optional<int> nameStrRef;
+};
+
+/** A mine type's item, setting DC and DC modifiers (traps.2da). A blank cell, or a missing table or row, is empty or zero. */
+struct MineRow {
+    std::string itemResRef;
+    int setDC {0};
+    TrapDCModifiers modifiers;
+};
+
+/**
+ * A video effect (videoeffects.2da). TSL's colour columns end in _pc. A blank
+ * cell, or a row outside the table, is zero.
+ */
+struct VideoEffectRow {
+    int scanNoise {0};
+    int saturation {0};
+    int clairvoyance {0};
+    int clairvoyanceFull {0};
+    int forceSight {0};
+    int fury {0};
+    std::array<float, 3> modulation {};
+    std::array<float, 3> modulationPC {};
+    float saturationAmount {0.0f};
+    float saturationAmountPC {0.0f};
+};
+
+/** A dialogue text token (stringtokens.2da). A blank cell is -1. */
+struct StringTokenRow {
+    std::array<int, 4> strRefs {-1, -1, -1, -1};
+    int defaultStrRef {-1};
+    int action {-1};
+};
+
+/**
+ * A tutorial window (tutorial.2da): the message of each page, KotOR's and
+ * TSL's, and the icon. A blank cell has no value.
+ */
+struct TutorialRow {
+    std::vector<std::optional<int>> messages;
+    std::vector<std::optional<int>> pcMessages;
+    std::string icon;
+};
+
+/** A party AI behaviour (aiscripts.2da). A blank cell has no value. */
+struct AIScriptRow {
+    std::optional<int> nameStrRef;
+    std::optional<int> state;
+};
+
+/**
+ * The tables the rules and the presentation read while the game plays, parsed
  * once at start-up. A lookup in a table the game does not have fails as the
  * table's absence did before, when the table is required.
  */
@@ -131,6 +248,69 @@ public:
     virtual std::optional<uint32_t> excitedDuration(int row) const = 0;
     virtual std::optional<PoisonData> poison(int row) const = 0;
     virtual const std::string &stateScript(int row) const = 0;
+    virtual TrapDCModifiers trapDCModifiers(int trapType) const = 0;
+
+    /** The effect types that survive death (removefxondeath.2da). */
+    virtual const std::vector<int> &deathKeptEffectTypes() const = 0;
+    /** The experience each of the first count levels needs (exptable.2da). */
+    virtual std::vector<uint32_t> experienceThresholds(int count) const = 0;
+    /** A kill's experience by level row and table column (xptable.2da); zero outside it. */
+    virtual float killExperience(int row, int column) const = 0;
+    /** An npc.2da percentxp cell; nothing when it is blank or outside the table. */
+    virtual std::optional<float> experiencePercent(int row) const = 0;
+    /** A blank sound set outside the table. */
+    virtual const CreatureSoundSet &creatureSoundSet(int row) const = 0;
+    /** A weaponsounds.2da sound in lower case; empty when blank or outside the table. */
+    virtual const std::string &weaponSound(int row, const std::string &column) const = 0;
+    /** The lower-case armour type of an object sound type (placeableobjsnds.2da). */
+    virtual const std::string &objectArmorType(int soundType) const = 0;
+
+    virtual BodyBagRow bodyBag(int row) const = 0;
+    /** The lower-case script of a mine type, or nothing when the table is missing. */
+    virtual std::optional<std::string> trapScript(int row) const = 0;
+    /** The least challenge rating of a fractionalcr row. */
+    virtual float fractionalChallengeMinimum(int row) const = 0;
+
+    virtual const RegenerationRates &regeneration() const = 0;
+    /**
+     * A race's adjustment to an ability; fails for a race outside
+     * racialtypes.2da or a table without the ability's column.
+     */
+    virtual int racialAbilityAdjustment(int race, Ability ability) const = 0;
+    virtual RacialTypeNames racialTypeNames(int race) const = 0;
+    /** The row, or nothing when the table or the row is missing. */
+    virtual const RangeRow *findRange(int row) const = 0;
+    /** Nothing when the table is missing; a missing row reads as blank. */
+    virtual std::optional<RangeRow> range(int row) const = 0;
+    virtual EffectIconRow effectIcon(int row) const = 0;
+
+    virtual MineRow mine(int trapType) const = 0;
+    /** The most a single item may cost for each level (itemvalue.2da); none when the table is missing. */
+    virtual const std::vector<int> &itemValueLimits() const = 0;
+    /** The tag a player character limit expects (iprp_pc.2da); nothing when the table is missing. */
+    virtual std::optional<std::string> playerCharacterLimitTag(int subtype) const = 0;
+    /** The cost table iprp_costtable names at index, or nothing when either table is missing. */
+    virtual const CostTable *findCostTableAt(int index) const = 0;
+    /** The sound an object sound type plays when it opens (placeableobjsnds.2da). */
+    virtual const std::string &objectOpenedSound(int soundType) const = 0;
+    /** Nothing when the table is missing; a missing row reads as blank. */
+    virtual std::optional<VideoEffectRow> videoEffect(int row) const = 0;
+    /** The first row whose token cell is the name, or nothing. */
+    virtual const StringTokenRow *findStringToken(const std::string &name) const = 0;
+    /** The row, or nothing when the table or the row is missing. */
+    virtual const TutorialRow *findTutorial(int row) const = 0;
+    /** A feedbacktext.2da string; nothing when it is blank or outside the table. */
+    virtual std::optional<int> feedbackText(int row) const = 0;
+    /** None when the table is missing. */
+    virtual const std::vector<AIScriptRow> &aiScripts() const = 0;
+    /**
+     * Whether each row of dialoganimations.2da, and of animations.2da, is a
+     * dialogue animation; nothing when the table is missing.
+     */
+    virtual const std::vector<bool> *dialogAnimationRows() const = 0;
+    virtual const std::vector<bool> *animationDialogRows() const = 0;
+    /** The encdifficulty.2da values; nothing when the table is missing. */
+    virtual const std::vector<float> *encounterDifficulties() const = 0;
 };
 
 class CombatTables : public ICombatTables {
@@ -154,8 +334,58 @@ public:
     std::optional<uint32_t> excitedDuration(int row) const override;
     std::optional<PoisonData> poison(int row) const override;
     const std::string &stateScript(int row) const override;
+    TrapDCModifiers trapDCModifiers(int trapType) const override;
+
+    const std::vector<int> &deathKeptEffectTypes() const override;
+    std::vector<uint32_t> experienceThresholds(int count) const override;
+    float killExperience(int row, int column) const override;
+    std::optional<float> experiencePercent(int row) const override;
+    const CreatureSoundSet &creatureSoundSet(int row) const override;
+    const std::string &weaponSound(int row, const std::string &column) const override;
+    const std::string &objectArmorType(int soundType) const override;
+
+    BodyBagRow bodyBag(int row) const override;
+    std::optional<std::string> trapScript(int row) const override;
+    float fractionalChallengeMinimum(int row) const override;
+
+    const RegenerationRates &regeneration() const override;
+    int racialAbilityAdjustment(int race, Ability ability) const override;
+    RacialTypeNames racialTypeNames(int race) const override;
+    const RangeRow *findRange(int row) const override;
+    std::optional<RangeRow> range(int row) const override;
+    EffectIconRow effectIcon(int row) const override;
+
+    MineRow mine(int trapType) const override;
+    const std::vector<int> &itemValueLimits() const override;
+    std::optional<std::string> playerCharacterLimitTag(int subtype) const override;
+    const CostTable *findCostTableAt(int index) const override;
+    const std::string &objectOpenedSound(int soundType) const override;
+    std::optional<VideoEffectRow> videoEffect(int row) const override;
+    const StringTokenRow *findStringToken(const std::string &name) const override;
+    const TutorialRow *findTutorial(int row) const override;
+    std::optional<int> feedbackText(int row) const override;
+    const std::vector<AIScriptRow> &aiScripts() const override;
+    const std::vector<bool> *dialogAnimationRows() const override;
+    const std::vector<bool> *animationDialogRows() const override;
+    const std::vector<float> *encounterDifficulties() const override;
 
 private:
+    struct RacialType {
+        // As signed bytes; nothing when the table has no such column.
+        std::array<std::optional<int>, 6> abilityAdjustments;
+        RacialTypeNames names;
+    };
+
+    struct TrapRow {
+        std::string script;
+        MineRow mine;
+    };
+
+    struct ObjectSoundRow {
+        std::string armorType;
+        std::string opened;
+    };
+
     std::unordered_map<std::string, CostTable> _costTables;
     std::optional<std::vector<std::string>> _costTableNames;
     std::optional<std::vector<DamageCost>> _damageCosts;
@@ -172,6 +402,33 @@ private:
     std::optional<std::vector<uint32_t>> _excitedDurations;
     std::optional<std::vector<PoisonData>> _poisons;
     std::optional<std::vector<std::string>> _stateScripts;
+    std::optional<std::vector<int>> _deathKeptEffectTypes;
+    // Blank thresholds have no value.
+    std::optional<std::vector<std::optional<uint32_t>>> _experienceThresholds;
+    std::optional<std::vector<std::vector<float>>> _killExperience;
+    std::optional<std::vector<std::optional<float>>> _experiencePercents;
+    std::optional<std::vector<CreatureSoundSet>> _creatureSoundSets;
+    // By column; blank cells are left out.
+    std::optional<std::vector<std::unordered_map<std::string, std::string>>> _weaponSounds;
+    std::optional<std::vector<ObjectSoundRow>> _objectSounds;
+    std::optional<std::vector<BodyBagRow>> _bodyBags;
+    std::optional<std::vector<TrapRow>> _traps;
+    std::optional<std::vector<float>> _fractionalChallengeMinimums;
+    std::optional<RegenerationRates> _regeneration;
+    std::optional<std::vector<RacialType>> _racialTypes;
+    std::optional<std::vector<RangeRow>> _ranges;
+    std::optional<std::vector<EffectIconRow>> _effectIcons;
+    std::vector<int> _itemValueLimits;
+    std::optional<std::vector<std::string>> _playerCharacterLimitTags;
+    std::optional<std::vector<VideoEffectRow>> _videoEffects;
+    // With the raw token cell of each row.
+    std::vector<std::pair<std::string, StringTokenRow>> _stringTokens;
+    std::optional<std::vector<TutorialRow>> _tutorials;
+    std::optional<std::vector<std::optional<int>>> _feedbackTexts;
+    std::vector<AIScriptRow> _aiScripts;
+    std::optional<std::vector<bool>> _dialogAnimationRows;
+    std::optional<std::vector<bool>> _animationDialogRows;
+    std::optional<std::vector<float>> _encounterDifficulties;
 };
 
 } // namespace game

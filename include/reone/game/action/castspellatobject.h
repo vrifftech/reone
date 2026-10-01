@@ -59,15 +59,25 @@ public:
     /** The cast has reached its end and no longer occupies its creature. */
     bool castEnded() const { return !_schedule.awaitingRelease(); }
 
+    // An item use is queued as its own action, apart from a cast.
+    uint32_t serializedActionId() const override {
+        return originalSavedAction() ? Action::serializedActionId() : (_item ? 46 : 15);
+    }
     std::optional<SavedActionRecord> saveFacingState() const override;
     void restoreCastState(const SavedCastAction &state);
+    /**
+     * Starts an item use over from its saved command. It keeps the projectile
+     * it was holding only to let go of it when it starts again.
+     */
+    void restartItemUse(const SavedCastAction &state);
     // An instant cast starts an ordinary round, which runs its end-of-round script.
-    bool suppressesEndRoundScript() const override { return (_fake && !_instantSpell) || _cutsceneAttack; }
+    bool suppressesEndRoundScript() const override { return _fake && !_instantSpell; }
     bool holdsCombatRound() const override { return _schedule.holdsRound() && !isCompleted() && !isCancelled(); }
     // An instant cast takes no action of its round.
     bool tookRoundAction() const override { return _dispatched && !_fake && !_instantSpell; }
     bool joinsRunningRound() const override { return !_instantSpell; }
     bool instantSpell() const { return _instantSpell; }
+    bool fake() const { return _fake; }
     const std::shared_ptr<Object> &target() const { return _target; }
     const std::shared_ptr<Spell> &spell() const { return _spell; }
     const std::optional<std::shared_ptr<Item>> &item() const { return _item; }

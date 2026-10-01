@@ -279,6 +279,10 @@ void InGameMenuHost::refreshK2Footer() {
 
     _controls.PB_VIT1->setVisible(true);
     _controls.PB_VIT1->setValue(footer.vitalityPercent);
+
+    if (_controls.LBL_DEBILATATED1) {
+        _controls.LBL_DEBILATATED1->setVisible(footer.subjectDebilitated);
+    }
 }
 
 void InGameMenuHost::updateTabButtons() {

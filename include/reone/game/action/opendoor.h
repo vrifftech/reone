@@ -41,6 +41,7 @@ public:
     }
 
     void execute(std::shared_ptr<Action> self, Object &actor, float dt) override;
+    std::optional<SavedActionRecord> saveFacingState() const override;
 
     const std::shared_ptr<Door> &door() const { return _door; }
 

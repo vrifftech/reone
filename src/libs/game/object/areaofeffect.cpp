@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2023 The reone project contributors
+ * Copyright (c) 2026 The reone project contributors
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -304,13 +304,12 @@ EffectApplicationResult AreaOfEffectEffect::onApply(Object &object, EffectInstan
     return EffectApplicationResult::Retained;
 }
 
-EffectRemovalResult AreaOfEffectEffect::onRemove(Object &object, const EffectInstance &instance) {
+void AreaOfEffectEffect::onRemove(Object &object, const EffectInstance &instance) {
     if (isa<Creature>(&object)) {
         if (auto areaOfEffect = instance.boundObjectParameter(0)) {
             object.game().postObjectDestruction(*areaOfEffect, nullptr, 0.0f, true);
         }
     }
-    return EffectRemovalResult::Removed;
 }
 
 } // namespace game

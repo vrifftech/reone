@@ -78,7 +78,7 @@ bool removeEffectApplication(Collection &effects, uint64_t order,
         Invocation(std::vector<uint64_t> &stack, uint64_t order) : stack(stack) { stack.push_back(order); }
         ~Invocation() { stack.pop_back(); }
     } invocation(inFlight, order);
-    if (remove(record) != EffectRemovalResult::Removed) return false;
+    remove(record);
     at = find();
     if (at == effects.end()) return false;
     effects.erase(at);
@@ -299,13 +299,25 @@ void Object::update(float dt) {
     }
     updateActions(dt);
     updateEffects(dt);
+    executeActionsIfAble(dt);
+    if (_sceneNode && _sceneNode->type() == SceneNodeType::Model) {
+        std::static_pointer_cast<ModelSceneNode>(_sceneNode)->setPickable(isSelectable());
+    }
+}
+
+void Object::runActions() {
+    if (!isRuntimeLive()) {
+        return;
+    }
+    updateActions(0.0f);
+    executeActionsIfAble(0.0f);
+}
+
+void Object::executeActionsIfAble(float dt) {
     // An action that can no longer be cleared runs on whatever holds the object.
     const auto current = getCurrentAction();
     if (!isDead() && (canExecuteActions() || (current && !current->isClearable()))) {
         executeActions(dt);
-    }
-    if (_sceneNode && _sceneNode->type() == SceneNodeType::Model) {
-        std::static_pointer_cast<ModelSceneNode>(_sceneNode)->setPickable(isSelectable());
     }
 }
 
@@ -325,6 +337,40 @@ void Object::setLocalBoolean(int index, bool value) {
 
 void Object::setLocalNumber(int index, int value) {
     _localNumbers[index] = value;
+}
+
+void Object::setListenPattern(const std::string &pattern, int32_t number) {
+    auto expression = std::find_if(_listenExpressions.begin(), _listenExpressions.end(),
+        [number](const ListenExpression &entry) { return entry.number == number; });
+    if (expression == _listenExpressions.end()) {
+        expression = _listenExpressions.insert(_listenExpressions.end(), ListenExpression {number, "", std::nullopt});
+    }
+    // A pattern that fails to parse leaves the entry matching nothing, and
+    // the last pattern that parsed is still the one saved.
+    expression->parsed = ListenPattern::parse(pattern);
+    if (expression->parsed) expression->pattern = boost::to_lower_copy(pattern);
+}
+
+std::optional<int32_t> Object::testListenExpressions(const std::string &str, std::vector<std::string> &pieces) const {
+    for (const auto &expression : _listenExpressions) {
+        if (expression.parsed && expression.parsed->match(str, &pieces)) return expression.number;
+    }
+    return std::nullopt;
+}
+
+void Object::receiveConversationEvent(
+    uint32_t callerId,
+    const std::vector<int32_t> &integers,
+    const std::vector<std::string> &strings) {
+
+    _lastSpeaker = callerId;
+    _listenPatternNumber = integers.size() > 1 ? integers[1] : 0;
+    _matchedSubstrings.clear();
+    const int32_t count = integers.empty() ? 0 : integers[0];
+    for (int32_t i = 1; i < count; ++i) {
+        _matchedSubstrings.push_back(static_cast<size_t>(i) < strings.size() ? strings[i] : "");
+    }
+    runConversationScript();
 }
 void Object::deserializeRuntimeState(
     const resource::Gff &gff,
@@ -919,6 +965,14 @@ void Object::removeActionsBehind(const Action &action, const std::function<bool(
     }
 }
 
+void Object::removeActionsBehind(const Action &action) {
+    auto &nodes = _actions.nodes;
+    auto position = std::find_if(nodes.begin(), nodes.end(),
+        [&](const OrdinaryActionQueue::Node &node) { return node->action.get() == &action; });
+    if (position == nodes.end()) return;
+    nodes.erase(std::next(position), nodes.end());
+}
+
 void Object::requeueActionNode(const OrdinaryActionQueue::Node &node) {
     if (!isRuntimeLive() || !node) return;
     node->groupId = _actions.allocateGroup(OrdinaryActionQueue::kNewGroup);
@@ -970,6 +1024,11 @@ void Object::removeCompletedActions() {
 void Object::executeActions(float dt) {
     if (_actions.nodes.empty()) {
         _spellScriptContext.clearActiveTarget();
+        if (auto *creature = dyn_cast<Creature>(this)) {
+            creature->setAttemptedAttackTarget(script::kObjectInvalid);
+            creature->resetAttemptedMovementTarget();
+            creature->resetBlockingCreature();
+        }
         return;
     }
     auto node = _actions.nodes.front();
@@ -1275,11 +1334,6 @@ void Object::setDamageImmunity(int flags, int value) {
     }
 }
 
-void Object::heal(int amount) {
-    if (auto *creature = dyn_cast<Creature>(this))
-        creature->applyHealingEffect(amount, nullptr, false);
-}
-
 bool Object::applyEffect(const std::shared_ptr<Effect> &effect,
                          DurationType durationType, float duration) {
     EffectInstance instance = effect->saveFacingInstance();
@@ -1374,16 +1428,13 @@ size_t Object::removeEffectsById(EffectId id) {
     const auto count = detail::removeEffectPackage(_effects, id, _removingEffectApplications,
         [&](const EffectInstance &value) {
             poolMaximum.reset();
-            const auto result = value.effect ? value.effect->onRemove(*this, value) : EffectRemovalResult::Removed;
-            if (result == EffectRemovalResult::Removed) {
-                if (auto *creature = dyn_cast<Creature>(this)) {
-                    creature->removeArmorClassEffect(value);
-                    poolMaximum = creature->abilityPoolMaximum(value);
-                }
+            if (value.effect) value.effect->onRemove(*this, value);
+            if (auto *creature = dyn_cast<Creature>(this)) {
+                creature->removeArmorClassEffect(value);
+                poolMaximum = creature->abilityPoolMaximum(value);
             }
-            changesVisibility |= result == EffectRemovalResult::Removed &&
-                (value.type() == EffectType::Invisibility || value.type() == EffectType::Blindness);
-            return result;
+            changesVisibility |=
+                value.type() == EffectType::Invisibility || value.type() == EffectType::Blindness;
         }, [&](const EffectInstance &value) {
             if (auto *creature = dyn_cast<Creature>(this)) {
                 creature->updateArmorClassEffectCursor();
@@ -1403,16 +1454,13 @@ bool Object::removeEffectApplication(uint64_t order) {
     const bool removed = detail::removeEffectApplication(_effects, order, _removingEffectApplications,
         [&](const EffectInstance &value) {
             poolMaximum.reset();
-            const auto result = value.effect ? value.effect->onRemove(*this, value) : EffectRemovalResult::Removed;
-            if (result == EffectRemovalResult::Removed) {
-                if (auto *creature = dyn_cast<Creature>(this)) {
-                    creature->removeArmorClassEffect(value);
-                    poolMaximum = creature->abilityPoolMaximum(value);
-                }
+            if (value.effect) value.effect->onRemove(*this, value);
+            if (auto *creature = dyn_cast<Creature>(this)) {
+                creature->removeArmorClassEffect(value);
+                poolMaximum = creature->abilityPoolMaximum(value);
             }
-            changesVisibility |= result == EffectRemovalResult::Removed &&
-                (value.type() == EffectType::Invisibility || value.type() == EffectType::Blindness);
-            return result;
+            changesVisibility |=
+                value.type() == EffectType::Invisibility || value.type() == EffectType::Blindness;
         }, [&](const EffectInstance &value) {
             if (auto *creature = dyn_cast<Creature>(this)) {
                 creature->updateArmorClassEffectCursor();
@@ -1580,12 +1628,6 @@ void Object::queueScriptEffectRemoval(ScriptEffectRemovalMatch match, const Effe
     for (EffectId id : selectScriptEffectRemovals(_effects, match, value)) {
         _game.queueEffectRemoval(*this, id);
     }
-}
-
-void Object::removeEffect(const std::shared_ptr<Effect> &effect) {
-    auto at = std::find_if(_effects.begin(), _effects.end(),
-        [&](const EffectInstance &record) { return record.effect == effect; });
-    if (at != _effects.end()) removeEffectApplication(at->applicationOrder);
 }
 
 bool Object::hasEffect(EffectType type) const {

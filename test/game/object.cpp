@@ -23,6 +23,7 @@
 #include "../fixtures/engine.h"
 
 #include "reone/game/action/closedoor.h"
+#include "reone/game/action/docommand.h"
 #include "reone/game/action/attackobject.h"
 #include "reone/game/action/movetopoint.h"
 #include "reone/game/action/opendoor.h"
@@ -292,7 +293,7 @@ void reone::game::TestGameModule::setOnNotice(
 }
 
 void reone::game::TestGameModule::updatePerception(Area &area) {
-    area.doUpdatePerception();
+    area.updatePerceptionPasses(0.0f, true);
 }
 
 void reone::game::TestGameModule::prepareFadeArrival(Game &game) {
@@ -837,12 +838,14 @@ std::shared_ptr<Creature> makeMovingCreature(
     return creature;
 }
 
-// Navigation-driven step towards dest. Goes through Creature::advanceOnPath, so
-// it exercises the same path AI, scripts and actions take, unlike direct player
-// locomotion which calls Area::moveCreature.
-void navigationStep(Creature &creature, const glm::vec3 &dest, float dt = 1.0f) {
-    glm::vec3 dir = glm::normalize(dest - creature.position());
-    creature.advanceOnPath(dest, dir, /*run=*/false, /*distance=*/0.1f, dt);
+// One frame of a walk toward dest, as move actions take it: the step is
+// tested for walls and creatures before the creature moves. A walk that has
+// ended sets out afresh, straight at dest. True when the walk ended.
+bool walkerStep(Area &area, Creature &creature, const glm::vec3 &dest, float dt = 1.0f) {
+    if (!TestGameModule::hasAreaRuntimePath(creature)) {
+        TestGameModule::setAreaRuntimeStraightPath(creature, area.pathfinder(), dest);
+    }
+    return creature.navigateTo(dest, false, 0.1f, dt);
 }
 
 std::shared_ptr<Gff> makeTransitionTriggerGff(
@@ -1326,7 +1329,7 @@ TEST(Conversation, should_present_auto_routing_entry_with_authored_presentation_
     }
 }
 
-TEST(Creature, should_hold_completed_external_animation_until_assignment_is_released) {
+TEST(Creature, should_return_a_finished_external_animation_to_the_pause) {
     TestEngine engine;
     engine.init();
     StubConsole console;
@@ -1879,7 +1882,7 @@ TEST(DialogGUI, should_animate_an_ordinary_participant_from_a_cut_band_ordinal) 
     EXPECT_FALSE(node->animationChannels().front().properties.flags & scene::AnimationFlags::loop);
 }
 
-TEST(DialogGUI, should_hold_an_authored_cut_pose_until_the_dialogue_releases_the_participant) {
+TEST(DialogGUI, should_return_a_finished_cut_clip_to_the_pause_until_the_next_authored_animation) {
     TestEngine &engine = testEngine();
     StubConsole console;
     Game game(GameID::TSL, "", engine.options(), engine.services(), console);
@@ -2085,10 +2088,21 @@ TEST(DialogGUI, should_not_resolve_dialoganimations_ordinals_against_a_stunt_mod
 
     EXPECT_CALL(engine.resourceModule().models(), get("owner_stunt"))
         .WillOnce(Return(stuntModel));
-    // Read once for the head-look rule and once to resolve the ordinal.
+    // The game reads its rule tables when it starts; the others are missing.
+    EXPECT_CALL(engine.resourceModule().twoDas(),
+                get(AnyOf(StartsWith("iprp_"), "gameeffects", "forceshields", "forceadjust",
+                          "excitedduration", "poison", "statescripts", "removefxondeath", "exptable",
+                          "xptable", "npc", "appearancesndset", "weaponsounds", "placeableobjsnds",
+                          "bodybag", "traps", "fractionalcr", "regeneration", "racialtypes", "ranges",
+                          "effecticon", "itemvalue", "videoeffects", "stringtokens", "tutorial", "feedbacktext",
+                          "aiscripts", "dialoganimations", "animations", "encdifficulty")))
+        .Times(AnyNumber());
+    // Read once when the game starts, for the head-look rule, and once to
+    // resolve the ordinal.
     EXPECT_CALL(engine.resourceModule().twoDas(), get("dialoganimations"))
         .Times(2)
         .WillRepeatedly(Return(makeDialogAnimationsTable()));
+    engine.gameModule().combatTables().init(engine.resourceModule().twoDas());
 
     auto dialog = std::make_shared<Dialog>();
     dialog->animatedCutscene = false;
@@ -2232,16 +2246,20 @@ TEST(UnlockObjectAction, should_complete_safely_for_missing_destroyed_or_unsuppo
 
     auto missingAction = game.newAction<UnlockObjectAction>(std::shared_ptr<Object>());
     auto destroyedAction = game.newAction<UnlockObjectAction>(destroyed);
-    auto unsupportedAction = game.newAction<UnlockObjectAction>(actor);
+    auto unsupportedTarget = game.newCreature();
+    auto unsupportedAction = game.newAction<UnlockObjectAction>(unsupportedTarget);
+    // A placeable works at a lock at once, so the unsupported target is
+    // reached on the first tick.
+    auto worker = game.newPlaceable();
 
     EXPECT_NO_THROW(missingAction->execute(missingAction, *actor, 0.0f));
     EXPECT_NO_THROW(destroyedAction->execute(destroyedAction, *actor, 0.0f));
-    EXPECT_NO_THROW(unsupportedAction->execute(unsupportedAction, *actor, 0.0f));
+    EXPECT_NO_THROW(unsupportedAction->execute(unsupportedAction, *worker, 0.0f));
 
     EXPECT_TRUE(missingAction->isCompleted());
     EXPECT_TRUE(destroyedAction->isCompleted());
     EXPECT_TRUE(destroyed->isLocked());
-    EXPECT_FALSE(unsupportedAction->isCompleted());
+    EXPECT_TRUE(unsupportedAction->isCompleted());
 }
 
 TEST(TransitionPresentationLifecycle, should_construct_and_destroy_hud_before_gameplay_module_exists) {
@@ -2692,6 +2710,15 @@ TEST(TransitionPresentationPortals, should_expose_authored_transitions_without_t
     StubConsole console;
     Game game(GameID::KotOR, "", engine.options(), engine.services(), console);
     testSceneGraph(engine);
+    // The game reads its rule tables when it starts; the others are missing.
+    EXPECT_CALL(engine.resourceModule().twoDas(),
+                get(AnyOf(StartsWith("iprp_"), "gameeffects", "forceshields", "forceadjust",
+                          "excitedduration", "poison", "statescripts", "removefxondeath", "exptable",
+                          "xptable", "npc", "appearancesndset", "weaponsounds", "placeableobjsnds",
+                          "bodybag", "traps", "fractionalcr", "regeneration", "racialtypes", "ranges",
+                          "effecticon", "itemvalue", "videoeffects", "stringtokens", "tutorial", "feedbacktext",
+                          "aiscripts", "dialoganimations", "animations", "encdifficulty")))
+        .Times(AnyNumber());
     // Triggers load their trap data where present; the leader regenerates.
     EXPECT_CALL(engine.resourceModule().twoDas(), get("traps"))
         .Times(AnyNumber())
@@ -2703,6 +2730,7 @@ TEST(TransitionPresentationPortals, should_expose_authored_transitions_without_t
             .row({"InCombat", "0.0", "0.0"})
             .row({"OutOfCombat", "0.0", "1.0"})
             .build())));
+    engine.gameModule().combatTables().init(engine.resourceModule().twoDas());
     auto area = game.newArea();
     auto leader = makeMovingCreature(game, engine);
     game.party().addMember(kNpcPlayer, leader);
@@ -2852,6 +2880,15 @@ TEST(LinkedDoorTransition, should_destroy_generated_threshold_with_its_source_do
     TestEngine &engine = testEngine();
     StubConsole console;
     Game game(GameID::KotOR, "", engine.options(), engine.services(), console);
+    // The game reads its rule tables when it starts; the others are missing.
+    EXPECT_CALL(engine.resourceModule().twoDas(),
+                get(AnyOf(StartsWith("iprp_"), "gameeffects", "forceshields", "forceadjust",
+                          "excitedduration", "poison", "statescripts", "removefxondeath", "exptable",
+                          "xptable", "npc", "appearancesndset", "weaponsounds", "placeableobjsnds",
+                          "bodybag", "traps", "fractionalcr", "regeneration", "racialtypes", "ranges",
+                          "effecticon", "itemvalue", "videoeffects", "stringtokens", "tutorial", "feedbacktext",
+                          "aiscripts", "dialoganimations", "animations", "encdifficulty")))
+        .Times(AnyNumber());
     // Triggers load their trap data where present; the leader regenerates.
     EXPECT_CALL(engine.resourceModule().twoDas(), get("traps"))
         .Times(AnyNumber())
@@ -2863,6 +2900,7 @@ TEST(LinkedDoorTransition, should_destroy_generated_threshold_with_its_source_do
             .row({"InCombat", "0.0", "0.0"})
             .row({"OutOfCombat", "0.0", "1.0"})
             .build())));
+    engine.gameModule().combatTables().init(engine.resourceModule().twoDas());
     auto area = game.newArea();
     auto door = makeTransitionDoor(game, engine);
     auto leader = makeMovingCreature(game, engine);
@@ -3922,7 +3960,7 @@ TEST(XPStatusSummary, should_preserve_zero_award_synchronization_without_notifyi
     EXPECT_TRUE(game.statusSummary().pending().empty());
 }
 
-TEST(XPStatusSummary, should_preserve_negative_accounting_without_received_notification) {
+TEST(XPStatusSummary, should_ignore_negative_awards_without_notification) {
     TestEngine &engine = testEngine();
     StubConsole console;
     Game game(GameID::KotOR, "", engine.options(), engine.services(), console);
@@ -4352,7 +4390,7 @@ TEST(Reputes, should_use_authored_creature_faction_dispositions) {
     ON_CALL(servicesReputes, state()).WillByDefault(Return(IReputes::State()));
 }
 
-TEST(AreaReputationSearch, treats_the_creature_being_searched_around_as_the_source) {
+TEST(AreaReputationSearch, judges_hostility_by_how_the_candidate_regards_the_creature_searched_around) {
     TestEngine &engine = testEngine();
     StubConsole console;
     Game game(GameID::KotOR, "", engine.options(), engine.services(), console);
@@ -4362,14 +4400,28 @@ TEST(AreaReputationSearch, treats_the_creature_being_searched_around_as_the_sour
     searching->setFaction(Faction::Hostile1);
     auto candidate = game.newCreature();
     candidate->setFaction(Faction::Friendly1);
-    area->add(candidate);
-
-    // The search is centred on `searching`, which is not in the area: the
-    // search finds nothing.
     Area::SearchCriteriaList criterias {
         {CreatureType::Reputation, static_cast<int>(ReputationType::Enemy)}};
 
+    // A search centred on a creature that is not in the area finds nothing.
+    area->add(candidate);
     EXPECT_EQ(nullptr, area->getNearestCreature(searching, criterias));
+
+    // The two factions regard each other differently: the candidate's is
+    // hostile to the searcher's, the searcher's friendly to the candidate's.
+    area->add(searching);
+    auto &reputes = static_cast<MockReputes &>(engine.services().game.reputes);
+    ON_CALL(reputes, getReputation(Faction::Friendly1, Faction::Hostile1)).WillByDefault(Return(0));
+    ON_CALL(reputes, getReputation(Faction::Hostile1, Faction::Friendly1)).WillByDefault(Return(100));
+    EXPECT_EQ(candidate, area->getNearestCreature(searching, criterias));
+
+    // With the views swapped, the candidate is no enemy.
+    ON_CALL(reputes, getReputation(Faction::Friendly1, Faction::Hostile1)).WillByDefault(Return(100));
+    ON_CALL(reputes, getReputation(Faction::Hostile1, Faction::Friendly1)).WillByDefault(Return(0));
+    EXPECT_EQ(nullptr, area->getNearestCreature(searching, criterias));
+
+    // testEngine() is process-global: put the service's default answer back.
+    ON_CALL(reputes, getReputation(_, _)).WillByDefault(Return(0));
 }
 
 namespace {
@@ -4519,10 +4571,10 @@ TEST(CombatVisibility, invisibility_refreshes_sight_and_notices_only_transitions
     auto second = std::make_shared<InvisibilityEffect>(InvisibilityType::Normal);
     fixture.target->applyEffect(second, DurationType::Permanent);
     EXPECT_EQ(3, fixture.noticeRuns());
-    fixture.target->removeEffect(first);
+    fixture.target->removeEffectApplication(fixture.target->findEffectInstance(*first)->applicationOrder);
     EXPECT_EQ(3, fixture.noticeRuns());
 
-    fixture.target->removeEffect(second);
+    fixture.target->removeEffectApplication(fixture.target->findEffectInstance(*second)->applicationOrder);
     EXPECT_TRUE(fixture.observer->perception().sees(fixture.target->id()));
     EXPECT_EQ(4, fixture.noticeRuns());
 }
@@ -4541,7 +4593,7 @@ TEST(CombatVisibility, true_seeing_gain_and_loss_refresh_effective_sight) {
     EXPECT_TRUE(fixture.observer->perception().sees(fixture.target->id()));
     EXPECT_EQ(before + 1, fixture.noticeRuns());
 
-    fixture.observer->removeEffect(trueSeeing);
+    fixture.observer->removeEffectApplication(fixture.observer->findEffectInstance(*trueSeeing)->applicationOrder);
     EXPECT_FALSE(fixture.observer->perception().sees(fixture.target->id()));
     EXPECT_EQ(before + 2, fixture.noticeRuns());
 }
@@ -4576,21 +4628,20 @@ TEST(CombatVisibility, retired_subject_does_not_remain_perceived) {
     EXPECT_FALSE(fixture.observer->perception().sees(strongStorage->id()));
 }
 
-TEST(CreatureBlockedByDoor, should_record_the_door_that_obstructs_navigation) {
+TEST(CreatureBlockedByDoor, should_run_the_blocked_script_when_a_closed_door_stops_a_walk) {
     BlockedDoorFixture fixture;
     auto npc = fixture.addCreature("k_def_blocked01");
     fixture.countScriptRuns("k_def_blocked01");
 
-    EXPECT_EQ(script::kObjectInvalid, npc->blockingDoorId());
-
     ScopedWalkObstruction obstruction(*fixture.door);
-    navigationStep(*npc, kFarDestination);
+    EXPECT_TRUE(walkerStep(*fixture.area, *npc, kFarDestination));
 
-    EXPECT_EQ(fixture.door->id(), npc->blockingDoorId());
+    // The walk ends where the creature stands.
+    EXPECT_EQ(glm::vec3(0.0f), npc->position());
     EXPECT_EQ(1, fixture.scriptRuns("k_def_blocked01"));
 }
 
-TEST(CreatureBlockedByDoor, should_dispatch_authored_blocked_script_once_per_continuous_obstruction) {
+TEST(CreatureBlockedByDoor, should_run_the_blocked_script_on_every_step_a_closed_door_stops) {
     BlockedDoorFixture fixture;
     auto npc = fixture.addCreature("k_def_blocked01");
 
@@ -4598,39 +4649,37 @@ TEST(CreatureBlockedByDoor, should_dispatch_authored_blocked_script_once_per_con
 
     ScopedWalkObstruction obstruction(*fixture.door);
     for (int i = 0; i < 10; ++i) {
-        navigationStep(*npc, kFarDestination);
+        walkerStep(*fixture.area, *npc, kFarDestination);
     }
 
-    // Ten obstructed steps against the same door, one dispatch.
-    EXPECT_EQ(1, fixture.scriptRuns("k_def_blocked01"));
+    // Each step ends the walk, and the next walk meets the door again.
+    EXPECT_EQ(10, fixture.scriptRuns("k_def_blocked01"));
 }
 
-TEST(CreatureBlockedByDoor, should_rearm_blocked_script_after_unobstructed_movement) {
+TEST(CreatureBlockedByDoor, should_walk_on_once_the_door_no_longer_stops_it) {
     BlockedDoorFixture fixture;
     auto npc = fixture.addCreature("k_def_blocked01");
     fixture.countScriptRuns("k_def_blocked01");
 
     {
         ScopedWalkObstruction obstruction(*fixture.door);
-        navigationStep(*npc, kFarDestination);
-        navigationStep(*npc, kFarDestination);
+        walkerStep(*fixture.area, *npc, kFarDestination);
+        walkerStep(*fixture.area, *npc, kFarDestination);
     }
-    EXPECT_EQ(1, fixture.scriptRuns("k_def_blocked01"));
+    EXPECT_EQ(2, fixture.scriptRuns("k_def_blocked01"));
 
-    // An unobstructed step re-arms.
-    navigationStep(*npc, kFarDestination);
-    EXPECT_EQ(script::kObjectInvalid, npc->blockingDoorId());
+    EXPECT_FALSE(walkerStep(*fixture.area, *npc, kFarDestination));
+    EXPECT_GT(npc->position().y, 0.0f);
+    EXPECT_EQ(2, fixture.scriptRuns("k_def_blocked01"));
 
     ScopedWalkObstruction obstruction(*fixture.door);
-    navigationStep(*npc, kFarDestination);
-    EXPECT_EQ(fixture.door->id(), npc->blockingDoorId());
-    EXPECT_EQ(2, fixture.scriptRuns("k_def_blocked01"));
+    walkerStep(*fixture.area, *npc, kFarDestination);
+    EXPECT_EQ(3, fixture.scriptRuns("k_def_blocked01"));
 }
 
-// A door keeps filling the doorway for the whole of its opening animation, so a
-// creature walking into one it has already reported keeps meeting the same
-// blocker for several frames. That is one obstruction, not one per frame.
-TEST(CreatureBlockedByDoor, should_not_repeat_while_the_door_it_reported_is_opening) {
+// A door keeps filling the doorway for the whole of its opening animation. It
+// still stops a walk then, but only a closed door runs the blocked script.
+TEST(CreatureBlockedByDoor, should_not_run_the_blocked_script_while_the_door_is_opening) {
     SwingingDoorFixture fixture;
     auto npc = fixture.addCreature("k_def_blocked01");
     fixture.countScriptRuns("k_def_blocked01");
@@ -4638,8 +4687,7 @@ TEST(CreatureBlockedByDoor, should_not_repeat_while_the_door_it_reported_is_open
     fixture.syncObstruction();
     ASSERT_TRUE(doorwayBlocks(*fixture.door));
 
-    navigationStep(*npc, kFarDestination);
-    EXPECT_EQ(fixture.door->id(), npc->blockingDoorId());
+    walkerStep(*fixture.area, *npc, kFarDestination);
     EXPECT_EQ(1, fixture.scriptRuns("k_def_blocked01"));
 
     // What the authored AI does in response to that one report.
@@ -4653,9 +4701,8 @@ TEST(CreatureBlockedByDoor, should_not_repeat_while_the_door_it_reported_is_open
         stepDoor(*fixture.door, 0.4f);
         fixture.syncObstruction();
         ASSERT_TRUE(doorwayBlocks(*fixture.door)) << "frame " << frame;
-        navigationStep(*npc, kFarDestination);
+        EXPECT_TRUE(walkerStep(*fixture.area, *npc, kFarDestination)) << "frame " << frame;
         EXPECT_TRUE(fixture.door->isOpening()) << "frame " << frame;
-        EXPECT_EQ(fixture.door->id(), npc->blockingDoorId()) << "frame " << frame;
     }
     EXPECT_EQ(1, fixture.scriptRuns("k_def_blocked01"));
 
@@ -4666,12 +4713,10 @@ TEST(CreatureBlockedByDoor, should_not_repeat_while_the_door_it_reported_is_open
     ASSERT_FALSE(doorwayBlocks(*fixture.door));
     ASSERT_TRUE(fixture.door->isOpen());
 
-    // The movement that was blocked all along now makes progress, and the
-    // blocked state clears so this door can report again another time.
+    // The walk that was stopped all along now makes progress.
     float before = npc->position().y;
-    navigationStep(*npc, kFarDestination);
+    walkerStep(*fixture.area, *npc, kFarDestination);
     EXPECT_GT(npc->position().y, before);
-    EXPECT_EQ(script::kObjectInvalid, npc->blockingDoorId());
     EXPECT_EQ(1, fixture.scriptRuns("k_def_blocked01"));
 }
 
@@ -4686,22 +4731,22 @@ TEST(CreatureBlockedByDoor, should_report_another_door_that_takes_over_the_obstr
 
     {
         ScopedWalkObstruction obstruction(*fixture.door);
-        navigationStep(*npc, kFarDestination);
+        walkerStep(*fixture.area, *npc, kFarDestination);
     }
-    EXPECT_EQ(fixture.door->id(), npc->blockingDoorId());
     EXPECT_EQ(1, fixture.scriptRuns("k_def_blocked01"));
 
     {
         ScopedWalkObstruction obstruction(*other);
-        navigationStep(*npc, kFarDestination);
+        walkerStep(*fixture.area, *npc, kFarDestination);
     }
-    EXPECT_EQ(other->id(), npc->blockingDoorId());
     EXPECT_EQ(2, fixture.scriptRuns("k_def_blocked01"));
 }
 
 TEST(CreatureBlockedByDoor, should_run_the_script_authored_on_each_creature) {
     BlockedDoorFixture fixture;
     auto npc = fixture.addCreature("k_def_blocked01");
+    auto leader = fixture.addCreature("");
+    fixture.game.party().addMember(kNpcPlayer, leader);
     auto companion = fixture.addCreature("k_hen_blocked01");
     fixture.game.party().addAvailableMember(0, companion);
     fixture.game.party().addMember(0, companion);
@@ -4712,8 +4757,8 @@ TEST(CreatureBlockedByDoor, should_run_the_script_authored_on_each_creature) {
     fixture.countScriptRuns("k_hen_blocked01");
 
     ScopedWalkObstruction obstruction(*fixture.door);
-    navigationStep(*npc, kFarDestination);
-    navigationStep(*companion, kFarDestination);
+    walkerStep(*fixture.area, *npc, kFarDestination);
+    walkerStep(*fixture.area, *companion, kFarDestination);
 
     EXPECT_EQ(1, fixture.scriptRuns("k_def_blocked01"));
     EXPECT_EQ(1, fixture.scriptRuns("k_hen_blocked01"));
@@ -4724,18 +4769,17 @@ TEST(CreatureBlockedByDoor, should_not_dispatch_for_directly_controlled_player_l
     auto leader = fixture.addCreature("k_hen_blocked01");
     fixture.game.party().addMember(kNpcPlayer, leader);
     fixture.game.party().setPlayer(leader);
+    ASSERT_EQ(leader, fixture.game.party().getLeader());
 
-    // Player::update drives the leader through Area::moveCreature directly and
-    // never through navigation, so no blocked event is raised.
+    // The leader is the creature the player controls. A walk of its own still
+    // stops at the closed door, but raises no blocked event.
     fixture.countScriptRuns("k_hen_blocked01");
 
     ScopedWalkObstruction obstruction(*fixture.door);
-    EXPECT_FALSE(fixture.area->moveCreature(leader, glm::vec2(0.0f, 1.0f), false, 1.0f));
+    EXPECT_TRUE(walkerStep(*fixture.area, *leader, kFarDestination));
 
+    EXPECT_EQ(glm::vec3(0.0f), leader->position());
     EXPECT_EQ(0, fixture.scriptRuns("k_hen_blocked01"));
-
-    // The collision layer still records what obstructed the leader.
-    EXPECT_EQ(fixture.door->id(), leader->blockingDoorId());
 }
 
 TEST(CreatureBlockedByDoor, should_ignore_obstructions_that_are_not_doors) {
@@ -4743,11 +4787,12 @@ TEST(CreatureBlockedByDoor, should_ignore_obstructions_that_are_not_doors) {
     auto npc = fixture.addCreature("k_def_blocked01");
     fixture.countScriptRuns("k_def_blocked01");
 
+    // A wall that is not a door ends the walk all the same, with no report.
     Room room("testroom", glm::vec3(0.0f), nullptr, nullptr, nullptr);
     ScopedWalkObstruction obstruction(room);
-    navigationStep(*npc, kFarDestination);
+    EXPECT_TRUE(walkerStep(*fixture.area, *npc, kFarDestination));
 
-    EXPECT_EQ(script::kObjectInvalid, npc->blockingDoorId());
+    EXPECT_EQ(glm::vec3(0.0f), npc->position());
     EXPECT_EQ(0, fixture.scriptRuns("k_def_blocked01"));
 }
 
@@ -4792,29 +4837,46 @@ TEST(BlockingDoorRoutines, get_blocking_door_reports_invalid_without_a_captured_
 TEST(BlockingDoorRoutines, get_blocking_door_keeps_the_captured_door_when_the_obstruction_moves_on) {
     BlockedDoorFixture fixture;
     auto npc = fixture.addCreature("k_def_blocked01");
-    fixture.countScriptRuns("k_def_blocked01");
     auto other = makePlainDoor(fixture.game, fixture.engine);
     fixture.area->add(other);
     Routines routines(GameID::KotOR, &fixture.game, &fixture.engine.services());
     routines.init();
 
-    // Blocked by the first door, and a continuation of that run holds it.
+    // An OnBlocked script that queues a continuation of itself on the creature:
+    // the compiled shape of ActionDoCommand(<empty body>).
+    auto program = std::make_shared<script::ScriptProgram>("k_def_blocked01");
+    program->add(script::Instruction::newSTORE_STATE(0, 0));
+    program->add(script::Instruction::newJMP(8));
+    program->add(script::Instruction(script::InstructionType::RETN));
+    program->add(script::Instruction::newACTION(routines.getIndexByName("ActionDoCommand"), 1));
+    program->add(script::Instruction(script::InstructionType::RETN));
+    EXPECT_CALL(fixture.engine.resourceModule().scripts(), get("k_def_blocked01"))
+        .Times(AnyNumber())
+        .WillRepeatedly(Return(program));
+
+    // Blocked by the first door, and a continuation of that run is queued.
     {
         ScopedWalkObstruction obstruction(*fixture.door);
-        navigationStep(*npc, kFarDestination);
+        walkerStep(*fixture.area, *npc, kFarDestination);
     }
-    ASSERT_EQ(fixture.door->id(), npc->blockingDoorId());
-    auto execution = blockedEventContext(npc->id(), fixture.door->id());
+    ASSERT_EQ(1u, npc->actions().size());
+    auto first = dyn_cast<DoCommandAction>(npc->actions().front().get());
+    ASSERT_NE(nullptr, first);
+    auto firstContinuation = first->actionToDo();
 
     // The creature then runs into a different door entirely.
     {
         ScopedWalkObstruction obstruction(*other);
-        navigationStep(*npc, kFarDestination);
+        walkerStep(*fixture.area, *npc, kFarDestination);
     }
-    ASSERT_EQ(other->id(), npc->blockingDoorId());
+    ASSERT_EQ(2u, npc->actions().size());
+    auto second = dyn_cast<DoCommandAction>(npc->actions().back().get());
+    ASSERT_NE(nullptr, second);
 
-    // The continuation still speaks for the event it came from.
-    EXPECT_EQ(fixture.door->id(), callGetBlockingDoor(routines, execution));
+    // The new event reports the new door, and the earlier continuation still
+    // speaks for the event it came from.
+    EXPECT_EQ(other->id(), callGetBlockingDoor(routines, *second->actionToDo()));
+    EXPECT_EQ(fixture.door->id(), callGetBlockingDoor(routines, *firstContinuation));
 }
 
 TEST(BlockingDoorRoutines, a_captured_door_that_is_destroyed_is_reported_but_not_valid) {
@@ -4854,7 +4916,7 @@ TEST(BlockingDoorRoutines, the_authored_blocked_script_can_act_on_the_door_that_
 
     {
         ScopedWalkObstruction obstruction(*fixture.door);
-        navigationStep(*npc, kFarDestination);
+        walkerStep(*fixture.area, *npc, kFarDestination);
     }
 
     // The door reached the script, so the argument survived dispatch.
@@ -5677,6 +5739,15 @@ TEST(CreatureVitality, restores_full_health_from_base_axis_with_permanent_bonuse
     VitalityTestClass soldier(10);
     EXPECT_CALL(engine.gameModule().classes(), get(ClassType::Soldier))
         .WillRepeatedly(Return(soldier.clazz));
+    // The game reads its rule tables when it starts; the others are missing.
+    EXPECT_CALL(engine.resourceModule().twoDas(),
+                get(AnyOf(StartsWith("iprp_"), "gameeffects", "forceshields", "forceadjust",
+                          "excitedduration", "poison", "statescripts", "removefxondeath", "exptable",
+                          "xptable", "npc", "appearancesndset", "weaponsounds", "placeableobjsnds",
+                          "bodybag", "traps", "fractionalcr", "regeneration", "racialtypes", "ranges",
+                          "effecticon", "itemvalue", "videoeffects", "stringtokens", "tutorial", "feedbacktext",
+                          "aiscripts", "dialoganimations", "animations", "encdifficulty")))
+        .Times(AnyNumber());
     EXPECT_CALL(engine.resourceModule().twoDas(), get("appearance"))
         .WillRepeatedly(Return(makeAppearanceTable()));
     EXPECT_CALL(engine.resourceModule().twoDas(), get("racialtypes"))
@@ -5685,6 +5756,7 @@ TEST(CreatureVitality, restores_full_health_from_base_axis_with_permanent_bonuse
                 .columns({"stradjust", "dexadjust", "conadjust", "intadjust", "wisadjust", "chaadjust"})
                 .row({"0", "0", "0", "0", "0", "0"})
                 .build())));
+    engine.gameModule().combatTables().init(engine.resourceModule().twoDas());
     EXPECT_CALL(engine.resourceModule().models(), get(_)).Times(AnyNumber());
     EXPECT_CALL(
         static_cast<MockPortraits &>(engine.services().game.portraits),
@@ -5713,6 +5785,15 @@ TEST(CreatureVitality, restores_and_serializes_genuine_damage_on_base_axis) {
     VitalityTestClass soldier(10);
     EXPECT_CALL(engine.gameModule().classes(), get(ClassType::Soldier))
         .WillRepeatedly(Return(soldier.clazz));
+    // The game reads its rule tables when it starts; the others are missing.
+    EXPECT_CALL(engine.resourceModule().twoDas(),
+                get(AnyOf(StartsWith("iprp_"), "gameeffects", "forceshields", "forceadjust",
+                          "excitedduration", "poison", "statescripts", "removefxondeath", "exptable",
+                          "xptable", "npc", "appearancesndset", "weaponsounds", "placeableobjsnds",
+                          "bodybag", "traps", "fractionalcr", "regeneration", "racialtypes", "ranges",
+                          "effecticon", "itemvalue", "videoeffects", "stringtokens", "tutorial", "feedbacktext",
+                          "aiscripts", "dialoganimations", "animations", "encdifficulty")))
+        .Times(AnyNumber());
     EXPECT_CALL(engine.resourceModule().twoDas(), get("appearance"))
         .WillRepeatedly(Return(makeAppearanceTable()));
     EXPECT_CALL(engine.resourceModule().twoDas(), get("racialtypes"))
@@ -5721,6 +5802,7 @@ TEST(CreatureVitality, restores_and_serializes_genuine_damage_on_base_axis) {
                 .columns({"stradjust", "dexadjust", "conadjust", "intadjust", "wisadjust", "chaadjust"})
                 .row({"0", "0", "0", "0", "0", "0"})
                 .build())));
+    engine.gameModule().combatTables().init(engine.resourceModule().twoDas());
     EXPECT_CALL(engine.resourceModule().models(), get(_)).Times(AnyNumber());
     EXPECT_CALL(
         static_cast<MockPortraits &>(engine.services().game.portraits),
@@ -5748,6 +5830,15 @@ TEST(CreatureVitality, restores_k1_and_k2_companion_witnesses_at_full_health) {
     VitalityTestClass soldier(10);
     EXPECT_CALL(engine.gameModule().classes(), get(ClassType::Soldier))
         .WillRepeatedly(Return(soldier.clazz));
+    // The game reads its rule tables when it starts; the others are missing.
+    EXPECT_CALL(engine.resourceModule().twoDas(),
+                get(AnyOf(StartsWith("iprp_"), "gameeffects", "forceshields", "forceadjust",
+                          "excitedduration", "poison", "statescripts", "removefxondeath", "exptable",
+                          "xptable", "npc", "appearancesndset", "weaponsounds", "placeableobjsnds",
+                          "bodybag", "traps", "fractionalcr", "regeneration", "racialtypes", "ranges",
+                          "effecticon", "itemvalue", "videoeffects", "stringtokens", "tutorial", "feedbacktext",
+                          "aiscripts", "dialoganimations", "animations", "encdifficulty")))
+        .Times(AnyNumber());
     EXPECT_CALL(engine.resourceModule().twoDas(), get("appearance"))
         .WillRepeatedly(Return(makeAppearanceTable()));
     EXPECT_CALL(engine.resourceModule().twoDas(), get("racialtypes"))
@@ -5756,6 +5847,7 @@ TEST(CreatureVitality, restores_k1_and_k2_companion_witnesses_at_full_health) {
                 .columns({"stradjust", "dexadjust", "conadjust", "intadjust", "wisadjust", "chaadjust"})
                 .row({"0", "0", "0", "0", "0", "0"})
                 .build())));
+    engine.gameModule().combatTables().init(engine.resourceModule().twoDas());
     EXPECT_CALL(engine.resourceModule().models(), get(_)).Times(AnyNumber());
     EXPECT_CALL(
         static_cast<MockPortraits &>(engine.services().game.portraits),
@@ -5789,6 +5881,15 @@ TEST(CreatureVitality, temporary_combat_stats_do_not_change_permanent_vitality) 
     VitalityTestClass soldier(10);
     EXPECT_CALL(engine.gameModule().classes(), get(ClassType::Soldier))
         .WillRepeatedly(Return(soldier.clazz));
+    // The game reads its rule tables when it starts; the others are missing.
+    EXPECT_CALL(engine.resourceModule().twoDas(),
+                get(AnyOf(StartsWith("iprp_"), "gameeffects", "forceshields", "forceadjust",
+                          "excitedduration", "poison", "statescripts", "removefxondeath", "exptable",
+                          "xptable", "npc", "appearancesndset", "weaponsounds", "placeableobjsnds",
+                          "bodybag", "traps", "fractionalcr", "regeneration", "racialtypes", "ranges",
+                          "effecticon", "itemvalue", "videoeffects", "stringtokens", "tutorial", "feedbacktext",
+                          "aiscripts", "dialoganimations", "animations", "encdifficulty")))
+        .Times(AnyNumber());
     EXPECT_CALL(engine.resourceModule().twoDas(), get("appearance"))
         .WillRepeatedly(Return(makeAppearanceTable()));
     EXPECT_CALL(engine.resourceModule().twoDas(), get("racialtypes"))
@@ -5797,6 +5898,7 @@ TEST(CreatureVitality, temporary_combat_stats_do_not_change_permanent_vitality) 
                 .columns({"stradjust", "dexadjust", "conadjust", "intadjust", "wisadjust", "chaadjust"})
                 .row({"0", "0", "0", "0", "0", "0"})
                 .build())));
+    engine.gameModule().combatTables().init(engine.resourceModule().twoDas());
     EXPECT_CALL(engine.resourceModule().models(), get(_)).Times(AnyNumber());
     EXPECT_CALL(
         static_cast<MockPortraits &>(engine.services().game.portraits),
@@ -5840,9 +5942,9 @@ TEST(CreatureVitality, temporary_combat_stats_do_not_change_permanent_vitality) 
     EXPECT_EQ(30, atton->maxHitPoints());
     EXPECT_EQ(18, atton->serializedCurrentHitPoints());
 
-    trask->removeEffect(traskCon);
-    carth->removeEffect(carthToughness);
-    atton->removeEffect(attonCon);
+    trask->removeEffectApplication(trask->findEffectInstance(*traskCon)->applicationOrder);
+    carth->removeEffectApplication(carth->findEffectInstance(*carthToughness)->applicationOrder);
+    atton->removeEffectApplication(atton->findEffectInstance(*attonCon)->applicationOrder);
     EXPECT_EQ(12, trask->getEffectiveAbilityScore(Ability::Constitution));
     EXPECT_FALSE(carth->hasEffectiveFeat(FeatType::MasterToughness));
     EXPECT_EQ(14, atton->getEffectiveAbilityScore(Ability::Constitution));
@@ -5859,6 +5961,15 @@ TEST(CreatureVitality, permanent_bonus_changes_preserve_damage) {
     VitalityTestClass soldier(10);
     EXPECT_CALL(engine.gameModule().classes(), get(ClassType::Soldier))
         .WillRepeatedly(Return(soldier.clazz));
+    // The game reads its rule tables when it starts; the others are missing.
+    EXPECT_CALL(engine.resourceModule().twoDas(),
+                get(AnyOf(StartsWith("iprp_"), "gameeffects", "forceshields", "forceadjust",
+                          "excitedduration", "poison", "statescripts", "removefxondeath", "exptable",
+                          "xptable", "npc", "appearancesndset", "weaponsounds", "placeableobjsnds",
+                          "bodybag", "traps", "fractionalcr", "regeneration", "racialtypes", "ranges",
+                          "effecticon", "itemvalue", "videoeffects", "stringtokens", "tutorial", "feedbacktext",
+                          "aiscripts", "dialoganimations", "animations", "encdifficulty")))
+        .Times(AnyNumber());
     EXPECT_CALL(engine.resourceModule().twoDas(), get("appearance"))
         .WillRepeatedly(Return(makeAppearanceTable()));
     EXPECT_CALL(engine.resourceModule().twoDas(), get("racialtypes"))
@@ -5867,6 +5978,7 @@ TEST(CreatureVitality, permanent_bonus_changes_preserve_damage) {
                 .columns({"stradjust", "dexadjust", "conadjust", "intadjust", "wisadjust", "chaadjust"})
                 .row({"0", "0", "0", "0", "0", "0"})
                 .build())));
+    engine.gameModule().combatTables().init(engine.resourceModule().twoDas());
     EXPECT_CALL(engine.resourceModule().models(), get(_)).Times(AnyNumber());
     EXPECT_CALL(
         static_cast<MockPortraits &>(engine.services().game.portraits),
@@ -5900,12 +6012,22 @@ TEST(CreatureVitality, generated_character_starts_at_full_derived_vitality) {
     StubConsole console;
     Game game(GameID::KotOR, "", engine.options(), engine.services(), console);
     VitalityTestClass soldier(10);
+    // The game reads its rule tables when it starts; the others are missing.
+    EXPECT_CALL(engine.resourceModule().twoDas(),
+                get(AnyOf(StartsWith("iprp_"), "gameeffects", "forceshields", "forceadjust",
+                          "excitedduration", "poison", "statescripts", "removefxondeath", "exptable",
+                          "xptable", "npc", "appearancesndset", "weaponsounds", "placeableobjsnds",
+                          "bodybag", "traps", "fractionalcr", "regeneration", "racialtypes", "ranges",
+                          "effecticon", "itemvalue", "videoeffects", "stringtokens", "tutorial", "feedbacktext",
+                          "aiscripts", "dialoganimations", "animations", "encdifficulty")))
+        .Times(AnyNumber());
     EXPECT_CALL(engine.resourceModule().twoDas(), get("racialtypes"))
         .WillRepeatedly(Return(std::shared_ptr<TwoDA>(
             TwoDA::Builder()
                 .columns({"stradjust", "dexadjust", "conadjust", "intadjust", "wisadjust", "chaadjust"})
                 .row({"0", "0", "0", "0", "0", "0"})
                 .build())));
+    engine.gameModule().combatTables().init(engine.resourceModule().twoDas());
     auto creature = game.newCreature();
     creature->attributes().addClassLevels(soldier.clazz.get(), 1);
     creature->attributes().setAbilityScore(Ability::Constitution, 12);
@@ -5918,7 +6040,7 @@ TEST(CreatureVitality, generated_character_starts_at_full_derived_vitality) {
     EXPECT_EQ(10, creature->serializedCurrentHitPoints());
 }
 
-TEST(CreatureVitality, dead_serialized_creature_is_not_healed_by_derivation) {
+TEST(CreatureVitality, creature_saved_at_zero_hit_points_loads_alive_with_the_rebuilt_pool) {
     TestEngine engine;
     engine.init();
     StubConsole console;
@@ -5926,6 +6048,15 @@ TEST(CreatureVitality, dead_serialized_creature_is_not_healed_by_derivation) {
     VitalityTestClass soldier(10);
     EXPECT_CALL(engine.gameModule().classes(), get(ClassType::Soldier))
         .WillRepeatedly(Return(soldier.clazz));
+    // The game reads its rule tables when it starts; the others are missing.
+    EXPECT_CALL(engine.resourceModule().twoDas(),
+                get(AnyOf(StartsWith("iprp_"), "gameeffects", "forceshields", "forceadjust",
+                          "excitedduration", "poison", "statescripts", "removefxondeath", "exptable",
+                          "xptable", "npc", "appearancesndset", "weaponsounds", "placeableobjsnds",
+                          "bodybag", "traps", "fractionalcr", "regeneration", "racialtypes", "ranges",
+                          "effecticon", "itemvalue", "videoeffects", "stringtokens", "tutorial", "feedbacktext",
+                          "aiscripts", "dialoganimations", "animations", "encdifficulty")))
+        .Times(AnyNumber());
     EXPECT_CALL(engine.resourceModule().twoDas(), get("appearance"))
         .WillRepeatedly(Return(makeAppearanceTable()));
     EXPECT_CALL(engine.resourceModule().twoDas(), get("racialtypes"))
@@ -5934,6 +6065,7 @@ TEST(CreatureVitality, dead_serialized_creature_is_not_healed_by_derivation) {
                 .columns({"stradjust", "dexadjust", "conadjust", "intadjust", "wisadjust", "chaadjust"})
                 .row({"0", "0", "0", "0", "0", "0"})
                 .build())));
+    engine.gameModule().combatTables().init(engine.resourceModule().twoDas());
     EXPECT_CALL(engine.resourceModule().models(), get(_)).Times(AnyNumber());
     EXPECT_CALL(
         static_cast<MockPortraits &>(engine.services().game.portraits),
@@ -6174,6 +6306,15 @@ TEST(CreatureVitality, primary_player_publication_preserves_saved_damage) {
     VitalityTestClass soldier(10);
     EXPECT_CALL(engine.gameModule().classes(), get(ClassType::Soldier))
         .WillRepeatedly(Return(soldier.clazz));
+    // The game reads its rule tables when it starts; the others are missing.
+    EXPECT_CALL(engine.resourceModule().twoDas(),
+                get(AnyOf(StartsWith("iprp_"), "gameeffects", "forceshields", "forceadjust",
+                          "excitedduration", "poison", "statescripts", "removefxondeath", "exptable",
+                          "xptable", "npc", "appearancesndset", "weaponsounds", "placeableobjsnds",
+                          "bodybag", "traps", "fractionalcr", "regeneration", "racialtypes", "ranges",
+                          "effecticon", "itemvalue", "videoeffects", "stringtokens", "tutorial", "feedbacktext",
+                          "aiscripts", "dialoganimations", "animations", "encdifficulty")))
+        .Times(AnyNumber());
     EXPECT_CALL(engine.resourceModule().twoDas(), get("appearance"))
         .WillRepeatedly(Return(makeAppearanceTable()));
     EXPECT_CALL(engine.resourceModule().twoDas(), get("racialtypes"))
@@ -6182,6 +6323,7 @@ TEST(CreatureVitality, primary_player_publication_preserves_saved_damage) {
                 .columns({"stradjust", "dexadjust", "conadjust", "intadjust", "wisadjust", "chaadjust"})
                 .row({"0", "0", "0", "0", "0", "0"})
                 .build())));
+    engine.gameModule().combatTables().init(engine.resourceModule().twoDas());
     EXPECT_CALL(engine.resourceModule().models(), get(_)).Times(AnyNumber());
     EXPECT_CALL(
         static_cast<MockPortraits &>(engine.services().game.portraits),
@@ -6643,14 +6785,23 @@ struct StopMovementFixture {
     explicit StopMovementFixture(GameID gameId = GameID::KotOR) :
         game(gameId, "", engine.options(), engine.services(), console) {
         testSceneGraph(engine);
+        // The game reads its rule tables when it starts; the others are missing.
+        EXPECT_CALL(engine.resourceModule().twoDas(),
+                    get(AnyOf(StartsWith("iprp_"), "gameeffects", "forceshields", "forceadjust",
+                              "excitedduration", "poison", "statescripts", "removefxondeath", "exptable",
+                              "xptable", "npc", "appearancesndset", "weaponsounds", "placeableobjsnds",
+                              "bodybag", "traps", "fractionalcr", "regeneration", "racialtypes", "ranges",
+                              "effecticon", "itemvalue", "videoeffects", "stringtokens", "tutorial", "feedbacktext",
+                              "aiscripts", "dialoganimations", "animations", "encdifficulty")))
+            .Times(AnyNumber());
         // Every creature update searches for mines with its Awareness rank and
         // regenerates; trigger trap data is read where present.
-        EXPECT_CALL(engine.resourceModule().twoDas(), get("skills"))
-            .Times(AnyNumber())
-            .WillRepeatedly(Return(std::shared_ptr<TwoDA>(TwoDA::Builder().build())));
+        ON_CALL(static_cast<MockSkills &>(engine.services().game.skills), getRequired(_))
+            .WillByDefault(Return(nullptr));
         EXPECT_CALL(engine.resourceModule().twoDas(), get("regeneration"))
             .Times(AnyNumber())
             .WillRepeatedly(Return(std::shared_ptr<TwoDA>(TwoDA::Builder().build())));
+        engine.gameModule().combatTables().init(engine.resourceModule().twoDas());
         EXPECT_CALL(engine.resourceModule().twoDas(), get("traps")).Times(AnyNumber());
         // Finishing a conversation runs each area creature's end-dialogue
         // script, which these creatures leave empty.

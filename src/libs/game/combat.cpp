@@ -28,7 +28,8 @@
 #include "reone/game/action/usefeat.h"
 #include "reone/game/action/castspellatobject.h"
 #include "reone/game/action/castspellatlocation.h"
-#include "reone/game/action/switchweapons.h"
+#include "reone/game/action/movetolocation.h"
+#include "reone/game/action/movetoobject.h"
 #include "reone/game/action/unequipitem.h"
 #include "reone/game/party.h"
 #include "reone/game/d20/spell.h"
@@ -48,8 +49,6 @@ using namespace reone::scene;
 namespace reone {
 
 namespace game {
-
-static constexpr float kRoundDuration = 3.0f;
 
 static bool isUnavailableAttackTarget(const Creature &creature) {
     return creature.isDead() || creature.isTemporarilyDead();
@@ -141,6 +140,12 @@ static bool isInstantCast(Action &command) {
     if (auto *cast = dyn_cast<CastSpellAtObjectAction>(&command)) return cast->instantSpell();
     if (auto *cast = dyn_cast<CastSpellAtLocationAction>(&command)) return cast->instantSpell();
     if (auto *feat = dyn_cast<UseFeatAction>(&command)) return feat->isInstantCastAttack();
+    return false;
+}
+
+static bool isItemUse(Action &command) {
+    if (auto *cast = dyn_cast<CastSpellAtObjectAction>(&command)) return cast->item().has_value();
+    if (auto *cast = dyn_cast<CastSpellAtLocationAction>(&command)) return cast->item().has_value();
     return false;
 }
 
@@ -344,6 +349,8 @@ const CombatRound &Combat::addAction(const std::shared_ptr<Action> &action, Obje
 // A round whose action still waits behind it in the queue does not hold it,
 // or neither could advance.
 void CombatDispatchAction::execute(std::shared_ptr<Action>, Object &actor, float) {
+    // While the world is held, the round waits, and the queue behind it.
+    if (_game.holdsWorld()) return;
     auto *creature = dyn_cast<Creature>(&actor);
     if (!_game.combat().hasScheduled(actor) && !(creature && _game.combat().ownsDetachedRound(*creature))) complete();
 }
@@ -382,7 +389,7 @@ void CombatStanceAction::execute(std::shared_ptr<Action> self, Object &actor, fl
     if (_stance == CombatStance::TotalDefense) {
         // Holding the stance counts as a combat decision for the end-of-round script.
         creature->refreshCombatDecisionTimer();
-        if (!_game.combat().isActionPaused(*this) && !_game.combat().isOwnerPaused(*creature)) {
+        if (!_game.holdsWorld() && !_game.combat().isActionPaused(*this) && !_game.combat().isOwnerPaused(*creature)) {
             // The stance begins while the creature has no Total Defense start.
             if (!creature->hasTotalDefenseStart()) {
                 creature->setAttemptedAttackTarget(_target ? _target->id() : script::kObjectInvalid);
@@ -489,9 +496,8 @@ void Combat::ensureDispatcher(Creature &actor, bool toFront) {
         actor.addAction(_game.newAction<CombatDispatchAction>());
         return;
     }
-    // The engine's attack command is gone once its round starts; here it
-    // lives for the round, so the front is behind a physical attack its round
-    // has taken up.
+    // A physical attack that its round has taken up stays at the front of the
+    // queue for the round, so the dispatcher goes behind it.
     const auto &nodes = actor.actions().nodes;
     const bool attackRunning = !nodes.empty() && nodes.front()->action && nodes.front()->action->locked() &&
                                !nodes.front()->action->isCompleted() && !nodes.front()->action->isCancelled() &&
@@ -686,14 +692,6 @@ bool Combat::hasReactionRoom(const Creature &creature, const Creature &attacker)
         paused->second.pausedBy.resolve().get() == &attacker;
 }
 
-std::optional<int> Combat::nextScheduledKind(const Object &actor) const {
-    auto found = _scheduled.find(actor.id());
-    if (found == _scheduled.end() || found->second->actor.resolve().get() != &actor) return std::nullopt;
-    for (const auto &entry : found->second->actions)
-        if (entry && !entry->saved.applied) return entry->saved.type;
-    return std::nullopt;
-}
-
 std::vector<std::pair<int, Action *>> Combat::pendingScheduled(const Object &actor) const {
     std::vector<std::pair<int, Action *>> result;
     auto found = _scheduled.find(actor.id());
@@ -712,7 +710,8 @@ static bool scheduledCommandMatches(const SavedScheduledAction &saved) {
     case 1: case 11: return id == 12;
     case 6: return id == 8;
     case 7: return id == 11;
-    case 9: case 10: return id == 15;
+    case 9: return id == 15;
+    case 10: return id == 46;
     case 12: return id == 1 || id == 17;
     case 13: return id == 68 || id == 69;
     case 14: return id == 71;
@@ -909,25 +908,21 @@ bool Combat::scheduleSwitchWeapons(Creature &actor) {
 
 void Combat::scheduleCast(Creature &actor, const std::shared_ptr<Action> &cast) {
     std::shared_ptr<Object> target;
-    bool itemUse = false;
-    if (auto *atObject = dyn_cast<CastSpellAtObjectAction>(cast.get())) {
-        target = atObject->target();
-        itemUse = atObject->item().has_value();
-    } else if (auto *atLocation = dyn_cast<CastSpellAtLocationAction>(cast.get())) {
-        itemUse = atLocation->item().has_value();
-    }
+    if (auto *atObject = dyn_cast<CastSpellAtObjectAction>(cast.get())) target = atObject->target();
+    const bool itemUse = isItemUse(*cast);
     auto entry = std::make_shared<ScheduledEntry>();
     entry->saved.type = itemUse ? 10 : 9;
     entry->saved.animation = itemUse ? 0 : 10017;
     entry->saved.animationTime = itemUse ? 0 : 500;
     entry->saved.target = SavedObjectReference::fromRuntimeId(target ? target->id() : kSavedRuntimeInvalidObjectId);
-    // The entry names its command as a cast; the cast itself is the one given.
+    // The entry names its command as a cast or an item use; the command itself
+    // is the one given.
     SavedActionRecord command;
-    command.actionId = 15;
+    command.actionId = itemUse ? 46 : 15;
     entry->saved.command = std::move(command);
     entry->node = std::make_shared<ActionQueueNode>();
     entry->node->action = cast;
-    entry->node->actionId = 15;
+    entry->node->actionId = itemUse ? 46 : 15;
     auto owner = scheduledOwner(actor);
     // A round holds at most four pending entries; later requests are dropped.
     if (owner->actions.size() < kScheduledCapacity) owner->actions.push_back(std::move(entry));
@@ -935,13 +930,17 @@ void Combat::scheduleCast(Creature &actor, const std::shared_ptr<Action> &cast) 
     // is due; a cast does so only while none is.
     const bool due = !owner->actions.empty() &&
         owner->actions.front()->saved.timer <= static_cast<int>(owner->time * 1000.0f);
-    if (!actor.isInCombat() && due == itemUse) clearActions(actor);
+    if (!actor.isInCombat() && due == itemUse) clearControlledActions(actor);
     ensureDispatcher(actor, false);
 }
 
 void Combat::clearActions(Creature &actor) {
     // A creature that cannot be commanded keeps everything.
     actor.clearAllActions();
+}
+
+void Combat::clearControlledActions(Creature &actor) {
+    if (&actor == _game.party().getLeader().get()) actor.clearAllActions(true);
 }
 
 void Combat::clearAllOrders(Creature &actor) {
@@ -999,27 +998,91 @@ std::shared_ptr<Combat::ScheduledEntry> Combat::makeAttackEntry(const std::share
 std::shared_ptr<Action> Combat::scheduleAttack(Creature &actor, const std::shared_ptr<Object> &target,
                                                FeatType feat, const CutsceneAttack *cutscene) {
     auto entry = makeAttackEntry(target, feat, cutscene);
-    if (!entry) return nullptr;
-    // The entry is added first, up to the round's four; then, out of combat,
-    // the creature drops what it was doing, but not its pending entries; then
-    // the dispatcher goes in, whether or not the entry fitted. It goes in
-    // front of a TSL player attack; KotOR and cutscene attacks append it.
+    // The entry is added first, up to the round's four, and a target it
+    // accepts becomes the attempted target if there is none, even when the
+    // entry did not fit; then, out of combat, the controlled creature drops
+    // what it was doing, but not its pending entries; then the dispatcher goes
+    // in, whether or not there was an entry. It goes in front of a TSL player
+    // attack; KotOR and cutscene attacks append it.
     const bool toFront = _game.isTSL() && !cutscene;
     const auto scheduled = entry;
-    const bool added = addScheduled(actor, std::move(entry));
-    if (!actor.isInCombat()) clearActions(actor);
+    const bool added = entry && addScheduled(actor, std::move(entry));
+    if (scheduled && actor.getAttemptedAttackTarget() == script::kObjectInvalid)
+        actor.setAttemptedAttackTarget(target->id());
+    if (!actor.isInCombat()) clearControlledActions(actor);
     ensureDispatcher(actor, toFront);
     if (!added) return nullptr;
-    if (actor.getAttemptedAttackTarget() == script::kObjectInvalid) actor.setAttemptedAttackTarget(target->id());
     return scheduled->node ? scheduled->node->action : nullptr;
+}
+
+// The move closes to a fifth of a metre and is forced to its end after a
+// tenth of a second.
+static constexpr float kCutsceneMoveRange = 0.2f;
+static constexpr float kCutsceneMoveTimeout = 0.1f;
+static constexpr int32_t kTimedMoveFlag = 4;
+
+void Combat::scheduleCutsceneMove(Creature &actor, const std::shared_ptr<Object> &object, const glm::vec3 &point, bool run) {
+    auto entry = std::make_shared<ScheduledEntry>();
+    entry->saved.type = 12;
+    entry->saved.target = SavedObjectReference::fromRuntimeId(object ? object->id() : kSavedRuntimeInvalidObjectId);
+    // The point and the run flag travel in a move record.
+    const auto area = _game.module() ? _game.module()->area() : nullptr;
+    SavedActionRecord command;
+    command.actionId = 1;
+    command.declaredParameterCount = 13;
+    command.parameters = {
+        {2, point.x},
+        {2, point.y},
+        {2, point.z},
+        {3, SavedObjectReference::fromRuntimeId(area ? area->id() : kSavedRuntimeInvalidObjectId)},
+        {3, entry->saved.target},
+        {1, int32_t {(run ? 1 : 0) | kTimedMoveFlag}},
+        {2, kCutsceneMoveRange},
+        {1, int32_t {0}},
+        {2, kCutsceneMoveTimeout},
+        {2, 0.0f},
+        {2, 0.0f},
+        {1, int32_t {0}},
+        {1, int32_t {0}},
+    };
+    entry->saved.command = std::move(command);
+    // The entry goes in first, up to the round's four; then, out of combat,
+    // the controlled creature drops what it was doing; then the dispatcher is
+    // appended.
+    addScheduled(actor, std::move(entry));
+    if (!actor.isInCombat()) clearControlledActions(actor);
+    ensureDispatcher(actor, false);
+}
+
+void Combat::dispatchCutsceneMove(Creature &actor, const ScheduledEntry &entry) {
+    if (!entry.saved.command || entry.saved.command->parameters.size() != 13) return;
+    const auto &parameters = entry.saved.command->parameters;
+    const auto *x = std::get_if<float>(&parameters[0].payload);
+    const auto *y = std::get_if<float>(&parameters[1].payload);
+    const auto *z = std::get_if<float>(&parameters[2].payload);
+    const auto *flags = std::get_if<int32_t>(&parameters[5].payload);
+    if (!x || !y || !z || !flags) return;
+    const bool run = (*flags & 1) != 0;
+    const auto object = entry.saved.target.boundObject();
+    if (object) {
+        actor.addActionOnTop(_game.newAction<MoveToObjectAction>(
+            object, run, kCutsceneMoveRange, true, kCutsceneMoveTimeout, false, kCutsceneMoveRange));
+    } else {
+        actor.addActionOnTop(_game.newAction<MoveToLocationAction>(
+            std::make_shared<Location>(glm::vec3(*x, *y, *z), actor.getFacing()), run, true, kCutsceneMoveTimeout,
+            kCutsceneMoveRange));
+    }
 }
 
 std::shared_ptr<Action> Combat::addRoundAttack(Creature &actor, const std::shared_ptr<Object> &target) {
     auto entry = makeAttackEntry(target, FeatType::Invalid, nullptr);
     if (!entry) return nullptr;
     const auto scheduled = entry;
-    if (!addScheduled(actor, std::move(entry))) return nullptr;
+    // The target becomes the attempted target if there is none, even when the
+    // entry does not fit.
+    const bool added = addScheduled(actor, std::move(entry));
     if (actor.getAttemptedAttackTarget() == script::kObjectInvalid) actor.setAttemptedAttackTarget(target->id());
+    if (!added) return nullptr;
     return scheduled->node ? scheduled->node->action : nullptr;
 }
 
@@ -1058,15 +1121,6 @@ bool Combat::removeLastScheduled(Creature &actor) {
 
 void Combat::removeAllScheduled(Creature &actor) {
     while (removeLastScheduled(actor)) {}
-}
-
-std::optional<float> Combat::roundElapsed(const Action &action) const {
-    for (const auto &round : _rounds) {
-        if (round->state == CombatRound::Pending) continue;
-        for (const auto &entry : round->actions)
-            if (entry.action.get() == &action) return round->time;
-    }
-    return std::nullopt;
 }
 
 // An item use is handed on unless it is aimed at a creature that has died.
@@ -1164,6 +1218,16 @@ bool Combat::refusesAttackOnFriend(const Creature &attacker, const Object &targe
     const auto *creature = dyn_cast<const Creature>(&target);
     const int state = attacker.effectState();
     return creature && creature->getReputationToward(attacker) > 89 && state != 1 && state != 16;
+}
+
+bool Combat::refusesUnperceivedTarget(const Creature &caster, Action &cast) {
+    auto *atObject = dyn_cast<CastSpellAtObjectAction>(&cast);
+    if (!atObject || (!atObject->item() && atObject->fake())) return false;
+    auto *target = dyn_cast<Creature>(atObject->target().get());
+    if (!target || target == &caster || caster.isPartyMember()) return false;
+    const auto &perception = caster.perception();
+    const uint32_t id = target->id();
+    return !perception.has(id) || (perception.isInvisible(id) && !perception.sees(id));
 }
 
 bool Combat::refusesAttack(const Creature &attacker) {
@@ -1265,6 +1329,17 @@ void Combat::updateEquipment(float dt) {
                     entry->saved.remainingPause = std::max(0, entry->saved.animationTime) / 1000.0f;
                     actor->setRoundActionKind(3);
                     actor->setStealthMode(false);
+                } else if (entry->saved.type == 12) {
+                    // A cutscene move is taken whether or not its object is
+                    // still there. One restored without its point moves
+                    // nowhere.
+                    owner->actions.pop_front();
+                    actor->setRoundActionKind(12);
+                    actor->setStealthMode(false);
+                    dispatchCutsceneMove(*actor, *entry);
+                    moveDispatcherBehind(*actor);
+                    frame = 0.0f;
+                    break;
                 } else if ((entry->saved.type == 1 || entry->saved.type == 11) &&
                            (!entry->node || !entry->node->action || !entry->node->action->runtimeDependenciesLive() ||
                             !actor->permitsAction(*entry->node->action) || refusesAttack(*actor) ||
@@ -1292,6 +1367,19 @@ void Combat::updateEquipment(float dt) {
                     moveDispatcherBehind(*actor);
                     frame = 0.0f;
                     break;
+                } else if (entry->saved.isEquipment() &&
+                           (!entry->referencesBound ||
+                            (entry->node && entry->node->action && !entry->node->action->runtimeDependenciesLive()))) {
+                    // An equip or unequip whose item or container is gone is
+                    // still taken: its creature leaves stealth and holds its
+                    // round for the entry's pause, but nothing is equipped or
+                    // taken off.
+                    entry->saved.applied = true;
+                    entry->saved.remainingPause = std::max(0, entry->saved.animationTime) / 1000.0f;
+                    actor->setRoundActionKind(entry->saved.type);
+                    actor->setStealthMode(false);
+                    actor->setMovementType(Creature::MovementType::None);
+                    continue;
                 } else if (!entry->referencesBound || !scheduledCommandMatches(entry->saved) || !entry->node || !entry->node->action) {
                     if (!entry->refusalReported) {
                         warn("Scheduled action cannot execute: " + std::to_string(entry->saved.type), LogChannel::Combat);
@@ -1325,8 +1413,8 @@ void Combat::updateEquipment(float dt) {
                     if (!entry->saved.isEquipment()) {
                         actor->setRoundActionKind(entry->saved.type);
                         const bool attack = entry->saved.type == 1 || entry->saved.type == 11;
-                        if (attack || entry->saved.type == 12 ||
-                            (entry->saved.type == 9 && !castKeepsStealth(_game, *action))) actor->setStealthMode(false);
+                        if (attack || (entry->saved.type == 9 && !castKeepsStealth(_game, *action)))
+                            actor->setStealthMode(false);
                         if (cast) {
                             // An item use aimed at a creature that has died is
                             // dropped, and the dispatcher stays at the head.
@@ -1336,12 +1424,14 @@ void Combat::updateEquipment(float dt) {
                                 break;
                             }
                             // A cast handed on starts without spell targets. One
-                            // whose target or item is gone, or taken by a
-                            // creature that cannot be commanded, is used up
-                            // without casting.
+                            // whose target or item is gone, taken by a creature
+                            // that cannot be commanded, or aimed at a creature
+                            // its caster does not perceive, is used up without
+                            // casting.
                             actor->setAttemptedSpellTarget(script::kObjectInvalid);
                             actor->spellScriptContext().clearActiveTarget();
-                            if (!actor->isCommandable() || !entry->node->action->runtimeDependenciesLive()) {
+                            if (!actor->isCommandable() || !entry->node->action->runtimeDependenciesLive() ||
+                                refusesUnperceivedTarget(*actor, *entry->node->action)) {
                                 owner->actions.pop_front();
                                 moveDispatcherBehind(*actor);
                                 frame = 0.0f;
@@ -1531,6 +1621,11 @@ void Combat::finishOwner(Creature &actor, int runEndRound, bool suppressScript) 
             (door && door->state() != DoorState::Closed) || (placeable && placeable->isOpen()))
             actor.clearRoundTarget();
     }
+    // An attempted target that is gone or dead is forgotten.
+    if (const auto attempted = actor.getAttemptedAttackTarget(); attempted != script::kObjectInvalid) {
+        const auto object = _game.getObjectById(attempted);
+        if (!object || object->isDead()) actor.setAttemptedAttackTarget(script::kObjectInvalid);
+    }
     const auto spellTarget = actor.spellScriptContext().activeTarget();
     if (!spellTarget || spellTarget->isDead()) actor.spellScriptContext().clearActiveTarget();
     actor.setMovementRestricted(false);
@@ -1538,8 +1633,6 @@ void Combat::finishOwner(Creature &actor, int runEndRound, bool suppressScript) 
     // Every round end shows the pause or ready pose, cutscene rounds included.
     if (!actor.isDead() && !actor.isTemporarilyDead()) actor.showPauseReadyAnimation(false);
     const auto leader = _game.party().getLeader();
-    // Only the controlled party member keeps its combat mode across rounds.
-    if (leader.get() != &actor) actor.setCombatMode(0);
     // TSL also withholds the script from a player character at zero vitality.
     if (runEndRound && !suppressScript && actor.currentSerializedActionId() != 1 &&
         leader.get() != &actor && !actor.isDead() &&
@@ -1609,23 +1702,6 @@ void Combat::update(float dt) {
 
 static bool isActionFinished(const CombatRound::RoundAction &action) {
     return action.retired || action.action->isCompleted() || action.action->isCancelled();
-}
-
-void Combat::cancelRound(CombatRound &round) {
-    const std::vector<CombatRound::RoundAction> actions(round.actions.begin(), round.actions.end());
-    for (auto &entry : round.actions) entry.retired = true;
-    for (const auto &entry : actions) {
-        if (entry.retired) continue;
-        auto actor = entry.attacker.resolve();
-        entry.action->retireCombatRound();
-        if (actor) {
-            releasePartner(*actor);
-            if (!entry.action->isCompleted() && !entry.action->isCancelled())
-                entry.action->cancel(entry.action, *actor);
-        }
-        entry.action->markCancelled();
-        entry.action->complete();
-    }
 }
 
 void Combat::pruneInvalidRounds() {
@@ -1739,14 +1815,15 @@ bool Combat::isRoundMaster(const Creature &creature) const {
 }
 bool Combat::isEngagedBy(const Creature &attacker, const Creature &target) const {
     if (target.isDebilitated(true)) return false;
-    const auto attack = target.getAttackTarget();
+    const auto attempted = target.getAttemptedAttackTarget();
+    const bool attempting = attempted != script::kObjectInvalid;
     const auto spell = target.attemptedSpellTarget();
-    bool engaged = !attack || attack.get() == &attacker || spell.get() == &attacker;
+    bool engaged = !attempting || attempted == attacker.id() || spell.get() == &attacker;
     if (_game.party().getLeader().get() == &target) {
-        if (!attack && !spell) return false;
-        if ((attack && attack.get() != &attacker) || (spell && spell.get() != &attacker)) return false;
-        const auto attempted = target.getAttemptedAttackTarget();
-        if (attempted != script::kObjectInvalid && attempted != attacker.id()) return false;
+        if (!attempting && !spell) return false;
+        if ((attempting && attempted != attacker.id()) || (spell && spell.get() != &attacker)) return false;
+        const auto ordered = target.getOrderedAttackTarget();
+        if (ordered != script::kObjectInvalid && ordered != attacker.id()) return false;
     }
     return engaged;
 }
@@ -1756,11 +1833,11 @@ bool Combat::engagePhysicalTarget(const Creature &attacker, Object &target, int 
     if (!partner || !isEngagedBy(attacker, *partner)) return false;
     // An attacker that masters the exchange starts its partner's side of it,
     // which locks the partner's orientation on the attacker. It masters when
-    // it is in the party, or when the partner attacks no one, or attacks it
-    // without mastering a round of its own.
-    const auto partnerAttack = partner->getAttackTarget();
-    if (_game.party().isMember(attacker) || !partnerAttack ||
-        (partnerAttack.get() == &attacker && !isRoundMaster(*partner)))
+    // it is in the party, or when the partner is attempting to attack no one,
+    // or to attack it without mastering a round of its own.
+    const auto partnerAttempted = partner->getAttemptedAttackTarget();
+    if (_game.party().isMember(attacker) || partnerAttempted == script::kObjectInvalid ||
+        (partnerAttempted == attacker.id() && !isRoundMaster(*partner)))
         partner->setOrientationLock(attacker.id());
     // The attack's round is engaged with the partner, and the attacker masters
     // it unless someone already does.
@@ -1800,9 +1877,9 @@ void Combat::configureSpellPair(CombatRound &round, const std::shared_ptr<Action
     const bool engaged = target && isEngagedBy(caster, *target);
     bool master = false;
     if (engaged) {
-        const auto targetAttack = target->getAttackTarget();
-        master = _game.party().isMember(caster) || !targetAttack ||
-            (targetAttack.get() == &caster && !isRoundMaster(*target));
+        const auto targetAttempted = target->getAttemptedAttackTarget();
+        master = _game.party().isMember(caster) || targetAttempted == script::kObjectInvalid ||
+            (targetAttempted == caster.id() && !isRoundMaster(*target));
     }
     round.master = engaged ? (master ? _game.getObjectById(caster.id()) : std::static_pointer_cast<Object>(target)) : nullptr;
     round.engaged = engaged ? target : nullptr;
@@ -1923,7 +2000,9 @@ void Combat::restoreRound(const std::shared_ptr<Action> &action,
         round->actions.emplace_back(action, actor, getTarget(*action), true);
     }
     round->actions.back().slot = saved.slot;
-    round->actions.back().joined = saved.joined;
+    // An item use starts over after a load inside the round it had begun,
+    // which keeps the pause it was given then rather than taking a new one.
+    round->actions.back().joined = saved.joined || isItemUse(action->combatAction());
     round->duel = round->actions.size() == 2;
     if (round->duel && round->actions[0].slot > round->actions[1].slot)
         std::swap(round->actions[0], round->actions[1]);
@@ -1958,9 +2037,12 @@ void Combat::finishRound(CombatRound &round) {
     for (const auto &entry : entries) if (!entry.retired) continueOwner(entry, isCutsceneRoundFor(round, entry));
 }
 
-// The leader's next attack is an entry on its round, as the player's orders are.
+// The leader's next attack is an entry on its round, as the player's orders
+// are, but nothing is cleared for it. Taking it on the target the player
+// ordered forgets that order.
 void Combat::scheduleContinuation(Creature &actor, const std::shared_ptr<Object> &target) {
-    auto action = scheduleAttack(actor, target);
+    auto action = addRoundAttack(actor, target);
+    if (actor.getOrderedAttackTarget() == target->id()) actor.setOrderedAttackTarget(script::kObjectInvalid);
     if (!action) return;
     if (auto *attack = dyn_cast<AttackObjectAction>(action.get())) attack->markRoundContinuation();
 }

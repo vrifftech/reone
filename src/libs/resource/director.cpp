@@ -373,13 +373,6 @@ void ResourceDirector::loadAuxiliaryResources() {
 }
 
 /**
- * Streamed audio directories.
- *
- * Streamed clips use path-based lookup outside the raw resource list. Active
- * games keep these directories separate; inactive games retain their existing
- * lookup order.
- */
-/**
  * KotOR streamed audio uses two lookup paths.
  *
  * STREAMWAVES and STREAMMUSIC participate in ordinary resource lookup as loose directories.
@@ -516,13 +509,6 @@ void ResourceDirector::loadPlayerSupportResource() {
                       bucketOf(ResourceSourceBucket::EncapsulatedClass2));
 }
 
-/**
- * Register KotOR startup sources in lookup order. Later entries in the same bucket win.
- *
- * The override directory precedes streaming directories, so streamed assets win collisions
- * with override files. Mount only resources with a consumer; movies use direct-path playback.
- */
-
 void ResourceDirector::loadLiveResources() {
     for (std::size_t i = 0; i < _odysseyRoots.livePackages.size(); ++i) {
         if (!_odysseyRoots.livePackages[i]) {
@@ -582,6 +568,10 @@ void ResourceDirector::loadLiveResources() {
 
 void ResourceDirector::loadGlobalResources() {
     loadAuxiliaryResources();
+    // KotOR registers its startup sources in lookup order. Later entries in the
+    // same bucket win. The override directory precedes the streaming
+    // directories, so streamed assets win collisions with override files. Only
+    // resources with a consumer are mounted; movies use direct-path playback.
     if (_gameId == GameID::KotOR) {
         if (auto overridePath = findFileIgnoreCase(_gamePath, kOverrideDirectoryName)) {
             _resources.addFolder(*overridePath,

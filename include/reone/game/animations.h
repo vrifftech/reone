@@ -38,20 +38,24 @@ public:
     virtual void clear() = 0;
 
     virtual std::string getNameById(uint32_t id) const = 0;
-    /** The target's reaction clip for an attack swing: 10011 dodge, 10012 parry, 10014 damage. */
+    /**
+     * The target's reaction clip for an attack swing: 10011 dodge, 10012 parry,
+     * 10014 damage. A swing without a row, or a row with no clip for the
+     * reaction and wield, gives the first row (walk).
+     */
     virtual std::string getReactionAnimation(const std::string &attackAnim, CreatureWieldType targetWield, uint16_t reaction) const = 0;
     virtual int getMeleeImpactTime(const std::string &attackAnim, size_t attackIndex) const = 0;
     /**
      * The named row is an overlay: queued, it plays as a layer over the loop
      * and is taken off when its time runs out.
      */
-    virtual bool isOverlay(const std::string &) const { return false; }
+    virtual bool isOverlay(const std::string &) const = 0;
     /** The row loops. */
-    virtual bool isLoopingById(uint32_t) const { return false; }
+    virtual bool isLoopingById(uint32_t) const = 0;
     /** The named row is a parry. */
-    virtual bool isParry(const std::string &) const { return false; }
+    virtual bool isParry(const std::string &) const = 0;
     /** The named row puts the equipped items away while it plays. */
-    virtual bool hidesEquippedItems(const std::string &) const { return false; }
+    virtual bool hidesEquippedItems(const std::string &) const = 0;
 };
 
 class Animations : public IAnimations {
@@ -100,7 +104,6 @@ private:
     std::unordered_map<std::string, size_t> _animIndexByName;
     AttackResultMap _attackResults;
     std::map<std::string, std::vector<int>> _meleeImpactTimes;
-    bool _combatAnimationsLoaded {false};
 };
 
 } // namespace game

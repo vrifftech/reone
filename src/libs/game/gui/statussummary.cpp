@@ -152,6 +152,7 @@ void StatusSummary::acknowledge() {
     }
     _accumulator.acknowledge();
     clearPresentation();
+    _game.finishStatusSummaryCycle();
 }
 
 void StatusSummary::reset() {

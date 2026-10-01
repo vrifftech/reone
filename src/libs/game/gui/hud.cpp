@@ -43,6 +43,7 @@
 #include "reone/game/d20/feat.h"
 #include "reone/game/d20/feats.h"
 #include "reone/game/d20/spell.h"
+#include "reone/game/effect/visual.h"
 #include "reone/game/gui/sounds.h"
 #include "reone/game/di/services.h"
 #include "reone/game/game.h"
@@ -66,6 +67,8 @@ namespace reone {
 
 namespace game {
 
+// The scale grows in whole steps: a half for each full 1024 pixels of width
+// beyond 1022, so it stays 1 up to 2045 pixels.
 static float effectStackTextScalar(bool tsl, int screenWidth) {
     return tsl && screenWidth > 1022 ? 1.0f + ((screenWidth - 1022) / 1024) * 0.5f : 1.0f;
 }
@@ -206,6 +209,9 @@ static std::shared_ptr<graphics::Texture> castIcon(const Spell &spell, const std
 
 /** Authored-canvas gap between the minimap frame and the TSL bark bubble. */
 static constexpr int kBarkBubbleMapGap = 8;
+
+/** The combat line shown while the leader is held helpless. */
+static constexpr int kLeaderDebilitatedCombatMessage = 47915;
 
 static void tintHUDMenuButton(const std::shared_ptr<Button> &button, const glm::vec3 &baseColor) {
     if (!button) {
@@ -407,7 +413,7 @@ void HUD::onGUILoaded() {
     _controls.BTN_CHAR2->setOnClick([selectMember]() { selectMember(1); });
     _controls.BTN_CHAR3->setOnClick([selectMember]() { selectMember(2); });
 
-    _select.init();
+    _select.init(_controls.LBL_ARROW_MARGIN);
 
     _barkBubble = std::make_unique<BarkBubble>(_game, _services);
     if (_game.isTSL()) {
@@ -567,6 +573,25 @@ gui::Label *HUD::statusFlashLabel(StatusSummaryCategory category) const {
     }
 }
 
+void HUD::presentAlignmentShift(const StatusSummaryBatch &batch) {
+    static constexpr int kDarkSideVisual = 9014;
+    static constexpr int kLightSideVisual = 9015;
+    if (!_game.isTSL()) return;
+    const int dark = batch.entry(StatusSummaryCategory::DarkSideShift).amount;
+    const int light = batch.entry(StatusSummaryCategory::LightSideShift).amount;
+    if (dark == light) return;
+    _services.audio.mixer.play(_services.game.guiSounds.getAlignmentShift(light > dark), AudioType::Sound);
+    auto leader = _game.party().getLeader();
+    if (!leader || !leader->isPlayerCreated()) return;
+    auto visual = std::make_shared<VisualEffect>(light > dark ? kLightSideVisual : kDarkSideVisual, false, _services);
+    auto instance = visual->saveFacingInstance();
+    instance.effect = visual;
+    instance.creatorId = leader->id();
+    _game.bindEffectCreator(instance);
+    instance.setDuration(DurationType::Instant, 0.0f);
+    leader->applyEffect(std::move(instance));
+}
+
 void HUD::flashStatus(StatusSummaryCategory category) {
     auto shared = [](StatusSummaryCategory flashed) -> std::optional<StatusSummaryCategory> {
         switch (flashed) {
@@ -656,12 +681,16 @@ void HUD::update(float dt) {
         for (auto category : pending.activeCategories()) {
             if (pending.flashes(category, _game.isTSL())) flashStatus(category);
         }
+        presentAlignmentShift(pending);
+        const bool reported = !pending.empty();
         _game.statusSummary().discardPending();
+        if (reported) _game.finishStatusSummaryCycle();
     } else if (_statusSummary && _statusSummary->presentPending()) {
         // The summary takes all input, releases included; steering stops.
         _game.stopMovement();
         auto clip = _services.resource.audioClips.get("gui_quest");
         _audioSource = _services.audio.mixer.play(std::move(clip), AudioType::Sound);
+        presentAlignmentShift(*_game.statusSummary().displayed());
     }
 
     Party &party = _game.party();
@@ -681,6 +710,10 @@ void HUD::update(float dt) {
         _controls.LBL_LEVELUP1.get(),
         _controls.LBL_LEVELUP2.get(),
         _controls.LBL_LEVELUP3.get()};
+    std::array<Label *, 3> debilitatedLabels {
+        _controls.LBL_DEBILATATED1.get(),
+        _controls.LBL_DEBILATATED2.get(),
+        _controls.LBL_DEBILATATED3.get()};
     std::array<ProgressBar *, 3> vitalityBars {
         _controls.PB_VIT1.get(),
         _controls.PB_VIT2.get(),
@@ -705,9 +738,22 @@ void HUD::update(float dt) {
             LBL_CHAR.setVisible(true);
             LBL_CHAR.setBorderFill(member->portrait());
             LBL_BACK.setVisible(true);
-            LBL_LEVELUP.setVisible(member->isLevelUpPending());
+            // A fallen member shows no mark; otherwise a pending level-up
+            // shows ahead of being held helpless.
+            const bool down = member->isDead() || member->isTemporarilyDead();
+            const bool levelUp = !down && member->isLevelUpPending();
+            const bool debilitated = !down && !levelUp && member->isDebilitated();
+            LBL_LEVELUP.setVisible(levelUp);
             if (!_game.isTSL()) {
-                LBL_LVLUPBG->setVisible(member->isLevelUpPending());
+                LBL_LVLUPBG->setVisible(levelUp);
+            }
+            debilitatedLabels[i]->setVisible(debilitated);
+            // A helpless leader says so on the combat line. Any member able
+            // to act, the leader included, returns it to the idle line, so
+            // it stays only while the whole party is helpless or fallen.
+            if (i == 0 && debilitated) setCombatMessage(kLeaderDebilitatedCombatMessage);
+            if (!member->isDebilitated() && _combatMessageStrref == kLeaderDebilitatedCombatMessage) {
+                setCombatMessage(party.idleCombatMessage());
             }
             int maxHitPoints = member->maxHitPoints();
             vitalityBars[i]->setVisible(true);
@@ -727,6 +773,7 @@ void HUD::update(float dt) {
             if (!_game.isTSL()) {
                 LBL_LVLUPBG->setVisible(false);
             }
+            debilitatedLabels[i]->setVisible(false);
             vitalityBars[i]->setVisible(false);
             forceBars[i]->setVisible(false);
         }
@@ -904,11 +951,12 @@ void HUD::setCombatMessage(int strref) {
     const int idle = _game.party().idleCombatMessage();
     // Queue-state lines give way to an autopause.
     if ((strref == 42476 || strref == 42477 || strref == 47859) && _game.isAutoPaused()) return;
-    const bool persistent = strref == idle || strref == 47915 || strref == 42476 || strref == 42477;
+    const bool persistent = strref == idle || strref == kLeaderDebilitatedCombatMessage || strref == 42476 || strref == 42477;
     auto &label = *_controls.LBL_CMBTMODEMSG;
     label.setTextColor(combatMessageColor(_game.isTSL(), strref));
     label.setTextMessage(_game.getInterfaceText(strref));
     label.setTextOpacity(1.0f);
+    _combatMessageStrref = strref;
     _combatMessageDuration = persistent ? 0.0f : kCombatMessageDuration;
     _combatMessageRemaining = _combatMessageDuration;
 }

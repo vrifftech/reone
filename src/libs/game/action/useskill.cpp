@@ -25,7 +25,10 @@
 
 #include "commonactions.h"
 #include "reone/game/animations.h"
+#include "reone/game/combattables.h"
 #include "reone/game/di/services.h"
+#include "reone/game/effect/heal.h"
+#include "reone/game/effect/visual.h"
 #include "reone/game/game.h"
 #include "reone/game/object/area.h"
 #include "reone/game/object/module.h"
@@ -35,9 +38,7 @@
 #include "reone/game/object/trigger.h"
 #include "reone/game/party.h"
 #include "reone/game/script/runner.h"
-#include "reone/resource/2da.h"
 #include "reone/resource/di/services.h"
-#include "reone/resource/provider/2das.h"
 #include "reone/resource/strings.h"
 #include "reone/system/logutil.h"
 #include "reone/system/randomutil.h"
@@ -60,6 +61,7 @@ static constexpr int kSkillSuccessStrRef = 1392;
 static constexpr int kSkillFailureStrRef = 1393;
 static constexpr int kSkillReportStrRef = 1408;
 static constexpr int kDemolitionsNameStrRef = 324;
+static constexpr int kTreatInjuryNameStrRef = 330;
 // Client animation rows for the mine work.
 static constexpr int kGetFromGroundAnimation = 40;
 static constexpr int kGetFromTableAnimation = 41;
@@ -135,6 +137,7 @@ uint32_t UseSkillAction::serializedActionId() const {
     if (originalSavedAction()) return Action::serializedActionId();
     switch (_skill) {
     case SkillType::Security: return 38;
+    case SkillType::TreatInjury: return 56;
     case SkillType::Demolitions:
         if (setsMine()) return 29;
         switch (mineWork(_subSkill)) {
@@ -185,7 +188,7 @@ void UseSkillAction::executeDemolitions(Creature &actor, float dt) {
             } else if (mineWork(_subSkill) == MineWork::Disarm || mineWork(_subSkill) == MineWork::Recover) {
                 extra = kMineUseRangeExtra;
             }
-            if (!actor.navigateToUse(*_target, extra, dt)) return;
+            if (!actor.navigateToUse(*_target, extra, dt, true, false, false)) return;
             actor.turnToward(*_target);
         }
         // Work at it for a while.
@@ -224,8 +227,7 @@ void UseSkillAction::executeDemolitions(Creature &actor, float dt) {
     complete();
 }
 
-void UseSkillAction::reportSkill(Creature &actor, const Object *target, int actionStrRef, int roll, int rank, int dc,
-                                 bool take20, int result) const {
+void UseSkillAction::reportSkill(Creature &actor, int actionStrRef, int roll, int rank, int dc, int result) const {
     // Told only to the controlling player.
     if (_game.party().getLeader().get() != &actor) return;
     auto &strings = _services.resource.strings;
@@ -236,7 +238,7 @@ void UseSkillAction::reportSkill(Creature &actor, const Object *target, int acti
     _game.setCustomToken(3, std::to_string(roll + rank));
     _game.setCustomToken(4, std::to_string(roll));
     _game.setCustomToken(5, rank < 0 ? "-" : "+");
-    _game.setCustomToken(6, strings.getText(kDemolitionsNameStrRef));
+    _game.setCustomToken(6, strings.getText(_skill == SkillType::TreatInjury ? kTreatInjuryNameStrRef : kDemolitionsNameStrRef));
     _game.setCustomToken(7, std::to_string(std::abs(rank)));
     _game.setCustomToken(8, std::to_string(dc));
     _game.messageLog().add(
@@ -269,8 +271,7 @@ void UseSkillAction::resolveMine(Creature &actor) {
         _game.party().awardXP(level * (dc >= level + 20 ? 15 : 10), XPSource::Skill);
     };
     auto recoverItem = [&]() {
-        auto traps = _services.resource.twoDas.get("traps");
-        const std::string resRef = traps ? boost::to_lower_copy(traps->getString(trapType, "resref")) : "";
+        const std::string resRef = _services.game.combatTables.mine(trapType).itemResRef;
         if (resRef.empty()) return;
         if (auto receiver = _game.party().sharedInventoryReceiver(actorPtr)) receiver->addItem(resRef);
     };
@@ -282,7 +283,7 @@ void UseSkillAction::resolveMine(Creature &actor) {
             area->destroyObject(*trigger);
             // The award compares against an unset DC; it takes the lower rate.
             awardXP(0);
-            reportSkill(actor, trigger, kDisarmActionStrRef, roll, rank, disarmDC, take20, SkillOwnMine);
+            reportSkill(actor, kDisarmActionStrRef, roll, rank, disarmDC, SkillOwnMine);
             return;
         }
         // A disarm DC is at least 1.
@@ -310,14 +311,14 @@ void UseSkillAction::resolveMine(Creature &actor) {
                 placeable->triggerTrap(actorPtr, false);
             }
         }
-        reportSkill(actor, _target.get(), kDisarmActionStrRef, roll, rank, dc, take20, result);
+        reportSkill(actor, kDisarmActionStrRef, roll, rank, dc, result);
         return;
     }
     case MineWork::Recover: {
         if (trigger && isOwnMine(_game, actor, *trigger, false)) {
             area->destroyObject(*trigger);
             recoverItem();
-            reportSkill(actor, trigger, kRecoverActionStrRef, roll, rank, disarmDC + 10, take20, SkillOwnMine);
+            reportSkill(actor, kRecoverActionStrRef, roll, rank, disarmDC + 10, SkillOwnMine);
             return;
         }
         const int dc = std::max(1, disarmDC + 10);
@@ -342,19 +343,19 @@ void UseSkillAction::resolveMine(Creature &actor) {
                 placeable->triggerTrap(actorPtr, false);
             }
         }
-        reportSkill(actor, _target.get(), kRecoverActionStrRef, roll, rank, dc, take20, result);
+        reportSkill(actor, kRecoverActionStrRef, roll, rank, dc, result);
         return;
     }
     case MineWork::Flag: {
         if (trigger && isOwnMine(_game, actor, *trigger, true)) {
             detection.flagged = true;
-            reportSkill(actor, nullptr, 0, roll, rank, disarmDC, take20, SkillOwnMine);
+            reportSkill(actor, 0, roll, rank, disarmDC, SkillOwnMine);
             return;
         }
         const int dc = std::max(1, disarmDC - 5);
         const bool success = total >= dc;
         if (success) detection.flagged = true;
-        reportSkill(actor, nullptr, 0, roll, rank, dc, take20,
+        reportSkill(actor, 0, roll, rank, dc,
                     success ? SkillSuccess : take20 ? SkillTake20Failure : total < dc - 10 ? SkillCriticalFailure : SkillFailure);
         return;
     }
@@ -362,7 +363,7 @@ void UseSkillAction::resolveMine(Creature &actor) {
         const int dc = std::max(1, disarmDC - 7);
         const bool own = trigger && isOwnMine(_game, actor, *trigger, true);
         const bool success = own || total >= dc;
-        reportSkill(actor, nullptr, kExamineActionStrRef, roll, rank, dc, take20,
+        reportSkill(actor, kExamineActionStrRef, roll, rank, dc,
                     own ? SkillOwnMine : success ? SkillSuccess : take20 ? SkillTake20Failure : total < dc - 10 ? SkillCriticalFailure : SkillFailure);
         return;
     }
@@ -377,8 +378,8 @@ void UseSkillAction::resolveSetMine(Creature &actor) {
     const int blastBonus = trapType >= 4 && trapType - 4 < static_cast<int>(std::size(kMineBlastBonus))
                                ? kMineBlastBonus[trapType - 4]
                                : 0;
-    auto traps = _services.resource.twoDas.get("traps");
-    int setDC = traps ? traps->getInt(trapType, "setdc", 0) : 0;
+    const auto mine = _services.game.combatTables.mine(trapType);
+    int setDC = mine.setDC;
     if (_game.isTSL()) setDC = std::max(1, setDC + _game.trapDifficultyModifier());
 
     int rank = static_cast<int8_t>(actor.getUnopposedSkillRank(SkillType::Demolitions));
@@ -400,8 +401,8 @@ void UseSkillAction::resolveSetMine(Creature &actor) {
         result = SkillCriticalFailure;
     }
     const bool planted = result == SkillSuccess || result == SkillCriticalFailure;
-    const int detectDC = (traps ? traps->getInt(trapType, "detectdcmod", 0) : 0) + total;
-    const int disarmDC = (traps ? traps->getInt(trapType, "disarmdcmod", 0) : 0) + total;
+    const int detectDC = mine.modifiers.detect + total;
+    const int disarmDC = mine.modifiers.disarm + total;
 
     if (planted) {
         std::shared_ptr<Trigger> groundMine;
@@ -454,15 +455,178 @@ void UseSkillAction::resolveSetMine(Creature &actor) {
     actor.playSound(result == SkillSuccess ? resource::SoundSetEntry::DisarmMine : resource::SoundSetEntry::UnlockSuccess);
     actor.interruptActivities(true);
     actor.removeCombatInvisibilityEffects();
-    reportSkill(actor, onObject ? _target.get() : nullptr, kSetMineActionStrRef, roll, rank, setDC, take20, result);
+    reportSkill(actor, kSetMineActionStrRef, roll, rank, setDC, result);
 }
 
 // END Demolitions
+
+// Treat Injury
+
+static constexpr float kTreatInjuryWorkTime = 2.0f;
+// Client animation row of the work: the looping cast.
+static constexpr int kCastLoopAnimation = 63;
+static constexpr int kHealingVisual = 1001;
+
+enum TreatInjuryPhase {
+    TreatInjuryStart = 0,
+    TreatInjuryApproach = 1,
+    TreatInjuryReady = 2,
+    TreatInjuryWork = 3
+};
+
+// The healer runs to the patient's use point and faces it, unless already
+// within use range, then works on it for two seconds (only character models
+// show the work) and heals it. A downed healer fails; without a creature to
+// treat or an item to treat it with, the work is forgotten.
+void UseSkillAction::executeTreatInjury(Creature &actor, float dt) {
+    if (actor.isTemporarilyDead()) {
+        complete();
+        return;
+    }
+    auto *target = dyn_cast<Creature>(_target.get());
+    if (!target || !_itemUsed) {
+        actor.setTreatInjuryWorkDone(false);
+        complete();
+        return;
+    }
+    if (_phase == TreatInjuryStart) {
+        _phase = actor.isInUseRange(*target, 0.0f) ? TreatInjuryReady : TreatInjuryApproach;
+    }
+    if (_phase == TreatInjuryApproach) {
+        if (!actor.navigateToUse(*target, 0.0f, dt)) return;
+        actor.turnToward(*target);
+        _phase = TreatInjuryReady;
+    }
+    if (_phase == TreatInjuryReady) {
+        if (!actor.treatInjuryWorkDone()) {
+            actor.setTreatInjuryWorkDone(true);
+            if (actor.modelType() != Creature::ModelType::Creature) {
+                actor.playAnimation(
+                    _services.game.animations.getNameById(kCastLoopAnimation),
+                    scene::AnimationProperties::fromFlags(scene::AnimationFlags::loop));
+            }
+            _workTime = kTreatInjuryWorkTime;
+            _phase = TreatInjuryWork;
+            return;
+        }
+        resolveHeal(actor, *target);
+        return;
+    }
+    _workTime -= dt;
+    if (_workTime > 0.0f) return;
+    actor.resumeStateDrivenAnimation();
+    resolveHeal(actor, *target);
+}
+
+// Treat Injury, taking 20 out of combat, against the patient's first poison:
+// treating a poison always meets difficulty 1, and a treated poison is
+// removed. A patient with no poison and no injury is not treated and keeps the
+// healer's work for its next heal. Otherwise the healer reports the roll, uses
+// up one of the item when it holds it (a party member in the party
+// inventory), and heals the roll plus its rank.
+void UseSkillAction::resolveHeal(Creature &actor, Creature &target) {
+    const int rank = actor.getSkillRankVersus(SkillType::TreatInjury, target);
+    const bool take20 = !actor.isInCombat();
+    const int roll = take20 ? 20 : randomInt(1, 20);
+    const int total = roll + rank;
+    const auto &effects = target.effects();
+    auto poison = std::find_if(effects.begin(), effects.end(), [](const EffectInstance &effect) {
+        return effect.type() == EffectType::Poison;
+    });
+    int dc = 0;
+    if (poison != effects.end()) {
+        dc = 1;
+        if (total >= dc) target.removeEffectsById(poison->id);
+    } else if (target.currentHitPoints() >= target.maxHitPoints()) {
+        complete();
+        return;
+    }
+    reportSkill(actor, kTreatInjuryNameStrRef, roll, rank, dc,
+                total >= dc ? SkillSuccess : take20 ? SkillTake20Failure : SkillFailure);
+
+    if (const Object *owner = actor.itemRepositoryOwner()) {
+        if (auto repository = _game.getObjectById(owner->id())) {
+            auto item = _itemUsed;
+            bool last = false;
+            if (repository->removeItem(item, last) && last) _game.destroyRuntimeObjectGraph(item);
+        }
+    }
+
+    auto actorPtr = _game.getObjectById(actor.id());
+    auto heal = _game.newEffect<HealEffect>(total);
+    heal->setSaveFacingCreator(actorPtr);
+    target.applyEffect(heal, DurationType::Instant);
+    auto visual = _game.newEffect<VisualEffect>(kHealingVisual, false, _services);
+    visual->setSaveFacingCreator(actorPtr);
+    target.applyEffect(visual, DurationType::Instant);
+    actor.setTreatInjuryWorkDone(false);
+    complete();
+}
+
+void UseSkillAction::skipApproach() {
+    assert(_skill == SkillType::TreatInjury);
+    _phase = TreatInjuryReady;
+}
+
+// END Treat Injury
+
+static SavedActionParameter savedObject(const std::shared_ptr<Object> &object) {
+    return {static_cast<uint32_t>(SavedActionParameterType::Object),
+            SavedObjectReference::fromRuntimeId(object ? object->id() : script::kObjectInvalid)};
+}
+
+static SavedActionParameter savedInteger(int32_t value) {
+    return {static_cast<uint32_t>(SavedActionParameterType::Integer), value};
+}
+
+static SavedActionParameter savedFloat(float value) {
+    return {static_cast<uint32_t>(SavedActionParameterType::Float), value};
+}
+
+// A mine is known by the target alone, the kind of work being the action
+// itself; setting one keeps the kit, the target and where the mine goes; an
+// unlock keeps the target and the item used on the lock; a heal keeps the
+// patient, the item, and whether the healer may still walk up to the patient.
+std::optional<SavedActionRecord> UseSkillAction::saveFacingState() const {
+    SavedActionRecord result = originalSavedAction().value_or(SavedActionRecord {});
+    switch (_skill) {
+    case SkillType::Demolitions:
+        if (setsMine()) {
+            const glm::vec3 point = _target ? _target->position() : glm::vec3(0.0f);
+            result.parameters = {savedObject(_itemUsed), savedObject(_target),
+                                 savedFloat(point.x), savedFloat(point.y), savedFloat(point.z)};
+        } else {
+            result.parameters = {savedObject(_target)};
+        }
+        break;
+    case SkillType::Security:
+        result.parameters = {savedObject(_target), savedObject(_itemUsed), savedInteger(0)};
+        break;
+    case SkillType::TreatInjury: {
+        const bool mayApproach = _phase != TreatInjuryReady && _phase != TreatInjuryWork;
+        result.parameters = {savedObject(_target), savedObject(_itemUsed), savedInteger(0), savedInteger(mayApproach ? 1 : 0)};
+        break;
+    }
+    default:
+        return std::nullopt;
+    }
+    result.actionId = serializedActionId();
+    result.declaredParameterCount = static_cast<uint16_t>(result.parameters.size());
+    return result;
+}
 
 bool UseSkillAction::cancel(std::shared_ptr<Action> self, Object &actor) {
     if (_skill == SkillType::Demolitions && _phase == 1) {
         if (auto *creature = dyn_cast<Creature>(&actor)) creature->resumeStateDrivenAnimation();
         _phase = 0;
+    }
+    // Clearing a heal returns the healer to its ordinary animation and forgets its work.
+    if (_skill == SkillType::TreatInjury) {
+        if (auto *creature = dyn_cast<Creature>(&actor)) {
+            if (_phase == TreatInjuryWork) creature->resumeStateDrivenAnimation();
+            creature->setTreatInjuryWorkDone(false);
+        }
+        _phase = TreatInjuryStart;
     }
     return true;
 }
@@ -503,6 +667,15 @@ void UseSkillAction::execute(std::shared_ptr<Action> self, Object &actor, float 
             return;
         }
         executeDemolitions(*creature, dt);
+        return;
+    }
+    case SkillType::TreatInjury: {
+        auto *creature = dyn_cast<Creature>(&actor);
+        if (!creature) {
+            complete();
+            return;
+        }
+        executeTreatInjury(*creature, dt);
         return;
     }
     default:

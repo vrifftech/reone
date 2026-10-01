@@ -19,6 +19,7 @@
 
 #include "reone/graphics/font.h"
 #include "reone/graphics/texture.h"
+#include "reone/gui/control.h"
 #include "reone/input/event.h"
 
 #include "../contextaction.h"
@@ -41,7 +42,11 @@ public:
         Game &game,
         ServicesView &services);
 
-    void init();
+    /**
+     * \p arrowMargin is the HUD control whose edges bound where the hover
+     * reticle may show.
+     */
+    void init(std::shared_ptr<gui::Control> arrowMargin);
 
     bool handle(const input::Event &event);
     void update(float dt);
@@ -68,12 +73,14 @@ private:
     std::shared_ptr<graphics::Texture> _hilightedScroll;
     std::shared_ptr<graphics::Texture> _actionArrow;
     std::shared_ptr<graphics::Texture> _hilightedActionArrow;
+    std::shared_ptr<gui::Control> _arrowMargin;
     std::shared_ptr<Object> _hilightedObject;
     std::shared_ptr<Object> _selectedObject;
     std::vector<ActionSlot> _actionSlots;
     glm::vec3 _hilightedScreenCoords {0.0f};
     glm::vec3 _selectedScreenCoords {0.0f};
     int _reticleHeight {0};
+    int _hilightedReticleSize {0};
     int _selectedActionSlot {-1};
     ActionBand _hilightedActionBand {ActionBand::None};
     bool _hilightedHostile {false};
@@ -85,7 +92,7 @@ private:
     bool handleMouseButtonDown(const input::MouseButtonEvent &event);
     bool handleMouseWheel(const input::MouseWheelEvent &event);
 
-    void renderReticle(std::shared_ptr<graphics::Texture> texture, const glm::vec3 &screenCoords);
+    void renderReticle(graphics::Texture &texture, const glm::vec3 &screenCoords, float width, float height, float alpha);
     void renderTitleBar();
     void renderHealthBar();
     void renderActionBar();
