@@ -40,6 +40,18 @@ static bool isManualFeatListValue(int value) {
     return value == 0 || value == 1;
 }
 
+// The TSL companions with a level column of their own in the feat table, in
+// column order.
+static const std::array<const char *, 7> kCompanionColumns {
+    "handmaiden", "baodur", "hanharr", "hk47", "g0t0", "atton", "kreia"};
+
+// The Unarmed Specialist feats follow the character's levels in all its Jedi
+// classes rather than its level in the class that grants them.
+static bool isUnarmedSpecialistFeat(FeatType type) {
+    int value = static_cast<int>(type);
+    return value >= 212 && value <= 219;
+}
+
 static bool hasPrerequisite(const Feat &feat, FeatType prerequisite) {
     return feat.preReqFeat1 == prerequisite || feat.preReqFeat2 == prerequisite;
 }
@@ -250,6 +262,12 @@ void Feats::init() {
         feat->successor = successor;
         feat->pips = pips;
         feat->spellId = spellId;
+        for (auto column : kCompanionColumns) {
+            int level = feats->getInt(row, column, 0);
+            if (level != 0) {
+                feat->companionLevels.insert(std::make_pair(column, level));
+            }
+        }
         _feats.insert(std::make_pair(static_cast<FeatType>(row), std::move(feat)));
     }
 }
@@ -351,6 +369,57 @@ std::vector<FeatDisplayEntry> Feats::getLevelUpDisplayEntries(const CreatureAttr
         return static_cast<int>(left.type) < static_cast<int>(right.type);
     });
     return result;
+}
+
+void Feats::addGrantedFeats(CreatureAttributes &attributes, const std::string &tag, bool newTSLCharacter) const {
+    const auto &classLevels = attributes.classLevels();
+    assert(!classLevels.empty());
+    const CreatureClass &clazz = *classLevels.back().first;
+    const int classLevel = classLevels.back().second;
+    const int characterLevel = attributes.getAggregateLevel();
+    const int jediLevel = attributes.getJediLevel();
+    std::string companion(boost::to_lower_copy(tag));
+
+    std::vector<FeatType> types;
+    types.reserve(_feats.size());
+    for (auto &feat : _feats) {
+        types.push_back(feat.first);
+    }
+    std::sort(types.begin(), types.end());
+
+    for (auto type : types) {
+        const Feat &feat = *_feats.at(type);
+        auto companionLevel = feat.companionLevels.find(companion);
+        bool hasCompanionLevel = companionLevel != feat.companionLevels.end();
+
+        if (auto grantedLevel = clazz.getFeatGrantedLevel(type)) {
+            if (isUnarmedSpecialistFeat(type)) {
+                if (clazz.isJedi() && *grantedLevel == jediLevel) {
+                    attributes.addFeat(type);
+                }
+                continue;
+            }
+            if (*grantedLevel != classLevel) {
+                continue;
+            }
+            // Bao-Dur and Kreia are never granted the class feats marked 255
+            // in their columns.
+            bool excluded = (companion == "baodur" || companion == "kreia") &&
+                            hasCompanionLevel && companionLevel->second == 255;
+            if (!excluded) {
+                attributes.addFeat(type);
+            }
+        } else if (newTSLCharacter && clazz.isPCGrantedFeat(type)) {
+            attributes.addFeat(type);
+        } else if (companion != "kreia" && hasCompanionLevel && companionLevel->second == characterLevel) {
+            // The other companions gain their own feats at a character level.
+            attributes.addFeat(type);
+        }
+    }
+
+    if (newTSLCharacter) {
+        attributes.addFeat(FeatType::WarVeteran);
+    }
 }
 
 } // namespace game

@@ -519,6 +519,12 @@ public:
 
     glm::vec3 getSelectablePosition() const override;
     int getNeededXP() const;
+    /**
+     * The experience the creature lacks for its next level: KotOR counts from
+     * the level its experience reaches, TSL from the levels it has taken.
+     * None at the title's maximum.
+     */
+    int experienceToNextLevel() const;
 
     Gender gender() const { return _gender; }
     const std::string &firstName() const { return _firstName.str(); }
@@ -1261,6 +1267,11 @@ public:
     int currentForceWithoutTemporary() const { return _currentForce; }
     void regenerateForcePoints(int amount);
     void applyLevelUp(CreatureAttributes attributes, CreatureClass &clazz);
+    /**
+     * Gains a class at level 0, after any number already held; a class already
+     * held is unchanged. Its Pure Good or Evil powers are applied afresh.
+     */
+    void addClass(CreatureClass &clazz);
 
     /** The object the last planned path heads for, until the action queue empties or is cleared. */
     uint32_t attemptedMovementTarget() const {

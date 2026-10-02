@@ -150,6 +150,7 @@ public:
     MOCK_METHOD(bool, isLevelUpCandidate, (FeatType type, const CreatureAttributes &attributes, const CreatureClass &clazz), (const override));
     MOCK_METHOD(std::vector<FeatType>, getLevelUpCandidates, (const CreatureAttributes &attributes, const CreatureClass &clazz), (const override));
     MOCK_METHOD(std::vector<FeatDisplayEntry>, getLevelUpDisplayEntries, (const CreatureAttributes &attributes, const CreatureClass &clazz), (const override));
+    MOCK_METHOD(void, addGrantedFeats, (CreatureAttributes &attributes, const std::string &tag, bool newTSLCharacter), (const override));
 };
 
 class MockFootstepSounds : public IFootstepSounds, boost::noncopyable {
@@ -203,6 +204,7 @@ public:
     MOCK_METHOD(bool, isLevelUpCandidate, (SpellType type, const CreatureAttributes &attributes, const CreatureClass &clazz, const std::set<SpellType> &chosen), (const override));
     MOCK_METHOD(std::vector<SpellType>, getLevelUpCandidates, (const CreatureAttributes &attributes, const CreatureClass &clazz, const std::set<SpellType> &chosen), (const override));
     MOCK_METHOD(std::vector<SpellDisplayEntry>, getLevelUpDisplayEntries, (const CreatureAttributes &attributes, const CreatureClass &clazz, const std::set<SpellType> &chosen), (const override));
+    MOCK_METHOD(void, addGrantedPowers, (CreatureAttributes &attributes, bool tsl), (const override));
 };
 
 class MockSurfaces : public ISurfaces, boost::noncopyable {

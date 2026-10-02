@@ -75,6 +75,11 @@ public:
     int getAggregateLevel() const;
 
     /**
+     * @return the sum of the levels of all Jedi classes
+     */
+    int getJediLevel() const;
+
+    /**
      * @return the sum of (level * hitdie) of all classes
      */
     int getAggregateHitDie() const;

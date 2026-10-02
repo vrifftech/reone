@@ -632,8 +632,7 @@ std::optional<ProjectilePathType> projectilePathFromScript(int value) {
 
 std::optional<SpellSelection> scriptCastingSource(const Creature &caster, const Spell &spell) {
     const auto &classes = caster.attributes().classLevels();
-    // A third class never casts for a script command; the spell-like ability is tried instead.
-    for (size_t index = 0; index < classes.size() && index < 2; ++index) {
+    for (size_t index = 0; index < classes.size(); ++index) {
         const ClassType clazz = classes[index].first->type();
         if (!isForceUsingClass(clazz, caster.game().isTSL()) || !caster.hasSpellUsesLeft(spell, index)) continue;
         const auto required = spell.getClassLevelRequirement(clazz);

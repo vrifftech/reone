@@ -477,7 +477,7 @@ struct VitalityTestClass {
     Classes classes {strings, twoDas};
     std::shared_ptr<CreatureClass> clazz;
 
-    explicit VitalityTestClass(int hitDie) {
+    explicit VitalityTestClass(int hitDie, ClassType type = ClassType::Soldier) {
         TwoDA::Builder skills;
         auto skillsTable = std::shared_ptr<TwoDA>(skills.build());
         TwoDA::Builder saves;
@@ -504,7 +504,7 @@ struct VitalityTestClass {
                 "unused", "save", "attack", "", "", ""});
 
         clazz = std::make_shared<CreatureClass>(
-            ClassType::Soldier, classes, strings, twoDas);
+            type, classes, strings, twoDas);
         clazz->load(*classesTable.build(), 0);
     }
 };
@@ -4161,6 +4161,156 @@ TEST(ScriptedPlotXP, rejected_duplicate_journal_entry_does_not_award_again) {
     EXPECT_EQ(
         200,
         game.statusSummary().pending().entry(StatusSummaryCategory::PlotXP).amount);
+}
+
+TEST(AddMultiClass, k1_class_starts_at_level_zero_and_the_party_shares_the_experience_to_the_next_level) {
+    TestEngine engine;
+    engine.init();
+    StubConsole console;
+    Game game(GameID::KotOR, "", engine.options(), engine.services(), console);
+    VitalityTestClass soldier(10);
+    VitalityTestClass guardian(10, ClassType::JediGuardian);
+    EXPECT_CALL(engine.gameModule().classes(), get(ClassType::JediGuardian))
+        .WillOnce(Return(guardian.clazz));
+    auto player = game.newCreature();
+    // Neutral creatures: no Pure Good or Evil powers are applied.
+    player->setGoodEvil(50);
+    player->attributes().addClassLevels(soldier.clazz.get(), 3);
+    // Level 3 with enough experience for level 4: the next level counted is 5.
+    player->setXP(7000);
+    auto companion = game.newCreature();
+    game.party().addMember(kNpcPlayer, player);
+    game.party().setPlayer(player);
+    game.party().addAvailableMember(0, companion);
+    game.party().addMember(0, companion);
+    Routines routines(GameID::KotOR, &game, &engine.services());
+    routines.init();
+    script::ExecutionContext execution;
+
+    routines.get(389).invoke(
+        {script::Variable::ofInt(static_cast<int>(ClassType::JediGuardian)),
+         script::Variable::ofObject(player->id())},
+        execution);
+
+    const auto &classes = player->attributes().classLevels();
+    ASSERT_EQ(2u, classes.size());
+    EXPECT_EQ(ClassType::Soldier, classes[0].first->type());
+    EXPECT_EQ(3, classes[0].second);
+    EXPECT_EQ(ClassType::JediGuardian, classes[1].first->type());
+    EXPECT_EQ(0, classes[1].second);
+    EXPECT_EQ(3000, game.party().xp());
+    EXPECT_EQ(10000, player->xp());
+    EXPECT_EQ(3000, companion->xp());
+    EXPECT_TRUE(game.statusSummary().pending().empty());
+}
+
+TEST(AddMultiClass, tsl_companion_takes_the_experience_alone_and_the_player_counts_from_its_levels) {
+    TestEngine engine;
+    engine.init();
+    StubConsole console;
+    Game game(GameID::TSL, "", engine.options(), engine.services(), console);
+    VitalityTestClass scoundrel(6, ClassType::Scoundrel);
+    VitalityTestClass sentinel(8, ClassType::JediSentinel);
+    VitalityTestClass guardian(10, ClassType::JediGuardian);
+    VitalityTestClass weaponMaster(10, ClassType::JediWeaponMaster);
+    VitalityTestClass master(8, ClassType::JediMaster);
+    EXPECT_CALL(engine.gameModule().classes(), get(ClassType::JediSentinel))
+        .WillOnce(Return(sentinel.clazz));
+    EXPECT_CALL(engine.gameModule().classes(), get(ClassType::JediWeaponMaster))
+        .WillOnce(Return(weaponMaster.clazz));
+    EXPECT_CALL(engine.gameModule().classes(), get(ClassType::JediMaster))
+        .WillOnce(Return(master.clazz));
+    auto player = game.newCreature();
+    // Neutral creatures: no Pure Good or Evil powers are applied.
+    player->setGoodEvil(50);
+    player->setPlayerCreated(true);
+    player->attributes().addClassLevels(guardian.clazz.get(), 3);
+    // Past the experience level 4 needs: nothing is awarded.
+    player->setXP(7000);
+    auto companion = game.newCreature();
+    companion->setGoodEvil(50);
+    companion->attributes().addClassLevels(scoundrel.clazz.get(), 2);
+    game.party().addMember(kNpcPlayer, player);
+    game.party().setPlayer(player);
+    game.party().addAvailableMember(1, companion);
+    game.party().addMember(1, companion);
+    companion->setXP(1500);
+    companion->setJoiningXP(200);
+    Routines routines(GameID::TSL, &game, &engine.services());
+    routines.init();
+    script::ExecutionContext execution;
+
+    routines.get(389).invoke(
+        {script::Variable::ofInt(static_cast<int>(ClassType::JediSentinel)),
+         script::Variable::ofObject(companion->id())},
+        execution);
+    routines.get(389).invoke(
+        {script::Variable::ofInt(static_cast<int>(ClassType::JediWeaponMaster)),
+         script::Variable::ofObject(player->id())},
+        execution);
+    // A third class is added after the other two.
+    routines.get(389).invoke(
+        {script::Variable::ofInt(static_cast<int>(ClassType::JediMaster)),
+         script::Variable::ofObject(player->id())},
+        execution);
+
+    ASSERT_EQ(2u, companion->attributes().classLevels().size());
+    EXPECT_EQ(ClassType::JediSentinel, companion->attributes().classLevels()[1].first->type());
+    EXPECT_EQ(0, companion->attributes().classLevels()[1].second);
+    EXPECT_EQ(3000, companion->xp());
+    EXPECT_EQ(1700, companion->joiningXP());
+    const auto &playerClasses = player->attributes().classLevels();
+    ASSERT_EQ(3u, playerClasses.size());
+    EXPECT_EQ(ClassType::JediGuardian, playerClasses[0].first->type());
+    EXPECT_EQ(3, playerClasses[0].second);
+    EXPECT_EQ(ClassType::JediWeaponMaster, playerClasses[1].first->type());
+    EXPECT_EQ(0, playerClasses[1].second);
+    EXPECT_EQ(ClassType::JediMaster, playerClasses[2].first->type());
+    EXPECT_EQ(0, playerClasses[2].second);
+    EXPECT_EQ(7000, player->xp());
+    EXPECT_EQ(0, game.party().xp());
+}
+
+TEST(AddMultiClass, classes_without_levels_add_no_bonus) {
+    VitalityTestClass soldier(10);
+    VitalityTestClass scout(8, ClassType::Scout);
+    VitalityTestClass guardian(10, ClassType::JediGuardian);
+    CreatureAttributes attributes;
+
+    attributes.addClassLevels(soldier.clazz.get(), 0);
+    attributes.addClassLevels(scout.clazz.get(), 0);
+    attributes.addClassLevels(guardian.clazz.get(), 0);
+
+    EXPECT_EQ(3u, attributes.classLevels().size());
+    EXPECT_EQ(0, attributes.getAggregateLevel());
+    EXPECT_EQ(0, attributes.getAggregateAttackBonus());
+    EXPECT_EQ(0, attributes.getAggregateDefenseBonus());
+    const SavingThrows saves = attributes.getAggregateSavingThrows();
+    EXPECT_EQ(0, saves.fortitude);
+    EXPECT_EQ(0, saves.reflex);
+    EXPECT_EQ(0, saves.will);
+}
+
+TEST(AddMultiClass, a_third_class_casts_a_power_for_a_script) {
+    TestEngine engine;
+    engine.init();
+    StubConsole console;
+    Game game(GameID::KotOR, "", engine.options(), engine.services(), console);
+    VitalityTestClass soldier(10);
+    VitalityTestClass scout(8, ClassType::Scout);
+    VitalityTestClass guardian(10, ClassType::JediGuardian);
+    auto creature = game.newCreature();
+    creature->attributes().addClassLevels(soldier.clazz.get(), 1);
+    creature->attributes().addClassLevels(scout.clazz.get(), 1);
+    creature->attributes().addClassLevels(guardian.clazz.get(), 1);
+    Spell spell;
+    spell.type = static_cast<SpellType>(9);
+    spell.classLevelRequirements[ClassType::JediGuardian] = 1;
+
+    const auto selection = scriptCastingSource(*creature, spell);
+
+    ASSERT_TRUE(selection.has_value());
+    EXPECT_EQ(2, selection->classIndex);
 }
 
 TEST(XPStatusSummary, should_format_plot_xp_text_and_leave_token_zero_set) {

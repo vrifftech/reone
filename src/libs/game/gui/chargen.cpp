@@ -26,6 +26,8 @@
 #include "reone/scene/graphs.h"
 
 #include "reone/game/d20/classes.h"
+#include "reone/game/d20/feats.h"
+#include "reone/game/d20/spells.h"
 #include "reone/game/di/services.h"
 #include "reone/game/game.h"
 #include "reone/game/party.h"
@@ -262,6 +264,18 @@ void CharacterGeneration::startLevelUp() {
     character.appearance = partyLeader->appearance();
     character.gender = partyLeader->gender();
     character.attributes = partyLeader->attributes();
+    // The feats and powers the coming level grants are owned from the start
+    // of the level-up, so its feat and power choices already see them.
+    CreatureAttributes levelled(character.attributes);
+    levelled.addClassLevels(levelled.classLevels().back().first, 1);
+    _services.game.feats.addGrantedFeats(levelled, partyLeader->tag(), false);
+    _services.game.spells.addGrantedPowers(levelled, _game.isTSL());
+    for (auto feat : levelled.featOrder()) {
+        character.attributes.addFeat(feat);
+    }
+    for (auto power : levelled.spellsForClass(levelled.getEffectiveClass())) {
+        character.attributes.addSpell(power);
+    }
     setCharacter(std::move(character));
 
     int nextLevel = partyLeader->attributes().getAggregateLevel() + 1;

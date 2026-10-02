@@ -18,6 +18,8 @@
 #pragma once
 
 #include <optional>
+#include <string>
+#include <unordered_map>
 
 #include "reone/graphics/texture.h"
 
@@ -41,6 +43,10 @@ struct Feat {
     FeatType successor {FeatType::Invalid};
     uint32_t pips {1}; // 1-3, position in a feat chain
     std::optional<int> spellId; // the spell whose effects count as this feat's effects
+    // TSL companion columns by lower-case companion tag: the character level
+    // at which the companion gains the feat, or 255 for a class feat the
+    // companion is never granted. Only nonzero values are kept.
+    std::unordered_map<std::string, int> companionLevels;
 };
 
 } // namespace game

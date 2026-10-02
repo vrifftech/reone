@@ -16,6 +16,10 @@
  */
 
 #include "reone/game/d20/spells.h"
+
+#include <array>
+#include <cassert>
+
 #include <boost/algorithm/string.hpp>
 
 #include "reone/resource/2da.h"
@@ -46,6 +50,21 @@ static const std::vector<std::pair<ClassType, std::string>> kClassLevelColumns =
     {ClassType::SithMarauder, "marauder"},
     {ClassType::SithLord, "sithlord"},
     {ClassType::SithAssassin, "assassin"}};
+
+// The forms a Jedi of each base class is granted at Jedi levels 11 to 14, in
+// that order.
+static const std::unordered_map<ClassType, std::array<SpellType, 4>> kJediLevelForms = {
+    {ClassType::JediGuardian, {SpellType::FormSaberIShiiCho, SpellType::FormSaberIIMakashi, SpellType::FormSaberIIISoresu, SpellType::FormForceIChannel}},
+    {ClassType::JediConsular, {SpellType::FormSaberIShiiCho, SpellType::FormForceIChannel, SpellType::FormSaberIIMakashi, SpellType::FormSaberIIISoresu}},
+    {ClassType::JediSentinel, {SpellType::FormSaberIShiiCho, SpellType::FormSaberIIISoresu, SpellType::FormForceIChannel, SpellType::FormSaberIIMakashi}}};
+
+// The powers each prestige class is granted, by class level.
+static const std::unordered_map<ClassType, std::vector<std::pair<int, SpellType>>> kPrestigeClassPowers = {
+    {ClassType::JediMaster, {{1, SpellType::InspireFollowersI}, {5, SpellType::InspireFollowersII}, {9, SpellType::InspireFollowersIII}, {13, SpellType::InspireFollowersIV}, {17, SpellType::InspireFollowersV}}},
+    {ClassType::JediWatchman, {{1, SpellType::ForceCamouflage}, {7, SpellType::ImprovedForceCamouflage}, {13, SpellType::MasterForceCamouflage}}},
+    {ClassType::SithMarauder, {{1, SpellType::Fury}, {5, SpellType::ImprovedFury}, {9, SpellType::MasterFury}}},
+    {ClassType::SithLord, {{1, SpellType::CrushOppositionI}, {5, SpellType::CrushOppositionII}, {9, SpellType::CrushOppositionIII}, {13, SpellType::CrushOppositionIV}, {17, SpellType::CrushOppositionV}}},
+    {ClassType::SithAssassin, {{1, SpellType::ForceCamouflage}, {7, SpellType::ImprovedForceCamouflage}, {13, SpellType::MasterForceCamouflage}}}};
 
 static std::optional<SpellType> parseSpellType(const std::string &value) {
     if (value.empty()) {
@@ -408,6 +427,37 @@ std::vector<SpellDisplayEntry> Spells::getLevelUpDisplayEntries(
         return left.sourceOrder < right.sourceOrder;
     });
     return result;
+}
+
+void Spells::addGrantedPowers(CreatureAttributes &attributes, bool tsl) const {
+    if (!tsl) {
+        return;
+    }
+    const auto &classLevels = attributes.classLevels();
+    assert(!classLevels.empty());
+    // The base classes follow the character's Jedi level, the prestige
+    // classes the level of the newest class.
+    const int classLevel = classLevels.back().second;
+    const int jediLevel = attributes.getJediLevel();
+    for (auto &levelledClass : classLevels) {
+        ClassType type = levelledClass.first->type();
+        auto forms = kJediLevelForms.find(type);
+        if (forms != kJediLevelForms.end()) {
+            if (jediLevel >= 11 && jediLevel <= 14) {
+                attributes.addSpell(forms->second[jediLevel - 11]);
+            }
+            continue;
+        }
+        auto powers = kPrestigeClassPowers.find(type);
+        if (powers == kPrestigeClassPowers.end()) {
+            continue;
+        }
+        for (auto &[level, power] : powers->second) {
+            if (level == classLevel) {
+                attributes.addSpell(power);
+            }
+        }
+    }
 }
 
 } // namespace game

@@ -18,6 +18,7 @@
 #include "reone/game/gui/chargen/classselect.h"
 
 #include "reone/game/d20/classes.h"
+#include "reone/game/d20/feats.h"
 #include "reone/game/di/services.h"
 #include "reone/game/game.h"
 #include "reone/game/gui/chargen.h"
@@ -95,6 +96,8 @@ void ClassSelection::setupClassButton(int index, Gender gender, ClassType clazz)
     character.gender = gender;
     character.appearance = appearance;
     character.attributes = _services.game.classes.get(clazz)->defaultAttributes();
+    // A new character starts with the feats its class grants at its first level.
+    _services.game.feats.addGrantedFeats(character.attributes, kObjectTagPlayer, _game.isTSL());
 
     // Button control
 

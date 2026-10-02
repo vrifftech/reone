@@ -94,6 +94,15 @@ public:
         const CreatureAttributes &attributes,
         const CreatureClass &clazz,
         const std::set<SpellType> &chosen) const = 0;
+
+    /**
+     * Adds the powers a TSL character is granted with its newest level, which
+     * is in the last of its classes, to that class's powers. These come on
+     * top of the powers the player picks.
+     *
+     * @param tsl false in K1, which grants no powers this way
+     */
+    virtual void addGrantedPowers(CreatureAttributes &attributes, bool tsl) const = 0;
 };
 
 class Spells : public ISpells, boost::noncopyable {
@@ -127,6 +136,7 @@ public:
         const CreatureAttributes &attributes,
         const CreatureClass &clazz,
         const std::set<SpellType> &chosen) const override;
+    void addGrantedPowers(CreatureAttributes &attributes, bool tsl) const override;
 
 private:
     std::unordered_map<SpellType, std::shared_ptr<Spell>> _spells;

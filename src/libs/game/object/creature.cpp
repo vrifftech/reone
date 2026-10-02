@@ -3131,6 +3131,11 @@ void Creature::applyLevelUp(CreatureAttributes attributes, CreatureClass &clazz)
         static_cast<int64_t>(_currentForce) + forceIncrease));
 }
 
+void Creature::addClass(CreatureClass &clazz) {
+    _attributes.addClassLevels(&clazz, 0);
+    updatePureGoodEvilPowers();
+}
+
 void Creature::damage(
     int amount,
     const std::shared_ptr<Object> &damager) {
@@ -4529,6 +4534,13 @@ int Creature::potentialLevel() const {
 int Creature::getNeededXP() const {
     int level = _attributes.getAggregateLevel();
     return level * (level + 1) * 500;
+}
+
+int Creature::experienceToNextLevel() const {
+    const bool tsl = _game.isTSL();
+    const int level = tsl ? _attributes.getAggregateLevel() : potentialLevel();
+    if (level >= maxCharacterLevel(tsl)) return 0;
+    return level * (level + 1) * 500 - static_cast<int>(_xp);
 }
 
 void Creature::runSpawnScript() {

@@ -70,6 +70,16 @@ public:
     int getDefenseBonus(int level) const;
 
     ClassType type() const { return _type; }
+
+    /**
+     * @return whether this is a Jedi class: a Jedi base class or a TSL
+     *         prestige class
+     */
+    bool isJedi() const {
+        return (_type >= ClassType::JediGuardian && _type <= ClassType::JediSentinel) ||
+               (_type >= ClassType::JediWeaponMaster && _type <= ClassType::SithAssassin);
+    }
+
     const std::string &name() const { return _name; }
     const std::string &description() const { return _description; }
     /** The lower-case name's string; -1 when blank. */
@@ -86,6 +96,19 @@ public:
         return listValue == 0 || listValue == 1;
     }
 
+    /**
+     * @return the class level at which the class grants the feat, or none
+     *         when the feat is not on the class's granted list; a level that
+     *         is not positive is never reached
+     */
+    std::optional<int> getFeatGrantedLevel(FeatType feat) const;
+
+    /**
+     * @return whether a new TSL player character of this class starts with
+     *         the feat
+     */
+    bool isPCGrantedFeat(FeatType feat) const { return _pcGrantedFeats.count(feat) > 0; }
+
 private:
     ClassType _type;
     std::string _name;
@@ -97,6 +120,8 @@ private:
     int _skillPointBase {0};
     std::unordered_set<SkillType> _classSkills;
     std::unordered_map<FeatType, int> _featListValues;
+    std::unordered_map<FeatType, int> _featGrantedLevels;
+    std::unordered_set<FeatType> _pcGrantedFeats;
     std::unordered_map<int, SavingThrows> _savingThrowsByLevel;
     std::unordered_map<int, int> _featGainsByLevel;
     std::unordered_map<int, int> _powerGainsByLevel;

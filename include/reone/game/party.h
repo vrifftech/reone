@@ -52,7 +52,7 @@ enum class XPSource {
     Stealth,
     Console,
     Skill, // disarming and recovering mines
-    Script // a script award naming a creature outside the party
+    Script // a script award naming a creature outside the party, or a class gained
 };
 
 enum class RosterKind {

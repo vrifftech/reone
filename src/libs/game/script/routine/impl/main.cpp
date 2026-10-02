@@ -27,6 +27,7 @@
 #include "reone/game/action/jumptoobject.h"
 #include "reone/game/action/playanimation.h"
 #include "reone/game/difficultyoptions.h"
+#include "reone/game/d20/classes.h"
 #include "reone/game/d20/feats.h"
 #include "reone/game/combatfeedback.h"
 #include "reone/game/combattables.h"
@@ -4117,9 +4118,22 @@ static Variable AddMultiClass(const std::vector<Variable> &args, const RoutineCo
     auto oSource = getObject(args, 1, ctx);
 
     // Transform
+    auto *creature = dyn_cast<Creature>(oSource.get());
 
-    // Execute
-    throw RoutineNotImplementedException("AddMultiClass");
+    // Execute: the creature gains the class at level 0 and the experience it
+    // lacks for its next level, which is the new class's first. The party
+    // shares that award, except that a TSL companion takes it alone and adds
+    // it to its joining experience.
+    if (!creature) return Variable::ofNull();
+    const int needed = creature->experienceToNextLevel();
+    creature->addClass(*ctx.services.game.classes.get(static_cast<ClassType>(nClassType)));
+    if (!ctx.game.isTSL() || creature->isPlayerCreated()) {
+        ctx.game.party().awardXP(needed, XPSource::Script);
+    } else {
+        creature->giveXP(needed);
+        creature->setJoiningXP(creature->joiningXP() + needed);
+    }
+    return Variable::ofNull();
 }
 
 static Variable GetIsLinkImmune(const std::vector<Variable> &args, const RoutineContext &ctx) {

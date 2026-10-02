@@ -25,9 +25,9 @@ namespace reone {
 
 namespace resource {
 
-class Strings;
-class TwoDAs;
-class Textures;
+class IStrings;
+class ITwoDAs;
+class ITextures;
 
 } // namespace resource
 
@@ -62,14 +62,24 @@ public:
     virtual bool isLevelUpCandidate(FeatType type, const CreatureAttributes &attributes, const CreatureClass &clazz) const = 0;
     virtual std::vector<FeatType> getLevelUpCandidates(const CreatureAttributes &attributes, const CreatureClass &clazz) const = 0;
     virtual std::vector<FeatDisplayEntry> getLevelUpDisplayEntries(const CreatureAttributes &attributes, const CreatureClass &clazz) const = 0;
+
+    /**
+     * Adds the feats a character is granted with its newest level, which is
+     * in the last of its classes.
+     *
+     * @param tag the character's tag; TSL's companions have feats of their own
+     * @param newTSLCharacter true for a character being created in TSL, which
+     *        also starts with its class's player-character feats and War Veteran
+     */
+    virtual void addGrantedFeats(CreatureAttributes &attributes, const std::string &tag, bool newTSLCharacter) const = 0;
 };
 
 class Feats : public IFeats, boost::noncopyable {
 public:
     Feats(
-        resource::Textures &textures,
-        resource::Strings &strings,
-        resource::TwoDAs &twoDas) :
+        resource::ITextures &textures,
+        resource::IStrings &strings,
+        resource::ITwoDAs &twoDas) :
         _textures(textures),
         _strings(strings),
         _twoDas(twoDas) {
@@ -82,15 +92,16 @@ public:
     bool isLevelUpCandidate(FeatType type, const CreatureAttributes &attributes, const CreatureClass &clazz) const override;
     std::vector<FeatType> getLevelUpCandidates(const CreatureAttributes &attributes, const CreatureClass &clazz) const override;
     std::vector<FeatDisplayEntry> getLevelUpDisplayEntries(const CreatureAttributes &attributes, const CreatureClass &clazz) const override;
+    void addGrantedFeats(CreatureAttributes &attributes, const std::string &tag, bool newTSLCharacter) const override;
 
 private:
     std::unordered_map<FeatType, std::shared_ptr<Feat>> _feats;
 
     // Services
 
-    resource::Textures &_textures;
-    resource::Strings &_strings;
-    resource::TwoDAs &_twoDas;
+    resource::ITextures &_textures;
+    resource::IStrings &_strings;
+    resource::ITwoDAs &_twoDas;
 
     // END Services
 };

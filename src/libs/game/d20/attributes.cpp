@@ -204,9 +204,21 @@ int CreatureAttributes::getAggregateLevel() const {
     return result;
 }
 
+int CreatureAttributes::getJediLevel() const {
+    int result = 0;
+    for (auto &pair : _classLevels) {
+        if (pair.first->isJedi()) {
+            result += pair.second;
+        }
+    }
+    return result;
+}
+
+// A class without levels yet adds no attack, defense or saving throw bonus.
 int CreatureAttributes::getAggregateAttackBonus() const {
     int result = 0;
     for (auto &pair : _classLevels) {
+        if (pair.second == 0) continue;
         result += pair.first->getAttackBonus(pair.second);
     }
     return result;
@@ -215,6 +227,7 @@ int CreatureAttributes::getAggregateAttackBonus() const {
 int CreatureAttributes::getAggregateDefenseBonus() const {
     int result = 0;
     for (auto &pair : _classLevels) {
+        if (pair.second == 0) continue;
         result += pair.first->getDefenseBonus(pair.second);
     }
     return result;
@@ -226,6 +239,7 @@ SavingThrows CreatureAttributes::getAggregateSavingThrows() const {
     result.reflex = 0;
     result.will = 0;
     for (auto &pair : _classLevels) {
+        if (pair.second == 0) continue;
         auto classThrows = pair.first->getSavingThrows(pair.second);
         result.fortitude += classThrows.fortitude;
         result.reflex += classThrows.reflex;

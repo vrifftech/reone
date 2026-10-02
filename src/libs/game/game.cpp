@@ -44,6 +44,7 @@
 #include "reone/game/combat.h"
 #include "reone/game/combattables.h"
 #include "reone/game/d20/classes.h"
+#include "reone/game/d20/feats.h"
 #include "reone/game/d20/spells.h"
 #include "reone/game/debug.h"
 #include "reone/game/di/services.h"
@@ -8249,6 +8250,7 @@ void Game::consoleOpenCharacterGeneration(const ConsoleArgs &args) {
         throw std::runtime_error("Starting class is unavailable");
     }
     character.attributes = clazz->defaultAttributes();
+    _services.game.feats.addGrantedFeats(character.attributes, kObjectTagPlayer, isTSL());
     _charGen->setCharacter(std::move(character));
 
     if (boost::iequals(screen, "quick")) {

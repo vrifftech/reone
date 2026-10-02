@@ -138,9 +138,21 @@ void CreatureClass::loadFeatListValues(const std::string &featsPrefix) {
         return;
     }
 
+    std::string grantedColumn(featsPrefix + "_granted");
+    std::string pcGrantedColumn(featsPrefix + "_pc_granted");
     for (int row = 0; row < feats->getRowCount(); ++row) {
+        auto feat = static_cast<FeatType>(row);
         int listValue = feats->getInt(row, listColumn, 4);
-        _featListValues.insert(std::make_pair(static_cast<FeatType>(row), listValue));
+        _featListValues.insert(std::make_pair(feat, listValue));
+
+        // List value 3 marks a feat the class grants at the level in its
+        // granted column. A new TSL player character also starts with the
+        // selectable feats marked in the player-character column.
+        if (listValue == 3) {
+            _featGrantedLevels.insert(std::make_pair(feat, feats->getInt(row, grantedColumn, 0)));
+        } else if (listValue >= 0 && listValue <= 2 && feats->getInt(row, pcGrantedColumn, 0) == 1) {
+            _pcGrantedFeats.insert(feat);
+        }
     }
 }
 
@@ -223,6 +235,11 @@ int CreatureClass::getPowerGain(int level) const {
 int CreatureClass::getFeatListValue(FeatType feat) const {
     auto maybeFeatListValue = _featListValues.find(feat);
     return maybeFeatListValue != _featListValues.end() ? maybeFeatListValue->second : 4;
+}
+
+std::optional<int> CreatureClass::getFeatGrantedLevel(FeatType feat) const {
+    auto maybeLevel = _featGrantedLevels.find(feat);
+    return maybeLevel != _featGrantedLevels.end() ? std::optional<int>(maybeLevel->second) : std::nullopt;
 }
 
 } // namespace game
