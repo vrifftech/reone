@@ -1307,9 +1307,11 @@ TEST(Conversation, should_show_script_only_auto_routing_entry_and_advance_at_the
     conversation.start(makeRoutingDialog(), nullptr);
     conversation.update(0.0f);
 
-    ASSERT_EQ(conversation.messages.size(), 2);
+    // The entry's message, the taken reply's own empty text, then the next entry's.
+    ASSERT_EQ(conversation.messages.size(), 3);
     EXPECT_EQ(conversation.messages[0], "");
-    EXPECT_EQ(conversation.messages[1], "visible");
+    EXPECT_EQ(conversation.messages[1], "");
+    EXPECT_EQ(conversation.messages[2], "visible");
     EXPECT_EQ(conversation.presentedEntryCount, 2);
 }
 
