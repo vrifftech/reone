@@ -51,9 +51,6 @@ void Movie::init() {
         _texture->clear(1, 1, PixelFormat::RGB8);
         _texture->init();
     }
-    if (!_audioSource && _audioStream) {
-        _audioSource = _audioPlayer.play(_audioStream, AudioType::Movie);
-    }
     _inited = true;
 }
 
@@ -76,9 +73,14 @@ void Movie::deinit() {
     _inited = false;
 }
 
+// The sound starts with the picture, on the first update, however long the
+// movie waited after it was loaded.
 void Movie::update(float dt) {
     if (!_videoStream || _finished) {
         return;
+    }
+    if (!_audioSource && _audioStream) {
+        _audioSource = _audioPlayer.play(_audioStream, AudioType::Movie);
     }
     _time += dt;
     _videoStream->seek(_time);
