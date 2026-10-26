@@ -134,6 +134,18 @@ void AudioSource::render() {
     alGetSourcei(_source, AL_BUFFERS_QUEUED, &queued);
     if (queued == 0) {
         _playing = false;
+        return;
+    }
+    // A stream plays on whatever the frame rate: one that ran out of queued
+    // sound before this refill carries on from where it ran out, unless it
+    // was stopped or is paused.
+    if (!_playing || _paused) {
+        return;
+    }
+    ALint state = 0;
+    alGetSourcei(_source, AL_SOURCE_STATE, &state);
+    if (state == AL_STOPPED) {
+        alSourcePlay(_source);
     }
 }
 
@@ -143,10 +155,12 @@ void AudioSource::play() {
     }
     alSourcePlay(_source);
     _playing = true;
+    _paused = false;
 }
 
 void AudioSource::pause() {
     alSourcePause(_source);
+    _paused = true;
 }
 
 // Only a source that is still playing, and paused or created paused, resumes:
@@ -157,6 +171,7 @@ void AudioSource::resume() {
     if (!_playing) {
         return;
     }
+    _paused = false;
     ALint state = 0;
     alGetSourcei(_source, AL_SOURCE_STATE, &state);
     if (state == AL_PAUSED || state == AL_INITIAL) {
@@ -166,6 +181,7 @@ void AudioSource::resume() {
 
 void AudioSource::startPaused() {
     _playing = true;
+    _paused = true;
 }
 
 void AudioSource::stop() {

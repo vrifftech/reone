@@ -38,6 +38,11 @@ public:
     ~AudioSource() { deinit(); }
 
     void init();
+    /**
+     * Refills a stream's queue with the sound that follows. A stream that ran
+     * out of queued sound since the last refill, because the frame came late,
+     * plays on from where it ran out.
+     */
     void render();
 
     void play();
@@ -70,6 +75,8 @@ private:
 
     bool _inited {false};
     bool _playing {false};
+    /** Paused, or created paused, and not resumed since. */
+    bool _paused {false};
 
     std::vector<uint32_t> _buffers;
     bool _streaming {false};
