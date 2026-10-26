@@ -89,6 +89,14 @@ void Movie::update(float dt) {
     }
 }
 
+// A movie that has not been updated yet has no sound to stop.
+void Movie::finish() {
+    _finished = true;
+    if (_audioSource) {
+        _audioSource->stop();
+    }
+}
+
 void Movie::render() {
     if (!_videoStream) {
         return;

@@ -615,7 +615,8 @@ void Game::init() {
     _moduleNames = _services.resource.director.moduleNames();
     _saveNames = _services.resource.director.saveNames();
 
-    playVideo("legal");
+    // reone plays no start-up movie: the main menu opens, and its music
+    // starts, at once.
     openMainMenu();
 }
 
