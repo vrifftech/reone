@@ -556,6 +556,14 @@ public:
     // END KotOR I Pazaak lifecycle
 
     void startCharacterGeneration();
+
+    /**
+     * Sets the music the next loading screens play to the one the
+     * loading-screen table gives the module named \p moduleName.
+     */
+    void setLoadMusicForModule(const std::string &moduleName);
+    /** Stops the loading-screen music; the track stays set for the next loading screen. */
+    void stopLoadMusic();
     void startDialog(const std::shared_ptr<Object> &owner, const std::string &resRef,
                      GlobalFade::DialogTicket admission = {},
                      const std::shared_ptr<Object> &listener = nullptr);
@@ -679,6 +687,8 @@ public:
             std::string startWaypoint;
             uint32_t pauseDay {0};
             uint32_t pauseTime {0};
+            /** The loading-screen music the save asks for. */
+            std::string loadMusic;
         };
 
         std::unique_ptr<resource::SaveSessionState> session;
@@ -1922,6 +1932,16 @@ private:
     std::string _musicResRef;
     std::shared_ptr<audio::AudioSource> _music;
     AreaMusicPlayer _areaMusic;
+    /**
+     * The music loading screens play. It is set by a new game, a save load
+     * and the module picker, and kept from one load, and one session, to the
+     * next.
+     */
+    std::string _loadMusicResRef;
+    /** The loading-screen music that is playing, or paused under a movie. */
+    std::shared_ptr<audio::AudioSource> _loadMusic;
+    /** The coming module load follows transition movies, and plays no loading-screen music. */
+    bool _loadComesWithMovies {false};
 
     // END Audio
 
@@ -2049,6 +2069,10 @@ private:
     bool loadParty();
     void loadNextModule();
     void playMusic(const std::string &resRef);
+    /** Starts, or resumes, the loading-screen music, as a loading screen does when it is shown. */
+    void startLoadMusic();
+    /** Hands the playing loading-screen music over to the background music when it asks for the same track. */
+    std::shared_ptr<audio::AudioSource> takeLoadMusic(const std::string &resRef);
     void toggleInGameCameraType();
     void enterFreeLook();
     void exitFreeLook();

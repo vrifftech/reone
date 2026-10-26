@@ -86,7 +86,9 @@ CharacterGeneration::CharacterGeneration(Game &game, ServicesView &services) :
     GameGUI(game, services) {
     _resRef = guiResRef("maincg");
 
-    _musicResRef = game.isTSL() ? "mus_main" : "mus_theme_rep";
+    // KotOR's character generation plays its own menu music; TSL's plays its
+    // loading screen's music instead, from the loading-screen table.
+    _musicResRef = game.isTSL() ? "" : "mus_theme_rep";
 }
 
 void CharacterGeneration::onGUILoaded() {
@@ -558,6 +560,12 @@ void CharacterGeneration::finish() {
         }
 
         std::string moduleName(!_game.isTSL() ? "end_m01aa" : "001ebo");
+        // The new game's loading screen plays the module's music; TSL first
+        // stops character generation's.
+        if (_game.isTSL()) {
+            _game.stopLoadMusic();
+        }
+        _game.setLoadMusicForModule(moduleName);
         _game.loadModule(moduleName);
     }
 }

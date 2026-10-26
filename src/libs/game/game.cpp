@@ -689,6 +689,11 @@ void Game::initTables() {
 
     _trapTypes = Trap::readTypes(twoDas);
     _areaMusic.init(isTSL());
+    if (isTSL()) {
+        _areaMusic.setLoadMusicHandover([this](const std::string &resRef) {
+            return takeLoadMusic(resRef);
+        });
+    }
     _party.init();
 }
 
@@ -1940,6 +1945,8 @@ void Game::retireRuntimeSession() {
 
     _services.audio.mixer.stopAll();
     _music.reset();
+    _loadMusic.reset();
+    _loadComesWithMovies = false;
     _movie.reset();
     _musicResRef.clear();
     while (!_moduleTransitionMovies.empty()) {
@@ -2116,6 +2123,7 @@ Game::PreparedSaveLoad Game::prepareSaveLoad(const resource::SaveSlotDescriptor 
         }
         autosave.pauseDay = params->getUint("TIME_PAUSEDAY");
         autosave.pauseTime = params->getUint("TIME_PAUSETIME");
+        autosave.loadMusic = params->getString("LOADMUSIC");
         prepared.autosave = std::move(autosave);
     }
     validatePartyLoad(prepared.partyTable.get());
@@ -2135,6 +2143,12 @@ bool Game::loadGame(const resource::SaveSlotDescriptor &slot) {
         // Commit. The old runtime and the old mounts retire together, and only
         // then does the candidate become authoritative: no runtime ever
         // observes the other session's resources.
+        // A save loads with no loading-screen music, except an autosave of the
+        // world's template, which plays the one it recorded.
+        _loadMusicResRef.clear();
+        if (prepared.autosave) {
+            _loadMusicResRef = prepared.autosave->loadMusic;
+        }
         resetGame();
         _services.resource.director.commitGameLoad(std::move(prepared.session));
         return restoreSaveLoad(std::move(prepared));
@@ -2859,6 +2873,8 @@ void Game::setCursorType(CursorType type) {
 
 void Game::playVideo(const std::string &name, bool streamingMusic) {
     _moduleTransitionMovies = std::queue<std::string>();
+    // A script's movie empties the transition list when it ends.
+    _loadComesWithMovies = false;
     startVideo(name, streamingMusic);
 }
 
@@ -2875,6 +2891,61 @@ void Game::playMusic(const std::string &resRef) {
     if (!resRef.empty()) {
         _areaMusic.stopSounds();
     }
+}
+
+// A new game, TSL's character generation and the module picker set the
+// loading-screen music from the module's row of the loading-screen table.
+void Game::setLoadMusicForModule(const std::string &moduleName) {
+    if (!_loadScreen) {
+        _loadScreen = tryLoadGUI<LoadingScreen>();
+    }
+    _loadMusicResRef = _loadScreen ? _loadScreen->musicResRef(moduleName) : "";
+}
+
+// Every loading screen shown with music starts it: the menu music stops;
+// nothing starts while transition movies are listed for the load; music that
+// is there but not playing is resumed; else the set track starts, looping, in
+// the streamed music group, at that group's volume.
+void Game::startLoadMusic() {
+    playMusic("");
+    if (_loadComesWithMovies) {
+        return;
+    }
+    if (_loadMusic) {
+        if (!_loadMusic->isPlaying()) {
+            _loadMusic->resume();
+        }
+        return;
+    }
+    if (_loadMusicResRef.empty()) {
+        return;
+    }
+    _loadMusic = _services.audio.mixer.play(
+        _services.resource.audioClips.get(_loadMusicResRef),
+        AudioType::Music,
+        _areaMusic.musicGroupGain(),
+        true);
+}
+
+// KotOR's loading screen stops the loading music when it goes; both titles
+// stop it when the area's sounds start, and TSL when character generation
+// ends.
+void Game::stopLoadMusic() {
+    if (_loadMusic) {
+        _loadMusic->stop();
+        _loadMusic.reset();
+    }
+}
+
+// The playing loading music, when it is the track asked for (ignoring case),
+// becomes the background music and plays once through.
+std::shared_ptr<AudioSource> Game::takeLoadMusic(const std::string &resRef) {
+    if (!_loadMusic || !boost::iequals(resRef, _loadMusicResRef)) {
+        return nullptr;
+    }
+    auto music = std::move(_loadMusic);
+    music->setLooping(false);
+    return music;
 }
 
 void Game::renderScene() {
@@ -4472,6 +4543,7 @@ void Game::settleFadeArrival() {
         if (_musicResRef.empty()) {
             _areaMusic.start();
         }
+        stopLoadMusic();
         _globalFade.settleArrival(_fadeArrival);
     }
     _fadeArrival.reset();
@@ -4931,6 +5003,11 @@ bool Game::playNextModuleTransitionMovie() {
         _moduleTransitionMovies.pop();
 
         if (startVideo(name, false)) {
+            // A transition list holds only movies that exist, and its load
+            // plays no loading-screen music.
+            if (!_nextModule.empty()) {
+                _loadComesWithMovies = true;
+            }
             return true;
         }
     }
@@ -5605,7 +5682,15 @@ void Game::withLoadingScreen(const std::string &moduleName, const std::function<
     }
     changeScreen(Screen::Loading);
     render();
+    startLoadMusic();
     block();
+    // KotOR's loading screen takes its music with it; TSL's plays on until
+    // the area's sounds start. The transition list is cleared at the load's
+    // end.
+    if (!isTSL()) {
+        stopLoadMusic();
+    }
+    _loadComesWithMovies = false;
     // Player input returns once a load is done.
     _playerInputBlocked = false;
 }
@@ -8390,11 +8475,18 @@ void Game::startCharacterGeneration() {
     }
     // Character generation loads as the class selection does, and every new
     // character starts from a new class selection.
+    // TSL's character generation plays its loading screen's music throughout;
+    // KotOR's plays its menu music once the panel is up.
+    if (isTSL()) {
+        setLoadMusicForModule(kClassSelectionLoadScreen);
+    }
     withLoadingScreen(kClassSelectionLoadScreen, [this]() {
         _charGen->startCreation();
         _loadScreen->setProgress(100);
         render();
-        playMusic(_charGen->musicResRef());
+        if (!isTSL()) {
+            playMusic(_charGen->musicResRef());
+        }
         changeScreen(Screen::CharacterGeneration);
     });
 }

@@ -139,9 +139,19 @@ bool AreaMusicPlayer::isAmbientPlaying() {
     return _ambient && _ambient->isPlaying();
 }
 
-bool AreaMusicPlayer::playTrack(const std::string &resRef) {
+bool AreaMusicPlayer::playTrack(const std::string &resRef, bool takeLoadMusic) {
     if (resRef.empty()) {
         return false;
+    }
+    // TSL's background music takes over the load-screen music when it is the
+    // same track, and lets it play on, once through.
+    if (takeLoadMusic && _loadMusicHandover) {
+        if (auto loadMusic = _loadMusicHandover(resRef)) {
+            _music = std::move(loadMusic);
+            _fadeEnd.reset();
+            _playingResRef = resRef;
+            return true;
+        }
     }
     _music = _services.audio.mixer.play(_services.resource.audioClips.get(resRef), AudioType::Music, _musicGroupGain);
     _fadeEnd.reset();
@@ -247,7 +257,7 @@ void AreaMusicPlayer::switchMusic(bool play) {
     if (play) {
         if (!isMusicPlaying()) {
             _countdown = 0;
-            if (!playTrack(track(_area->ambientAudio().musicDay).resRef)) {
+            if (!playTrack(track(_area->ambientAudio().musicDay).resRef, true)) {
                 _countdown = kMusicRetryMilliseconds;
             }
         }

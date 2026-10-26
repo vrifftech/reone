@@ -19,6 +19,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -63,6 +64,15 @@ public:
      *            priority groups and plays the music group louder
      */
     void init(bool tsl);
+
+    /**
+     * What hands over the playing load-screen music when the background
+     * music asks for the same track; it returns none when it does not. Only
+     * TSL sets it.
+     */
+    void setLoadMusicHandover(std::function<std::shared_ptr<audio::AudioSource>(const std::string &)> handover) {
+        _loadMusicHandover = std::move(handover);
+    }
 
     /**
      * Take the area being entered. Its music and ambient loop wait for the
@@ -139,6 +149,7 @@ private:
     };
 
     ServicesView &_services;
+    std::function<std::shared_ptr<audio::AudioSource>(const std::string &)> _loadMusicHandover;
 
     // Tables
 
@@ -209,8 +220,12 @@ private:
     bool isMusicPlaying();
     /** Whether the ambient loop sounds, a fading loop until its fade ends. */
     bool isAmbientPlaying();
-    /** Plays the music track \p resRef; false when it does not play. */
-    bool playTrack(const std::string &resRef);
+    /**
+     * Plays the music track \p resRef; false when it does not play.
+     * @param takeLoadMusic whether the playing load-screen music of the same
+     *        track is taken over instead, as the background music does
+     */
+    bool playTrack(const std::string &resRef, bool takeLoadMusic = false);
     /** Fades out the music that is playing. */
     void fadeAndStop();
     /** Plays one of the track's stingers at random, once the area has been arrived in. */
