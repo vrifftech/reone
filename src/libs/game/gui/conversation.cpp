@@ -334,6 +334,8 @@ void Conversation::finish(bool runsEndScript, bool aborted) {
     _paused = false;
     _entryEnded = true;
     _pendingEntry.reset();
+    // A closed conversation keeps no replies to take.
+    _replies.clear();
     stopVoice();
     resetEntryFade();
     onFinish();
@@ -389,6 +391,7 @@ void Conversation::cleanupForModuleTransition() {
         return;
     }
     _pendingEntry.reset();
+    _replies.clear();
     stopVoice();
     resetEntryFade();
     _lipAnimation.reset();
@@ -945,13 +948,17 @@ static std::string getReplyText(const Dialog::EntryReply &reply, int index, cons
     return str(boost::format("%d. %s") % (index + 1) % text);
 }
 
-void Conversation::refreshReplies() {
-    // TSL lists up to 30 replies, KotOR up to 20.
+// TSL lists up to 30 replies, KotOR up to 20.
+size_t Conversation::listedReplyCount() const {
     static constexpr size_t kMaxListedRepliesTSL = 30;
     static constexpr size_t kMaxListedRepliesK1 = 20;
+    return std::min(_replies.size(), _game.isTSL() ? kMaxListedRepliesTSL : kMaxListedRepliesK1);
+}
+
+void Conversation::refreshReplies() {
     std::vector<std::string> lines;
     if (!_autoPickFirstReply) {
-        const size_t listed = std::min(_replies.size(), _game.isTSL() ? kMaxListedRepliesTSL : kMaxListedRepliesK1);
+        const size_t listed = listedReplyCount();
         for (size_t i = 0; i < listed; ++i) {
             lines.push_back(getReplyText(*_replies[i], static_cast<int>(i), _game));
         }
@@ -959,9 +966,12 @@ void Conversation::refreshReplies() {
     setReplyLines(std::move(lines));
 }
 
+// A reply is taken by its place among the replies listed: none while an
+// entry shows, none once the conversation has closed, and no place past the
+// last one listed.
 void Conversation::pickReply(int index) {
     // Once a reply is taken, the next entry is on its way.
-    if (_pendingEntry) {
+    if (_pendingEntry || index >= static_cast<int>(listedReplyCount())) {
         return;
     }
     auto generation = _generation;
@@ -1079,7 +1089,7 @@ bool Conversation::handleKeyDown(const input::KeyEvent &event) {
         return false;
     }
     const auto index = static_cast<size_t>(code - key1);
-    if (index < _replies.size()) {
+    if (index < listedReplyCount()) {
         _services.audio.mixer.play(_services.game.guiSounds.getOnClick(), AudioType::Sound);
         pickReply(static_cast<int>(index));
     }

@@ -289,6 +289,8 @@ private:
     /** Add the shown entry's \p text to the dialogue log under its speaker's name. */
     void logEntryLine(const std::string &text);
 
+    /** How many of the replies are listed, and so can be taken. */
+    size_t listedReplyCount() const;
     void refreshReplies();
 
     /**

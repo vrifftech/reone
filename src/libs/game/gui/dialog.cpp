@@ -1078,6 +1078,9 @@ bool DialogGUI::isDialogAnimationPlaying() const {
 void DialogGUI::setMessage(std::string message) {
     const bool shown = _game.feedbackOptions().subtitles || (!_dialog->isAnimatedCutscene() && !_currentEntry->voiceOverOnly);
     _controls.LBL_MESSAGE->setTextMessage(shown ? message : "");
+    // The replies of the entry are listed when it ends; those of the entry
+    // before are gone.
+    _controls.LB_REPLIES->clearItems();
 }
 
 void DialogGUI::setReplyLines(std::vector<std::string> lines) {
