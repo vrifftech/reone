@@ -82,6 +82,9 @@ public:
 
     void setAutoSkip(AutoSkip *skip) { _autoSkip = skip; }
 
+    /** The conversation's dialog is an animated cutscene. */
+    bool isAnimatedCutscene() const { return _dialog && _dialog->isAnimatedCutscene(); }
+
 protected:
     std::shared_ptr<Object> owner() const { return _owner.resolve(); }
     std::shared_ptr<resource::Dialog> _dialog;

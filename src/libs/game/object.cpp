@@ -2025,10 +2025,15 @@ void Object::setPlacedAtOrigin(bool placed) {
         }
         return;
     }
+    _playingCutsceneAnimation = true;
     if (!_stunt) {
         startStuntMode();
         _placedAtOrigin = true;
     }
+}
+
+bool Object::holdsCutsceneAnimation() const {
+    return _playingCutsceneAnimation && _game.isAnimatedCutsceneShowing();
 }
 
 std::shared_ptr<Effect> Object::getFirstEffect() {

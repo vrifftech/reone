@@ -2947,6 +2947,10 @@ static std::optional<std::reference_wrapper<const StatePose>> findStatePose(int 
 }
 
 void Creature::updateModelAnimation() {
+    // A world-space animation of an animated cutscene holds the creature.
+    if (holdsCutsceneAnimation()) {
+        return;
+    }
     auto model = std::static_pointer_cast<ModelSceneNode>(_sceneNode);
     if (!model) {
         return;
@@ -3155,6 +3159,10 @@ void Creature::animateFireAndForget(float dt) {
 // A layer plays at its natural speed over the loop, so its time only paces
 // the queue. A swing starting carries its attack to its hit.
 void Creature::playTopFireForgetAnimation() {
+    // A world-space animation of an animated cutscene holds the creature.
+    if (holdsCutsceneAnimation()) {
+        return;
+    }
     static constexpr int kMinFireForgetMilliseconds = 50;
     const FireForgetEntry entry = std::move(_fireForgetQueue.front());
     _fireForgetQueue.pop_front();
@@ -3191,6 +3199,10 @@ void Creature::playTopFireForgetAnimation() {
 // it ran; a loop still running under a layer carries on. A pose chosen
 // meanwhile goes through the pose path.
 void Creature::returnToStoredLoop() {
+    // A world-space animation of an animated cutscene holds the creature.
+    if (holdsCutsceneAnimation()) {
+        return;
+    }
     // Returning to the loop shows again the items a one-shot put away.
     presentEquippedItems(_storedLoop ? _storedLoop->clip : getActiveAnimationName());
     if (_animDirty) {
@@ -3312,6 +3324,10 @@ void Creature::setAnimationSource(AnimationSource source) {
 // A creature still loading has no model yet; it shows nothing, so it queues nothing.
 void Creature::addFireForgetAnimation(const std::string &clip, int lengthMilliseconds, float rate, bool layered,
                                       AnimationSource source, std::optional<SwingAttack> attack) {
+    // A world-space animation of an animated cutscene holds the creature.
+    if (holdsCutsceneAnimation()) {
+        return;
+    }
     if (!_sceneNode) {
         return;
     }
@@ -3338,6 +3354,10 @@ bool Creature::addFireForgetAnimation(const std::string &clip, bool layered, Ani
 }
 
 void Creature::abortFireForgetAnimation(bool clearLayers) {
+    // A world-space animation of an animated cutscene holds the creature.
+    if (holdsCutsceneAnimation()) {
+        return;
+    }
     auto model = std::static_pointer_cast<ModelSceneNode>(_sceneNode);
     if (clearLayers && model) {
         model->removeLayers();
@@ -4570,6 +4590,10 @@ void Creature::playAnimation(AnimationType type, AnimationProperties properties,
 }
 
 void Creature::playAnimation(const std::string &name, AnimationProperties properties, AnimationSource source) {
+    // A world-space animation of an animated cutscene holds the creature.
+    if (holdsCutsceneAnimation()) {
+        return;
+    }
     bool fireForget = !(properties.flags & AnimationFlags::loop);
     // A clip the model lacks shows nothing and leaves the current one running.
     auto model = std::static_pointer_cast<ModelSceneNode>(_sceneNode);
@@ -4610,6 +4634,10 @@ bool Creature::doPlayAnimation(bool fireForget, const std::function<void()> &cal
 }
 
 bool Creature::playAnimation(const std::shared_ptr<Animation> &anim, AnimationProperties properties) {
+    // A world-space animation of an animated cutscene holds the creature.
+    if (holdsCutsceneAnimation()) {
+        return false;
+    }
     bool fireForget = !(properties.flags & AnimationFlags::loop);
 
     return doPlayAnimation(fireForget, [&]() {
@@ -4630,6 +4658,10 @@ bool Creature::playAnimation(const std::shared_ptr<Animation> &anim, AnimationPr
 // once; when it ends the creature returns to the pause.
 bool Creature::playExternalAnimation(const std::shared_ptr<Animation> &anim, AnimationProperties properties,
                                      AnimationSource source) {
+    // A world-space animation of an animated cutscene holds the creature.
+    if (holdsCutsceneAnimation()) {
+        return false;
+    }
     const bool fireForget = !(properties.flags & AnimationFlags::loop);
     if (fireForget) {
         showDialogPause();
@@ -4671,6 +4703,10 @@ void Creature::playOverlayAnimation(AnimationType type) {
 }
 
 void Creature::playOverlayAnimation(const std::string &clip) {
+    // A world-space animation of an animated cutscene holds the creature.
+    if (holdsCutsceneAnimation()) {
+        return;
+    }
     auto model = std::static_pointer_cast<ModelSceneNode>(_sceneNode);
     if (!model) {
         return;
@@ -4857,6 +4893,10 @@ bool Creature::isPlayingOneShotAnimation() const {
 }
 
 void Creature::resumeStateDrivenAnimation() {
+    // A world-space animation of an animated cutscene holds the creature.
+    if (holdsCutsceneAnimation()) {
+        return;
+    }
     _oneShot.reset();
     _animFireForget = false;
     _animDirty = true;
@@ -4939,6 +4979,10 @@ void Creature::releaseCastAnimation() {
 // Hands with no flinch row take the pose again each time, unless it still
 // shows. The flinch replaces what the creature was last given.
 void Creature::playDamageFlinch() {
+    // A world-space animation of an animated cutscene holds the creature.
+    if (holdsCutsceneAnimation()) {
+        return;
+    }
     const std::string name = getDamageFlinchAnimation();
     if (name.empty()) {
         if (!showsDamageFlinchPose()) {
@@ -4960,6 +5004,10 @@ void Creature::playDamageFlinch() {
 // The time left of a cut queued one-shot stays too, without counting down, and
 // a new loop then waits for the pose to be ended otherwise.
 void Creature::holdDamageFlinchPose() {
+    // A world-space animation of an animated cutscene holds the creature.
+    if (holdsCutsceneAnimation()) {
+        return;
+    }
     static const std::string kPoseClip("pause1");
     auto model = std::static_pointer_cast<ModelSceneNode>(_sceneNode);
     if (!model || !model->model().getAnimation(kPoseClip)) {

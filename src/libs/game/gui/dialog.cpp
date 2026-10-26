@@ -703,6 +703,10 @@ void DialogGUI::updateParticipantAnimations(const Dialog::EntryReply &node) {
         if (!cut && !_services.game.animations.isDialogAnimation(anim.animation)) {
             continue;
         }
+        // A new animation from the list releases a world-space one.
+        if (object) {
+            object->releaseCutsceneAnimation();
+        }
         if (auto placeable = std::dynamic_pointer_cast<Placeable>(object)) {
             applyPlaceableAnimation(*placeable, anim.animation, cut);
             continue;
@@ -743,6 +747,7 @@ std::vector<std::shared_ptr<Object>> DialogGUI::participantObjects(const std::ma
 void DialogGUI::releaseParticipants(const std::vector<std::shared_ptr<Object>> &participants) {
     for (const auto &object : participants) {
         if (auto placeable = std::dynamic_pointer_cast<Placeable>(object)) {
+            placeable->releaseCutsceneAnimation();
             placeable->showStateAnimation();
             continue;
         }
@@ -750,6 +755,7 @@ void DialogGUI::releaseParticipants(const std::vector<std::shared_ptr<Object>> &
         if (!creature || !canPlayDialogAnimations(*creature)) {
             continue;
         }
+        creature->releaseCutsceneAnimation();
         creature->setHeadLookSuspended(false);
         creature->showDialogPause();
     }
@@ -1019,9 +1025,11 @@ void DialogGUI::releaseStuntParticipants() {
         _participantByTag.clear();
         return;
     }
+    // The animated cutscene is over, and holds no one.
     for (auto &participant : _participantByTag) {
         auto creature = participant.second.creature.resolve();
         if (!creature) continue;
+        creature->releaseCutsceneAnimation();
         creature->resumeStateDrivenAnimation();
         creature->setIsInConversation(false);
     }

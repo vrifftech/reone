@@ -381,6 +381,15 @@ void PresentationGUI::updateK2FilterButton(const std::shared_ptr<Control> &butto
     button->setTextColor(selected ? glm::vec3 {1.0f} : _baseColor);
 }
 
+void PresentationGUI::turnK1PartyArrowRight() {
+    if (isTSL()) {
+        return;
+    }
+    auto arrow = _gui->findControl("BTN_CHARRIGHT");
+    arrow->setBorderFillTransform(Control::Border::FillTransform::Rotate180);
+    arrow->setHilightFillTransform(Control::Border::FillTransform::Rotate180);
+}
+
 std::string PresentationGUI::guiResRef(const std::string &base) const {
     return isTSL() ? base + "_p" : base;
 }

@@ -453,6 +453,10 @@ void SaveLoad::loadGame(uint32_t number) {
     auto save = findSave(number);
     if (!save) return;
     try {
+        // A load from the main menu first fades the menu music out.
+        if (_mode == SaveLoadMode::LoadFromMainMenu) {
+            _game.fadeOutMenuMusic();
+        }
         // Hand over the slot discovered by indexing. Reducing it to a name here
         // would make the loader resolve the directory a second time, and the
         // entity it found need not be the one the player selected.

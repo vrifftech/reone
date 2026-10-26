@@ -564,6 +564,12 @@ public:
     void setLoadMusicForModule(const std::string &moduleName);
     /** Stops the loading-screen music; the track stays set for the next loading screen. */
     void stopLoadMusic();
+    /**
+     * Fades the menu music out for a fixed wait and then stops it, holding
+     * everything else meanwhile, as starting a new game or loading a save
+     * from the main menu does.
+     */
+    void fadeOutMenuMusic();
     void startDialog(const std::shared_ptr<Object> &owner, const std::string &resRef,
                      GlobalFade::DialogTicket admission = {},
                      const std::shared_ptr<Object> &listener = nullptr);
@@ -616,6 +622,11 @@ public:
     /** True while a conversation owns the screen, i.e. a dialogue is running. */
     bool isConversationActive() const {
         return _screen == Screen::Conversation;
+    }
+
+    /** A conversation owns the screen, and its dialog is an animated cutscene. */
+    bool isAnimatedCutsceneShowing() const {
+        return isConversationActive() && _conversation && _conversation->isAnimatedCutscene();
     }
 
     /** The object is the running dialogue's current speaker or listener. */

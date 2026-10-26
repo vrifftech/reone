@@ -131,6 +131,7 @@ void CharacterMenu::onGUILoaded() {
         _controls.BTN_CHANGE2 = _inGameMenu.getBtnChange3();
     }
 
+    turnK1PartyArrowRight();
     _controls.BTN_AUTO->setDisabled(true);
     // The level-up buttons' texts pulse until the pointer first leaves them.
     _controls.BTN_AUTO->setTextPulsing(true);

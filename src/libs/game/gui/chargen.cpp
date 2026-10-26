@@ -559,6 +559,9 @@ void CharacterGeneration::finish() {
             _game.setGlobalNumber(kPlayerLevelGlobal, player->attributes().getAggregateLevel());
         }
 
+        // Starting the game first fades the menu music out.
+        _game.fadeOutMenuMusic();
+
         std::string moduleName(!_game.isTSL() ? "end_m01aa" : "001ebo");
         // The new game's loading screen plays the module's music; TSL first
         // stops character generation's.

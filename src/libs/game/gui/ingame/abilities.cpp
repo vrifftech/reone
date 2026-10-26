@@ -50,6 +50,7 @@ void AbilitiesMenu::onGUILoaded() {
     bindControls();
     tintK2InGameFooter();
     tintK2InGameHeader();
+    turnK1PartyArrowRight();
 
     _controls.BTN_SKILLS->setDisabled(true);
     _controls.BTN_POWERS->setDisabled(true);

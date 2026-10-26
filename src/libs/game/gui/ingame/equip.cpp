@@ -120,6 +120,7 @@ void Equipment::onGUILoaded() {
         _btnInv[slotName.first] = findControl<Button>("BTN_INV_" + slotName.second);
     }
 
+    turnK1PartyArrowRight();
     // The portraits beside the shown character give control to those members.
     if (_controls.BTN_CHANGE1) {
         _controls.BTN_CHANGE1->setOnClick([this]() { changeCharacter(1); });

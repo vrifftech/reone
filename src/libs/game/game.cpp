@@ -26,6 +26,9 @@
 #include <numeric>
 #include <optional>
 
+#include <chrono>
+#include <thread>
+
 #include <boost/algorithm/string/case_conv.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 #include <imgui.h>
@@ -2935,6 +2938,26 @@ void Game::stopLoadMusic() {
         _loadMusic->stop();
         _loadMusic.reset();
     }
+}
+
+// The menu music fades out over 2500 ms; only the sound runs until 750 ms have
+// passed, and then the menu music stops at once.
+static constexpr uint32_t kMenuMusicFadeMilliseconds = 2500;
+static constexpr uint32_t kMenuMusicWaitMilliseconds = 750;
+
+// The wait is real time.
+void Game::fadeOutMenuMusic() {
+    using namespace std::chrono;
+    const auto start = steady_clock::now();
+    for (auto elapsed = milliseconds(0); elapsed < milliseconds(kMenuMusicWaitMilliseconds);
+         elapsed = duration_cast<milliseconds>(steady_clock::now() - start)) {
+        if (_music) {
+            _music->setGainScale(1.0f - static_cast<float>(elapsed.count()) / kMenuMusicFadeMilliseconds);
+        }
+        _services.audio.mixer.render();
+        std::this_thread::sleep_for(milliseconds(1));
+    }
+    playMusic("");
 }
 
 // The playing loading music, when it is the track asked for (ignoring case),
