@@ -4915,11 +4915,12 @@ bool Game::startVideo(const std::string &name, bool streamingMusic) {
     if (!_movie) {
         return false;
     }
-    // A movie ends the area's music and ambient loop for good. Every other
-    // sound waits for it, including sounds started before it is first shown;
-    // a movie that lets music play leaves area music set to play through
-    // movies sounding while it fades.
-    _areaMusic.stopSounds();
+    // A movie ends the area's music and ambient loop for good; one that
+    // comes before arrival, as an enter script's, leaves the music to start
+    // on arrival but no ambient loop. Every other sound waits for it, including
+    // sounds started before it is first shown; a movie that lets music play
+    // leaves area music set to play through movies sounding while it fades.
+    _areaMusic.stopSoundsForMovie();
     _services.audio.mixer.setSoundsHeldForMovie(true, streamingMusic ? _areaMusic.musicPlayingThroughMovies() : nullptr);
     return true;
 }

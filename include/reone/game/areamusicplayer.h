@@ -73,6 +73,12 @@ public:
     void start();
     /** Fade out the music, end the ambient loop and forget the pending restart and battle state. */
     void stopSounds();
+    /**
+     * A movie starts. As stopSounds once the area's sounds have started;
+     * before then the music is left to start on arrival, but the battle
+     * music, the pending restart and the ambient loop are switched off.
+     */
+    void stopSoundsForMovie();
     /** Stop for the area being left; nothing plays until the next area is loaded and started. */
     void unload();
     /** Advance the fades, repeat ended tracks and restart an ended ambient loop. */

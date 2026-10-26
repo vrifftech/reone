@@ -205,6 +205,25 @@ void AreaMusicPlayer::stopSounds() {
     _ambientFailed = false;
 }
 
+// A movie turns the music off only once the area's sounds have started: before
+// that, the music starts on arrival as the area asks. The battle music, the
+// pending restart and the ambient loop are switched off either way, so an area
+// whose enter script plays a movie before arrival has no ambient loop.
+void AreaMusicPlayer::stopSoundsForMovie() {
+    if (_started) {
+        stopSounds();
+        return;
+    }
+    _battleOn = false;
+    _countdown = 0;
+    if (_ambient) {
+        _ambient->stop();
+    }
+    _ambientFadeEnd.reset();
+    _ambientOn = false;
+    _ambientFailed = false;
+}
+
 // Nothing is on once the area is left, so nothing restarts until the next one
 // is loaded; a fading track still fades out.
 void AreaMusicPlayer::unload() {
