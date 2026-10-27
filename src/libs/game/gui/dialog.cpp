@@ -1065,20 +1065,25 @@ void DialogGUI::onReplyTaken(const Dialog::EntryReply &reply) {
     }
 }
 
+// Only the creatures of the list count. KotOR waits while any of them plays a
+// dialog animation. TSL waits until one of them has stopped, so a list that
+// names no creature keeps it waiting.
 bool DialogGUI::isDialogAnimationPlaying() const {
+    const bool tsl = _game.isTSL();
     for (const auto &participant : _waitedParticipants) {
-        auto object = participantObject(participant);
-        int animationId = -1;
-        if (auto creature = std::dynamic_pointer_cast<Creature>(object)) {
-            animationId = creature->currentAnimationId();
-        } else if (auto placeable = std::dynamic_pointer_cast<Placeable>(object)) {
-            animationId = placeable->currentAnimationId();
+        auto creature = std::dynamic_pointer_cast<Creature>(participantObject(participant));
+        if (!creature) {
+            continue;
         }
-        if (_services.game.animations.isDialogAnimation(animationId)) {
+        const bool animating = _services.game.animations.isDialogAnimation(creature->currentAnimationId());
+        if (tsl && !animating) {
+            return false;
+        }
+        if (!tsl && animating) {
             return true;
         }
     }
-    return false;
+    return tsl;
 }
 
 // With subtitles off, the text shows only when no voice-over speaks the entry

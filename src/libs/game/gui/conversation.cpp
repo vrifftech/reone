@@ -861,7 +861,7 @@ bool Conversation::isCameraAnimationPlaying() const {
         return false;
     }
     auto camera = _game.module()->area()->getCamera<AnimatedCamera>(CameraType::Animated);
-    return !camera->isAnimationFinished();
+    return camera->isRequestedClipPlaying();
 }
 
 void Conversation::stopVoice() {
