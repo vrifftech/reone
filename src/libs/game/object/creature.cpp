@@ -6803,6 +6803,17 @@ bool Creature::updateClientCombatMode(std::optional<std::reference_wrapper<const
 }
 
 void Creature::cancelCombat(int runEndRound) {
+    // TEMPORARY DIAGNOSTICS
+    {
+        std::string queue;
+        for (const auto &node : actions().nodes) {
+            queue += " [id=" + std::to_string(node->actionId) + " type=" +
+                     std::to_string(node->action ? static_cast<int>(node->action->type()) : -1) + "]";
+        }
+        debug("DIAG cancelCombat on " + tag() + " commandable=" + std::to_string(isCommandable()) +
+                  " inConversation=" + std::to_string(isInConversation()) + " queue:" + queue,
+              LogChannel::Conversation);
+    }
     // An attack its round has taken up ends with the round below.
     clearAllActions();
     setCombatState(false);

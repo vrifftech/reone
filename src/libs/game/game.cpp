@@ -1169,6 +1169,17 @@ void Game::update(float frameTime) {
     syncClientCombatMode();
     commitTutorialWindow();
     auto gui = getScreenGUI();
+    {
+        // TEMPORARY DIAGNOSTICS: which screen updates while a conversation is up.
+        static float logClock = 0.0f;
+        logClock += dt;
+        if (_conversation && isConversationActive() && logClock >= 1.0f) {
+            logClock = 0.0f;
+            debug("DIAG game: screen=" + std::to_string(static_cast<int>(_screen)) + " screenGuiIsConversation=" +
+                      std::to_string(gui == _conversation) + " paused=" + std::to_string(_paused),
+                  LogChannel::Conversation);
+        }
+    }
     if (gui) {
         gui->update(dt);
     }

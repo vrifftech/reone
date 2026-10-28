@@ -22,6 +22,8 @@
 #include <cmath>
 #include <limits>
 
+#include <boost/format.hpp>
+
 #include "reone/audio/di/services.h"
 #include "reone/audio/mixer.h"
 #include "reone/game/di/services.h"
@@ -1193,6 +1195,7 @@ void Conversation::logEntryLine(const std::string &text) {
 }
 
 void Conversation::endCurrentEntry() {
+    debug(str(boost::format("DIAG endCurrentEntry: entryEnded=%d paused=%d") % _entryEnded % _paused), LogChannel::Conversation);
     if (!_currentEntry || _entryEnded || _paused) {
         return;
     }
@@ -1240,6 +1243,18 @@ void Conversation::update(float dt) {
         return;
     }
     GameGUI::update(dt);
+    {
+        // TEMPORARY DIAGNOSTICS: the conversation's state once a second.
+        static float logClock = 0.0f;
+        logClock += dt;
+        if (logClock >= 1.0f) {
+            logClock = 0.0f;
+            debug(str(boost::format("DIAG update: entryEnded=%d paused=%d pending=%d skipped=%d timerLeft=%.2f waitFlags=%d waiting=%d voice=%d voicePlaying=%d autoPick=%d replies=%d") %
+                      _entryEnded % _paused % (_pendingEntry ? *_pendingEntry : -1) % _entrySkipped % _endEntryTimer.remaining() % _waitFlags %
+                      isWaiting() % static_cast<bool>(_currentVoice) % (_currentVoice && _currentVoice->isPlaying()) % _autoPickFirstReply % _replies.size()),
+                  LogChannel::Conversation);
+        }
+    }
     if (!_entryEnded) {
         _endEntryTimer.update(dt);
         // A pause holds the entry, and a skip asked for meanwhile, until the
