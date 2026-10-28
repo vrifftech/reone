@@ -540,6 +540,12 @@ public:
         const resource::Gff &gff,
         const SerializedIdentityContext &identityContext,
         SaveRecordOrigin origin = {});
+    /**
+     * Keep the record an object placed from a blueprint was made from: the
+     * blueprint's fields, with those the placement gives in their place. A
+     * save writes the object over it.
+     */
+    void captureAuthoredRecord(const resource::Gff &blueprint, const resource::Gff &placement);
     const std::optional<SaveRecordProvenance> &saveRecordProvenance() const {
         return _saveRecordProvenance;
     }

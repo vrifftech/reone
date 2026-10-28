@@ -623,6 +623,14 @@ void Object::captureSaveRecord(
         SaveGffShadow::capture(gff), std::move(origin), std::move(identity)};
 }
 
+void Object::captureAuthoredRecord(const resource::Gff &blueprint, const resource::Gff &placement) {
+    auto record = blueprint.deepCopy();
+    for (const auto &field : placement.fields()) {
+        replaceSaveField(*record, field.deepCopy());
+    }
+    _saveRecordProvenance = SaveRecordProvenance {SaveGffShadow::capture(*record), SaveRecordOrigin {}, std::nullopt};
+}
+
 void Object::assignSerializedObjectIdentity(
     const SerializedObjectIdentity &identity) {
     if (_saveRecordProvenance) {

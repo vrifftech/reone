@@ -259,6 +259,11 @@ public:
      * that one is due.
      */
     bool consumeTimingDiscontinuity();
+    /**
+     * The world waits while the window is out of focus: none of that time
+     * passes in it, and its clock takes up again from the next update.
+     */
+    void holdWorldClock() { _worldClockSample.reset(); }
 
     /**
      * Play a movie, ending any module transition movies.

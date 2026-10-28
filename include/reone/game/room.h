@@ -52,7 +52,8 @@ public:
     /**
      * Whether the room's box holds a point seen from above, edges included.
      * The box spans the room's meshes, but for animated meshes and background
-     * geometry; a room without such a mesh holds no point.
+     * geometry; a room without such a mesh, or whose model has no walkmesh,
+     * holds no point.
      */
     bool boxHolds(const glm::vec2 &point) const;
     /** The room's box (see boxHolds). */

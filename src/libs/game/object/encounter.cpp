@@ -51,6 +51,7 @@ void Encounter::deserialize(
         gff.readResRef(templateRes, "TemplateResRef")) {
         if (auto ute = _services.resource.gffs.get(templateRes, ResType::Ute)) {
             deserializeAll(*ute, SerializedIdentityContext::templateResource(templateRes));
+            captureAuthoredRecord(*ute, gff);
         }
     }
     deserializeAll(gff, identityContext);

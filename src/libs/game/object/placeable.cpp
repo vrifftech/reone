@@ -91,6 +91,7 @@ void Placeable::deserialize(
         gff.readResRef(templateRes, "TemplateResRef")) {
         if (auto utp = _services.resource.gffs.get(templateRes, ResType::Utp)) {
             deserializeAll(*utp, SerializedIdentityContext::templateResource(templateRes));
+            captureAuthoredRecord(*utp, gff);
         }
     }
     deserializeAll(gff, identityContext);
