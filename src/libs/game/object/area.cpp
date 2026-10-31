@@ -2720,6 +2720,10 @@ bool Area::stepCreatureTo(const std::shared_ptr<Creature> &creature, const glm::
         return false;
     }
     const auto face = sceneGraph.findRoomFace(*walkmesh, point, scene::RoomFaceProbe::Locating);
+    // A creature never steps onto ground it cannot walk on.
+    if (!_services.game.surfaces.isWalkable(face ? static_cast<int>(face->material) : 0)) {
+        return false;
+    }
 
     const glm::vec3 origin {creature->position()};
     const glm::vec3 dest {point.x, point.y, face ? face->height : kNoRoomFaceHeight};
@@ -2928,18 +2932,17 @@ void Area::updateRoomVisibility() {
         }
     }
     _cullingRooms = _visibilityGraph && _shownRoom;
-    // A listed room wholly out of view is not shown, unless it has background
-    // geometry.
+    // In TSL a listed room must be in view or have background geometry.
     const Camera *camera = _game.getActiveCamera();
-    auto inView = [camera](const Room &room) {
-        return room.hasBackgroundGeometry() || !camera || camera->cameraSceneNode()->camera()->isInFrustum(room.box());
+    auto shownWhenListed = [this, camera](const Room &room) {
+        return !_game.isTSL() || room.hasBackgroundGeometry() || !camera || camera->cameraSceneNode()->camera()->isInFrustum(room.box());
     };
     for (auto &room : _rooms) {
         bool visible = !_cullingRooms || room.second.get() == _shownRoom;
         if (!visible) {
             auto seen = _visibility.equal_range(_shownRoom->name());
             visible = std::any_of(seen.first, seen.second, [&room](const auto &pair) { return pair.second == room.first; }) &&
-                      inView(*room.second);
+                      shownWhenListed(*room.second);
         }
         room.second->setVisible(visible);
     }

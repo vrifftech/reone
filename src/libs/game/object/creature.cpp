@@ -619,8 +619,8 @@ static Ability getPropertyAbility(uint16_t subtype) {
 static std::string g_talkDummyNode("talkdummy");
 
 static const std::string g_headHookNode("headhook");
-// The talking head plays as a looping layer over the body's pose, on the head too.
-static constexpr int kHeadTalkFlags = AnimationFlags::loop | AnimationFlags::layer | AnimationFlags::propagate;
+// The talking head plays once as a layer over the body's pose, on the head too.
+static constexpr int kHeadTalkFlags = AnimationFlags::layer | AnimationFlags::propagate;
 static const std::string g_maskHookNode("gogglehook");
 static const std::string g_rightHandNode("rhand");
 static const std::string g_leftHandNode("lhand");
@@ -3082,10 +3082,6 @@ void Creature::updateModelAnimation() {
         auto properties = AnimationProperties::fromFlags(animFlags);
         properties.speed = movementClipSpeed;
         model->playAnimation(*anim, nullptr, properties);
-    }
-    // A talking head stays on top of the new pose, and comes back on a new model.
-    if (_talking) {
-        model->playAnimation(getHeadTalkAnimation(), _lipAnimation, AnimationProperties::fromFlags(kHeadTalkFlags));
     }
     if (newLoop) {
         presentEquippedItems(anim->name());
@@ -5820,8 +5816,8 @@ bool Creature::hasAssassinateWeaponPresentation() const {
            weaponClass <= static_cast<int>(CreatureWieldType::BlasterRifle);
 }
 
-// The head talks as a layer over whatever the body shows, lip-synced to the
-// line when it has one. A new line starts the talk over.
+// The head talks the line's lip sync once, as a layer over whatever the body
+// shows; a line without lip sync moves no lips. A new line starts over.
 void Creature::startTalking(const std::shared_ptr<LipAnimation> &animation) {
     if (_talking && _lipAnimation == animation) {
         return;
@@ -5829,7 +5825,8 @@ void Creature::startTalking(const std::shared_ptr<LipAnimation> &animation) {
     removeHeadTalk(false);
     _lipAnimation = animation;
     _talking = true;
-    if (auto model = std::static_pointer_cast<ModelSceneNode>(_sceneNode)) {
+    auto model = std::static_pointer_cast<ModelSceneNode>(_sceneNode);
+    if (model && _lipAnimation) {
         model->playAnimation(getHeadTalkAnimation(), _lipAnimation, AnimationProperties::fromFlags(kHeadTalkFlags));
     }
 }

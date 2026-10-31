@@ -593,8 +593,8 @@ public:
     bool isHeardByLeader() const;
 
     /**
-     * The head talks, lip-synced to \p animation when there is one, over
-     * whatever pose the body shows. A new line starts the talk over.
+     * The head talks \p animation once over whatever pose the body shows;
+     * without one it moves no lips. A new line starts the talk over.
      */
     void startTalking(const std::shared_ptr<graphics::LipAnimation> &animation);
     /** The talking head blends out. */
