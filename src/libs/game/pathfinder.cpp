@@ -66,6 +66,10 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <iterator>
+#include <unordered_map>
+
+#include <boost/functional/hash.hpp>
 
 #include "reone/game/debug.h"
 #include "reone/game/shaperules.h"
@@ -202,27 +206,112 @@ static void drawDebugUniwalk(const Uniwalk &uni) {
     drawdebug::popId();
 }
 
-/// Mark edges that are shared between two faces.
-static void markAdjecent(Uniwalk &uni, uint32_t faceA, uint32_t faceB) {
-    Uniface &a = uni.faces[faceA];
-    Uniface &b = uni.faces[faceB];
+// Vertices closer than this are taken as one.
+static constexpr float kVertexMergeDistance = 0.1f;
 
-    for (uint32_t i = 0; i < 3; ++i) {
-        for (uint32_t j = 0; j < 3; ++j) {
+// A cell of a grid across space, and its hash.
+struct GridCell {
+    int x, y, z;
 
-            uint32_t i0 = a.vertices[kTriangleEdges[i][0]];
-            uint32_t i1 = a.vertices[kTriangleEdges[i][1]];
+    bool operator==(const GridCell &other) const {
+        return x == other.x && y == other.y && z == other.z;
+    }
+};
 
-            uint32_t j0 = b.vertices[kTriangleEdges[j][0]];
-            uint32_t j1 = b.vertices[kTriangleEdges[j][1]];
+struct GridCellHash {
+    size_t operator()(const GridCell &cell) const {
+        size_t hash = 0;
+        boost::hash_combine(hash, cell.x);
+        boost::hash_combine(hash, cell.y);
+        boost::hash_combine(hash, cell.z);
+        return hash;
+    }
+};
 
-            if (i0 != j1 || i1 != j0) {
-                continue;
+static GridCell gridCellOf(const glm::vec3 &v, float cellSize) {
+    return {static_cast<int>(std::floor(v.x / cellSize)), static_cast<int>(std::floor(v.y / cellSize)),
+            static_cast<int>(std::floor(v.z / cellSize))};
+}
+
+// Which vertex each vertex is merged into; UINT32_MAX for one that is kept.
+// Each vertex not yet merged takes every later vertex closer than
+// kVertexMergeDistance, even one an earlier vertex took. Vertices are filed
+// by the cells of a grid twice that wide, so only the 27 cells round a vertex
+// hold any it takes.
+static std::vector<uint32_t> mergeVertices(const std::vector<glm::vec3> &vertices) {
+    const float cellSize = 2.0f * kVertexMergeDistance;
+    // The vertices in each cell, in order.
+    std::unordered_map<GridCell, std::vector<uint32_t>, GridCellHash> cells;
+    for (uint32_t i = 0; i < vertices.size(); ++i) {
+        cells[gridCellOf(vertices[i], cellSize)].push_back(i);
+    }
+
+    const float eps2 = kVertexMergeDistance * kVertexMergeDistance;
+    std::vector<uint32_t> dedup(vertices.size(), UINT32_MAX);
+    for (uint32_t i = 0; i < vertices.size(); ++i) {
+        if (dedup[i] != UINT32_MAX) {
+            // This vertex, and all following vertices that are close to it are
+            // already deduplicated.
+            continue;
+        }
+        const GridCell home = gridCellOf(vertices[i], cellSize);
+        for (int dz = -1; dz <= 1; ++dz) {
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    const auto found = cells.find({home.x + dx, home.y + dy, home.z + dz});
+                    if (found == cells.end()) {
+                        continue;
+                    }
+                    // The vertices after this one in the cell.
+                    const std::vector<uint32_t> &inCell = found->second;
+                    for (auto it = std::upper_bound(inCell.begin(), inCell.end(), i); it != inCell.end(); ++it) {
+                        if (glm::distance2(vertices[i], vertices[*it]) < eps2) {
+                            dedup[*it] = i;
+                        }
+                    }
+                }
             }
+        }
+    }
+    return dedup;
+}
 
-            // i-th edge of face A is the same as j-th edge of face B.
-            a.adjecent[i] = faceB;
-            b.adjecent[j] = faceA;
+// Each edge of a face is joined to a face whose edge runs between the same
+// two vertices the other way; where several do, to the highest-numbered.
+// The edges are sorted by their vertices, so each is found by a search.
+static void joinFaces(Uniwalk &uni) {
+    struct DirectedEdge {
+        uint64_t key;
+        uint32_t face;
+    };
+    const auto keyOf = [](uint32_t from, uint32_t to) {
+        return (static_cast<uint64_t>(from) << 32) | to;
+    };
+    std::vector<DirectedEdge> edges;
+    edges.reserve(uni.faces.size() * 3);
+    for (uint32_t f = 0; f < uni.faces.size(); ++f) {
+        const Uniface &face = uni.faces[f];
+        for (uint32_t i = 0; i < 3; ++i) {
+            edges.push_back({keyOf(face.vertices[kTriangleEdges[i][0]], face.vertices[kTriangleEdges[i][1]]), f});
+        }
+    }
+    std::sort(edges.begin(), edges.end(), [](const DirectedEdge &a, const DirectedEdge &b) {
+        return a.key < b.key || (a.key == b.key && a.face < b.face);
+    });
+    const auto byKey = [](const DirectedEdge &a, const DirectedEdge &b) {
+        return a.key < b.key;
+    };
+    for (uint32_t f = 0; f < uni.faces.size(); ++f) {
+        Uniface &face = uni.faces[f];
+        for (uint32_t i = 0; i < 3; ++i) {
+            const DirectedEdge reversed {keyOf(face.vertices[kTriangleEdges[i][1]], face.vertices[kTriangleEdges[i][0]]), 0};
+            const auto range = std::equal_range(edges.begin(), edges.end(), reversed, byKey);
+            for (auto it = range.second; it != range.first; --it) {
+                if (std::prev(it)->face != f) {
+                    face.adjecent[i] = std::prev(it)->face;
+                    break;
+                }
+            }
         }
     }
 }
@@ -316,20 +405,7 @@ void uniwalkFinalize(struct Uniwalk &uni) {
     // Deduplicate vertices, so that the same vertex gets the same index in all
     // faces. This way we can compare indices of two vertices instead of
     // calculating distance between them every time.
-    const float eps2 = 0.1f * 0.1f;
-    std::vector<uint32_t> dedup(uni.vertices.size(), UINT32_MAX);
-    for (uint32_t i = 0; i < uni.vertices.size(); ++i) {
-        if (dedup[i] != UINT32_MAX) {
-            // This vertex, and all following vertices that are close to it are
-            // already deduplicated.
-            continue;
-        }
-        for (uint32_t j = i + 1; j < uni.vertices.size(); ++j) {
-            if (glm::distance2(uni.vertices[i], uni.vertices[j]) < eps2) {
-                dedup[j] = i;
-            }
-        }
-    }
+    const std::vector<uint32_t> dedup = mergeVertices(uni.vertices);
     for (Uniface &face : uni.faces) {
         for (uint32_t &v : face.vertices) {
             if (dedup[v] != UINT32_MAX) {
@@ -339,11 +415,7 @@ void uniwalkFinalize(struct Uniwalk &uni) {
     }
 
     // For each faces, find faces that are adjecent to it.
-    for (uint32_t i = 0; i < uni.faces.size(); ++i) {
-        for (uint32_t j = i + 1; j < uni.faces.size(); ++j) {
-            markAdjecent(uni, i, j);
-        }
-    }
+    joinFaces(uni);
 
     // A vertex of an edge no other walkable face shares lies on the edge of
     // the walkable ground.
@@ -508,33 +580,25 @@ static bool isNarrowGap(const Uniwalk &uni, uint32_t face, uint32_t nextFace, fl
     return glm::dot(across, across) < 4.0f * radius * radius;
 }
 
+// The open list is a binary heap with the face of least cost on top; of
+// equal costs, the one put on the list first.
+struct LaterOnList {
+    bool operator()(const AStarOpenFace &a, const AStarOpenFace &b) const {
+        return a.cost > b.cost || (a.cost == b.cost && a.order > b.order);
+    }
+};
+
+static void pushOpenFace(std::vector<AStarOpenFace> &open, const AStarOpenFace &face) {
+    open.push_back(face);
+    std::push_heap(open.begin(), open.end(), LaterOnList());
+}
+
 /// Find a face with the minimum cost and remove it from the open list.
 static AStarOpenFace popOpenFace(std::vector<AStarOpenFace> &open) {
-    assert(open.size() >= 1);
-    if (open.size() == 1) {
-        AStarOpenFace face = open[0];
-        open.resize(0);
-        return face;
-    }
-
-    float minCost = FLT_MAX;
-    uint32_t minIndex = UINT32_MAX;
-    for (uint32_t i = 0; i < open.size(); ++i) {
-        if (open[i].cost < minCost) {
-            minCost = open[i].cost;
-            minIndex = i;
-        }
-    }
-
-    AStarOpenFace face = open[minIndex];
-
-    // Remove the face from the list.
-    uint32_t lastIndex = open.size() - 1;
-    if (lastIndex != minIndex) {
-        std::swap(open[minIndex], open[lastIndex]);
-    }
-    open.resize(open.size() - 1);
-
+    assert(!open.empty());
+    std::pop_heap(open.begin(), open.end(), LaterOnList());
+    AStarOpenFace face = open.back();
+    open.pop_back();
     return face;
 }
 
@@ -554,7 +618,8 @@ static bool findPathAStar(AStarPath &path, AStarContext &ctx, const Uniwalk &uni
     // shortest over the centroids.
     const glm::vec3 goal = uni.faces[fromFace].centroid;
     ctx.state[toFace] = {AStarFace::Open, UINT32_MAX, 0.0f};
-    ctx.open.push_back({toFace, glm::distance(uni.faces[toFace].centroid, goal)});
+    uint32_t order = 0;
+    pushOpenFace(ctx.open, {toFace, glm::distance(uni.faces[toFace].centroid, goal), order++});
 
     // Each face is asked once a search whether the walker may pass over it.
     // The search starts from the face the walk ends on and ends on the face
@@ -574,8 +639,13 @@ static bool findPathAStar(AStarPath &path, AStarContext &ctx, const Uniwalk &uni
     };
 
     while (!ctx.open.empty()) {
-        // Extract face with least total cost from open list and close it.
+        // Extract face with least total cost from open list and close it. A
+        // face reached by a shorter way was put on the list again, so an
+        // entry for a face already closed is passed over.
         AStarOpenFace current = popOpenFace(ctx.open);
+        if (ctx.state[current.index].flag == AStarFace::Closed) {
+            continue;
+        }
         ctx.state[current.index].flag = AStarFace::Closed;
 
         if (current.index == fromFace) {
@@ -612,22 +682,13 @@ static bool findPathAStar(AStarPath &path, AStarContext &ctx, const Uniwalk &uni
                     continue;
                 }
                 // The adjacent face is reached by a shorter way through the
-                // current face.
-                bool foundOpen = false;
-                for (AStarOpenFace &open : ctx.open) {
-                    if (open.index != adj) {
-                        continue;
-                    }
-                    foundOpen = true;
-                    open.cost = cost;
-                    break;
-                }
-                assert(foundOpen);
+                // current face: it goes on the list again at its new cost.
+                pushOpenFace(ctx.open, {adj, cost, order++});
                 ctx.state[adj].parent = current.index;
                 ctx.state[adj].travelled = travelled;
             } else {
                 // Open the adjecent face.
-                ctx.open.push_back({adj, cost});
+                pushOpenFace(ctx.open, {adj, cost, order++});
                 ctx.state[adj] = {AStarFace::Open, current.index, travelled};
             }
         }
@@ -819,7 +880,9 @@ static bool findPath(AStarPath &path, Pathfinder &pf, const glm::vec3 &from, con
     uint32_t fromFace = findFaceAt(pf, from);
     uint32_t toFace = findFaceAt(pf, to);
 
-    if (fromFace == UINT32_MAX || toFace == UINT32_MAX) {
+    // Faces in regions of their own have no way between them: the search
+    // would go over the whole region first.
+    if (fromFace == UINT32_MAX || toFace == UINT32_MAX || uni.regions[fromFace] != uni.regions[toFace]) {
         return false;
     }
 

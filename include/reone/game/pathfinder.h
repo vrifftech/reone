@@ -103,6 +103,8 @@ struct AStarOpenFace {
     uint32_t index;
     /** The way travelled to the face, and the straight line from it to the goal. */
     float cost;
+    /** When the face was put on the list in its search: of equal costs, the earliest is taken first. */
+    uint32_t order;
 };
 
 struct AStarContext {
