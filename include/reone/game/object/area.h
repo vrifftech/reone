@@ -410,6 +410,11 @@ public:
      */
     std::optional<std::reference_wrapper<const Creature>> findBlockingCreature(const Creature &mover, const glm::vec3 &from, const glm::vec3 &to) const;
     /**
+     * The creatures, by the rules of findBlockingCreature, whose personal
+     * spaces come within \p margin of the mover's where it stands.
+     */
+    std::vector<std::reference_wrapper<const Creature>> findCreaturesNear(const Creature &mover, float margin) const;
+    /**
      * Whether the creature can walk straight from one point to another. The
      * walk is followed over the rooms it passes (see ISceneGraph::walkRooms),
      * and settled in each room before the next, with the creature's personal

@@ -460,12 +460,21 @@ static constexpr float kUseBesideRadius = 2.0f;
 static constexpr float kUseBesideStep = 0.25f;
 static constexpr int kUseBesideDirections = 16;
 static constexpr float kUseBesideArrival = 0.25f;
-// Walking into other creatures: five blocked steps are planned round, the
-// sixth ends the walk.
-static constexpr int kMaxPathBumps = 5;
+// Walking into other creatures is measured in seconds of blocked steps,
+// whatever the frame rate. A walk that has stood blocked this long since its
+// path was planned ends at its next blocked step; one that has walked this
+// long into the same creature, still where it stood, ends at its next step
+// into it.
+static constexpr float kMaxBlockedTime = 0.2f;
+static constexpr float kMaxSameBlockerTime = 0.1f;
 static constexpr float kSameBlockerDistance2 = 1e-5f;
 static constexpr int kStrRefCannotGetAround = 47859;
 static constexpr char kPathFailScript[] = "k_def_pathfail01";
+// A blocked walk can splice a way round the blocker into its path, along a
+// hexagon round it, and walk that way's points straight. Steering past
+// creatures, and planning the path again past one walked into, replace it;
+// it is kept, switched off.
+static constexpr bool kHexagonDetours = false;
 static constexpr float kPushAsideSpace = 0.1f;      // kept beyond both personal spaces by a creature pushed aside
 static constexpr float kPushAsideSpotRadius = 5.0f; // how far round its spot a pushed creature's place is looked for
 static constexpr float kPushBehindRadius = 4.0f;    // how far behind the pusher a creature that cannot step aside goes
@@ -495,6 +504,31 @@ static constexpr float kProgressCheckInterval = 0.1f;
 // A path walk slower than this, in metres a second, is getting nowhere. One
 // centimetre per frame at 60 frames a second.
 static constexpr float kMinimumProgressSpeed = 0.6f;
+// A walk whose pace is slower than that, as it is when slowing to its end or
+// for a slow creature, is getting nowhere below this share of its pace.
+static constexpr float kMinimumProgressShare = 0.5f;
+// A steered walk that gets nowhere sidesteps for this long, this far off the
+// way to its next point, to one side and then the other.
+static constexpr float kStuckSidestepTime = 1.0f;
+static constexpr float kStuckSidestepAngle = glm::quarter_pi<float>();
+// A steered walk turns toward where it is steered at this rate, in radians a
+// second, whatever the frame rate.
+static constexpr float kSteerTurnRate = glm::two_pi<float>();
+// A steered walk looks this far ahead for creatures in its way: this long at
+// its pace, and at least this far.
+static constexpr float kSteerLookaheadTime = 0.75f;
+static constexpr float kMinimumSteerLookahead = 2.0f;
+// A creature this near the walker's way, across it, stands straight ahead.
+static constexpr float kStraightAheadSpan = 0.05f;
+// From inside the circle it keeps clear of round a creature, a walker passing
+// it heads this far from the way to it, in radians: 100 degrees.
+static constexpr float kInsideReachTurn = 1.7453293f;
+// A way slid along a creature the walker stands near heads away from it by at
+// least this much.
+static constexpr float kSlideOffCreature = 0.01f;
+// A steered way slid down to less than this share of a step keeps the
+// walker's heading instead.
+static constexpr float kMinimumSlideShare = 0.01f;
 // A walk that sets out within a tenth of a metre of its point steps onto it at
 // once, whatever its range.
 static constexpr float kArrivalSnapDistance2 = 0.01f;
@@ -1320,11 +1354,11 @@ void Creature::retireAreaRuntime(
         releasePath(pathfinder, *_path);
         _path.reset();
     }
-    _pathVelocity = glm::vec3(0.0f);
+    _steerHeading = glm::vec2(0.0f);
     _previousPosition = _position;
     _progressTime = 0.0f;
     _stuckTimer.reset(0.0f);
-    _stuckForce = glm::vec3(0.0f);
+    _stuckLeft = false;
     setMovementType(MovementType::None);
     _lastBlockingDoorId = script::kObjectInvalid;
 
@@ -9659,17 +9693,59 @@ void Creature::clearHeldCounts() {
     _gold = _components = _chemicals = 0;
 }
 
-glm::vec3 Creature::computeSteeringForce(const Uniwalk &uni, const glm::vec3 &next, float dt) {
-    glm::vec3 desiredForce = glm::normalize(next - _position);
-    glm::vec3 keepoutForce = computeKeepoutForce(uni, _position);
+// A flat direction turned by an angle, counter-clockwise seen from above.
+static glm::vec2 turned(const glm::vec2 &v, float angle) {
+    const float c = std::cos(angle);
+    const float s = std::sin(angle);
+    return {v.x * c - v.y * s, v.x * s + v.y * c};
+}
 
-    // If we're not making progress - move in a random direction and
-    // hope. If we wander off too far, the path will be recalculated.
+// A walk's heading turned toward a target direction by no more than
+// \p maxTurn; no heading yet takes the target's at once.
+static glm::vec2 headingToward(const glm::vec2 &heading, const glm::vec2 &target, float maxTurn) {
+    const float targetLength = glm::length(target);
+    if (targetLength <= 0.0f) {
+        return heading;
+    }
+    const glm::vec2 wanted {target / targetLength};
+    if (glm::dot(heading, heading) <= 0.0f) {
+        return wanted;
+    }
+    const float angle = std::atan2(heading.x * wanted.y - heading.y * wanted.x, glm::dot(heading, wanted));
+    return glm::normalize(turned(heading, std::clamp(angle, -maxTurn, maxTurn)));
+}
+
+// The steering is flat: the ground lookup of each step gives its height. It
+// heads for the next point, or past a creature in the way, and sidesteps for a
+// while when the walk gets nowhere; the push from the edges of the walkable
+// ground is added.
+glm::vec3 Creature::computeSteeringForce(const Uniwalk &uni, const glm::vec3 &next, float dt) {
+    const glm::vec2 toNext {glm::vec2(next) - glm::vec2(_position)};
+    const float toNextLength = glm::length(toNext);
+    const glm::vec2 heading {toNextLength > 0.0f ? toNext / toNextLength : glm::vec2(0.0f)};
+    glm::vec2 desired {heading};
+
+    auto module = _game.module();
+    Area *area = module ? module->area().get() : nullptr;
+    // The speed of the walk's last steps, walking or running.
+    const float speed = _movementType == MovementType::Run ? runSpeed() : walkSpeed();
+    if (area) {
+        // The walk looks ahead as far as its last step's pace carries it.
+        const float lookahead = std::max(kMinimumSteerLookahead, speed * kSteerLookaheadTime);
+        if (auto way = steerPastCreature(*area, area->pathfinder(), heading, lookahead)) {
+            desired = *way;
+        }
+    }
+
+    // A walk making no progress is planned again from where the creature
+    // stands, and sidesteps for a while, to one side and then the other.
     bool noProgress = false;
     if (_previousPosition) {
         _progressTime += dt;
         if (_progressTime >= kProgressCheckInterval) {
-            noProgress = glm::length(_position - *_previousPosition) < kMinimumProgressSpeed * _progressTime;
+            const float pace = speed * _walkPace;
+            const float minimum = pace > 0.0f ? std::min(kMinimumProgressSpeed, kMinimumProgressShare * pace) : kMinimumProgressSpeed;
+            noProgress = glm::length(_position - *_previousPosition) < minimum * _progressTime;
             _previousPosition = _position;
             _progressTime = 0.0f;
         }
@@ -9677,42 +9753,94 @@ glm::vec3 Creature::computeSteeringForce(const Uniwalk &uni, const glm::vec3 &ne
         _previousPosition = _position;
         _progressTime = 0.0f;
     }
-    if (!_stuckTimer.elapsed() || noProgress) {
-        // Try to unstuck for some time even if we're moving
-        // again. Otherwise desiredForce kicks in again next frame.
-        if (_stuckTimer.elapsed()) {
-            _stuckTimer.reset(1.0f);
-            _stuckForce =
-                glm::normalize(glm::vec3 {
-                    randomFloat(-1.0f, 1.0f),
-                    randomFloat(-1.0f, 1.0f),
-                    randomFloat(-1.0f, 1.0f),
-                });
-        } else {
-            _stuckTimer.update(dt);
+    if (noProgress && _stuckTimer.elapsed()) {
+        _stuckTimer.reset(kStuckSidestepTime);
+        _stuckLeft = !_stuckLeft;
+        if (area && _path) {
+            replanPath(area->pathfinder(), *_path, _position);
         }
-        desiredForce = glm::vec3 {0.0f, 0.0f, 0.0f};
-    } else {
-        _stuckForce = glm::vec3 {0.0f, 0.0f, 0.0f};
+    }
+    if (!_stuckTimer.elapsed()) {
+        _stuckTimer.update(dt);
+        desired = turned(heading, _stuckLeft ? kStuckSidestepAngle : -kStuckSidestepAngle);
     }
 
-    glm::vec3 combinedForce = desiredForce + 0.1f * keepoutForce + _stuckForce;
+    const glm::vec2 keepout {computeKeepoutForce(uni, _position, _personalSpace, heading)};
+    const glm::vec2 combined {desired + keepout};
 
     drawdebug::pushId("computeSteeringForce");
     drawdebug::pushId(_id);
     drawdebug::clear();
 
     if (isShowPathEnabled()) {
-        drawdebug::line(_position, _position + desiredForce, 0x00BFFFFF, 0.02);
-        drawdebug::line(_position, _position + keepoutForce, 0xDDA0DDFF, 0.02);
-        drawdebug::line(_position, _position + _stuckForce, 0xF08080FF, 0.02);
-        drawdebug::line(_position, _position + combinedForce, 0xADFF2FFF, 0.02);
+        drawdebug::line(_position, _position + glm::vec3(desired, 0.0f), 0x00BFFFFF, 0.02);
+        drawdebug::line(_position, _position + glm::vec3(keepout, 0.0f), 0xDDA0DDFF, 0.02);
+        drawdebug::line(_position, _position + glm::vec3(combined, 0.0f), 0xADFF2FFF, 0.02);
     }
 
     drawdebug::popId();
     drawdebug::popId();
 
-    return combinedForce;
+    return glm::vec3(combined, 0.0f);
+}
+
+std::optional<bool> Creature::passingSide(const Pathfinder &pf, const Creature &other, const glm::vec2 &heading) const {
+    const glm::vec2 toOther {glm::vec2(other.position()) - glm::vec2(_position)};
+    // Positive when the other stands left of the heading.
+    const float across = heading.x * toOther.y - heading.y * toOther.x;
+    const bool first = std::fabs(across) > kStraightAheadSpan ? across < 0.0f : _avoidance.side;
+    // A side has room when the walker, passing the other at arm's length,
+    // stands on the walkable ground clear of its edges.
+    const glm::vec2 left {-heading.y, heading.x};
+    const float reach = other.creaturePersonalSpace() + creaturePersonalSpace();
+    const auto hasRoom = [&](bool turnsLeft) {
+        const glm::vec2 pass {glm::vec2(other.position()) + left * (turnsLeft ? reach : -reach)};
+        return isClearGround(pf, glm::vec3(pass, other.position().z), _personalSpace);
+    };
+    if (hasRoom(first)) {
+        return first;
+    }
+    if (hasRoom(!first)) {
+        return !first;
+    }
+    return std::nullopt;
+}
+
+std::optional<glm::vec2> Creature::wayPast(const Creature &other, bool left) const {
+    const glm::vec2 toOther {glm::vec2(other.position()) - glm::vec2(_position)};
+    const float distance = glm::length(toOther);
+    if (distance <= 0.0f) {
+        return std::nullopt;
+    }
+    const float reach = other.creaturePersonalSpace() + creaturePersonalSpace() + kAvoidanceSpace;
+    const float turn = distance > reach ? std::asin(reach / distance) : kInsideReachTurn;
+    return turned(toOther / distance, left ? turn : -turn);
+}
+
+std::optional<glm::vec2> Creature::steerPastCreature(const Area &area, const Pathfinder &pf, const glm::vec2 &heading, float lookahead) {
+    if (glm::dot(heading, heading) <= 0.0f) {
+        _avoidance.passing.reset();
+        return std::nullopt;
+    }
+    const glm::vec3 ahead {_position + glm::vec3(heading * lookahead, 0.0f)};
+    const auto found = area.findBlockingCreature(*this, _position, ahead);
+    // Walking into the object the walk heads for is arriving.
+    if (!found || found->get().id() == attemptedMovementTarget()) {
+        _avoidance.passing.reset();
+        return std::nullopt;
+    }
+    const Creature &other = found->get();
+    auto passing = _avoidance.passing.resolve();
+    if (passing.get() != &other) {
+        const auto side = passingSide(pf, other, heading);
+        if (!side) {
+            _avoidance.passing.reset();
+            return std::nullopt;
+        }
+        _avoidance.passing = _game.getObjectById<Creature>(other.id());
+        _avoidance.passingLeft = *side;
+    }
+    return wayPast(other, _avoidance.passingLeft);
 }
 
 // The next pace of a walk that went at \p pace: full speed until the ground
@@ -9833,41 +9961,65 @@ bool Creature::navigateTo(const glm::vec3 &dest, bool run, float distance, float
         }
         glm::vec3 dir;
         glm::vec3 stepLimit = dest;
+        // A steered step slid along a creature or an edge it presses on is
+        // shortened by as much as it is turned off its heading.
+        float slide = 1.0f;
         if (endsOnPoint) {
             dir = glm::vec3(glm::normalize(toLast), 0.0f);
-        } else if (followsPathPoints(pf, *_path)) {
-            // Explicit points are walked straight, stopping on each on the
-            // way; the last is walked to as the end of any path is.
-            dir = glm::vec3(glm::normalize(glm::vec2(nextPoint - _position)), 0.0f);
+        } else if (isStraightPath(pf, *_path) || followsPathPoints(pf, *_path)) {
+            // A straight path is walked straight, and so are explicit points,
+            // stopping on each on the way; the last is walked to as the end of
+            // any path is.
+            const glm::vec2 toNext {glm::vec2(nextPoint) - glm::vec2(_position)};
+            dir = glm::dot(toNext, toNext) > 0.0f ? glm::vec3(glm::normalize(toNext), 0.0f) : glm::vec3(0.0f);
             if (nextPoint != lastPoint) {
                 stepLimit = glm::vec3(nextPoint.x, nextPoint.y, _position.z);
             }
         } else {
-            glm::vec3 steeringForce = computeSteeringForce(pf.uni, nextPoint, dt);
-            _pathVelocity += steeringForce * dt;
-
-            float maxSpeed = 0.3f;
-            float speed = glm::min(glm::length(_pathVelocity), maxSpeed);
-            _pathVelocity = glm::normalize(_pathVelocity) * speed;
-
-            dir = glm::normalize(_pathVelocity);
+            // The walker turns toward where it is steered at a rate that does
+            // not hang on the frame rate, then slides along the creatures and
+            // the edges of the walkable ground it presses on.
+            const glm::vec2 steeringForce {computeSteeringForce(pf.uni, nextPoint, dt)};
+            _steerHeading = headingToward(_steerHeading, steeringForce, kSteerTurnRate * dt);
+            glm::vec2 way {_steerHeading};
+            for (const auto &near : area.findCreaturesNear(*this, kAvoidanceSpace)) {
+                const glm::vec2 toOther {glm::vec2(near.get().position()) - glm::vec2(_position)};
+                const float distance = glm::length(toOther);
+                if (distance <= 0.0f) {
+                    continue;
+                }
+                const float toward = glm::dot(way, toOther / distance);
+                if (toward > -kSlideOffCreature) {
+                    way -= toOther / distance * (toward + kSlideOffCreature);
+                }
+            }
+            way = slideAlongEdges(pf.uni, _position, _personalSpace, way);
+            const float wayLength = glm::length(way);
+            if (wayLength > kMinimumSlideShare) {
+                dir = glm::vec3(way / wayLength, 0.0f);
+                slide = std::min(1.0f, wayLength);
+            } else {
+                dir = glm::vec3(_steerHeading, 0.0f);
+            }
         }
 
+        // A walk with no way to head this frame, as when it starts on its next
+        // point with nothing steering it, waits for the next.
+        if (glm::dot(glm::vec2(dir), glm::vec2(dir)) <= 0.0f) {
+            return false;
+        }
         const float moveSpeed = run && !isRunLimited() ? runSpeed() : walkSpeed();
         // The ground left from a point along the path is never less than the
         // straight line to its end, so it is only measured along the path
         // once that line comes within the braking stretch.
         const glm::vec2 end {lastPoint};
-        uint32_t next = 0;
-        std::vector<glm::vec3> points;
         const auto remaining = [&](const glm::vec3 &from, bool heightCounts) {
             const float straight = glm::length(glm::vec3(end - glm::vec2(from), heightCounts ? from.z : 0.0f));
             if (straight > moveSpeed * kWalkBrakeTime) {
                 return straight;
             }
-            if (points.empty()) {
-                points = pathPoints(pf, *_path, next);
-            }
+            uint32_t next = 0;
+            const std::vector<glm::vec3> &points = getPathPoints(pf, *_path, next);
             return remainingPathLength(points, next, from, heightCounts);
         };
         // A walk picks up speed from the pace its last walk ended at and slows
@@ -9881,7 +10033,7 @@ bool Creature::navigateTo(const glm::vec3 &dest, bool run, float distance, float
             pacedStep *= (_walkPace + pace) * 0.5f;
             _walkPace = pace;
         }
-        const float step = std::min(pacedStep, endsOnPoint ? glm::length(toLast) : getDistanceTo(stepLimit));
+        const float step = std::min(pacedStep * slide, endsOnPoint ? glm::length(toLast) : getDistanceTo(stepLimit));
         const glm::vec3 stepEnd {_position.x + dir.x * step, _position.y + dir.y * step, _position.z};
         const glm::vec2 stepDir {glm::normalize(glm::vec2(dir))};
         const auto test = area.testWalkStep(*this, _position, stepEnd);
@@ -9908,7 +10060,7 @@ bool Creature::navigateTo(const glm::vec3 &dest, bool run, float distance, float
             auto other = _game.getObjectById<Creature>(test.blocker->get().id());
             if (!pushAside(*other, stepEnd, _position, stepDir) ||
                 area.findBlockingCreature(*this, _position, stepEnd)) {
-                const Bump bump = bumpIntoCreature(other, pf, stepDir);
+                const Bump bump = bumpIntoCreature(other, pf, stepDir, dt);
                 // No step is taken this frame, so the next has none to compare
                 // with for progress.
                 _previousPosition.reset();
@@ -9937,11 +10089,12 @@ bool Creature::navigateTo(const glm::vec3 &dest, bool run, float distance, float
     }
 
     // Find a path and start following it.
-    _avoidance.bumps = 0;
-    // The path keeps clear of doors and placeables by the walker's personal
-    // space, passes only through gaps wide enough for it and keeps that far
-    // from the corners it turns at, unless no path does.
-    _path = createPath(pf, position(), dest, area.pathFacesClearOfStaticWalls(*this), _personalSpace);
+    _avoidance.blockedTime = 0.0f;
+    // A planned path keeps clear of doors and placeables by the walker's
+    // personal space, passes only through gaps wide enough for it and keeps
+    // that far from the corners it turns at, unless no path does.
+    _path = straight ? createStraightPath(pf, position(), dest)
+                     : createPath(pf, position(), dest, area.pathFacesClearOfStaticWalls(*this), _personalSpace);
     if (!_path) {
         // No path is found either when none reaches the destination or when
         // every path slot is taken. Only the first is a failure: the second
@@ -9949,34 +10102,45 @@ bool Creature::navigateTo(const glm::vec3 &dest, bool run, float distance, float
         _navigationFailed = !pathExists(pf, position(), dest);
         return false;
     }
-    if (straight) {
-        setPathPoints(pf, *_path, {_position, dest}, 1);
-    }
-    _pathVelocity = {0.0f, 0.0f, 0.0f};
+    _steerHeading = glm::vec2(0.0f);
+    _avoidance.passing.reset();
     _attemptedMovementTarget = pathTarget ? _game.getObjectById(pathTarget->get().id()) : nullptr;
     resetBlockingCreature();
 
     return navigateTo(dest, run, distance, dt, pathTarget, straight);
 }
 
-Creature::Bump Creature::bumpIntoCreature(const std::shared_ptr<Creature> &blocker, Pathfinder &pf, const glm::vec2 &stepDir) {
-    // Every blocked step counts, and the sixth since the path was planned
-    // ends the walk.
-    if (_avoidance.bumps++ >= kMaxPathBumps) {
+Creature::Bump Creature::bumpIntoCreature(const std::shared_ptr<Creature> &blocker, Pathfinder &pf, const glm::vec2 &stepDir, float dt) {
+    // Each blocked step counts for the time it stands still. A walk blocked
+    // long enough since its path was planned ends.
+    if (_avoidance.blockedTime >= kMaxBlockedTime) {
         return Bump::WalkEnded;
     }
+    _avoidance.blockedTime += dt;
     // Walking into the object the path heads for is arriving.
     if (blocker->id() == attemptedMovementTarget()) {
         return Bump::WalkEnded;
     }
-    // A creature already looked at, still where it stood, ends the walk.
+    // A creature already looked at, still where it stood, is not planned
+    // round again: the walker keeps turning past it, and the walk ends once it
+    // has walked into it long enough.
     if (blocker->id() == blockingCreature() &&
         glm::distance2(_avoidance.blockerPosition, blocker->position()) <= kSameBlockerDistance2) {
-        return Bump::WalkEnded;
+        // Detours along a hexagon have planned round it already.
+        if (kHexagonDetours || _avoidance.sameBlockerTime >= kMaxSameBlockerTime) {
+            return Bump::WalkEnded;
+        }
+        _avoidance.sameBlockerTime += dt;
+        if (auto way = wayPast(*blocker, _avoidance.passingLeft)) {
+            _steerHeading = *way;
+        }
+        return Bump::Detoured;
     }
+    _avoidance.sameBlockerTime = dt;
 
     bool side = _avoidance.side;
-    const Avoidance avoidance = plotPathAroundCreature(blocker, pf, stepDir, side);
+    const Avoidance avoidance = kHexagonDetours ? plotPathAroundCreature(blocker, pf, stepDir, side)
+                                                : planPastCreature(blocker, pf, stepDir, side);
     if (avoidance == Avoidance::Failed) {
         // No way round at all. When this is the player's character, the
         // player is told.
@@ -9998,15 +10162,8 @@ Creature::Avoidance Creature::plotPathAroundCreature(const std::shared_ptr<Creat
     _avoidance.blocker = blocker;
     _avoidance.blockerPosition = blocker->position();
 
-    // A creature the walker regards as an enemy makes the walker run its
-    // path-failure script. Unless the script took away the walker's
-    // commandability, there is no way round it.
-    if (_services.game.reputes.getIsEnemy(*blocker, *this)) {
-        _avoidance.foundEnemy = blocker;
-        _game.scriptRunner().run(kPathFailScript, _id);
-        if (isCommandable()) {
-            return Avoidance::Failed;
-        }
+    if (stopsForEnemy(blocker)) {
+        return Avoidance::Failed;
     }
 
     // The creature is ringed by a hexagon whose edges keep both personal
@@ -10099,6 +10256,63 @@ Creature::Avoidance Creature::plotPathAroundCreature(const std::shared_ptr<Creat
     return Avoidance::Planned;
 }
 
+bool Creature::stopsForEnemy(const std::shared_ptr<Creature> &blocker) {
+    if (!_services.game.reputes.getIsEnemy(*blocker, *this)) {
+        return false;
+    }
+    _avoidance.foundEnemy = blocker;
+    _game.scriptRunner().run(kPathFailScript, _id);
+    return isCommandable();
+}
+
+Creature::Avoidance Creature::planPastCreature(const std::shared_ptr<Creature> &blocker, Pathfinder &pf, const glm::vec2 &stepDir, bool &side) {
+    _avoidance.blocker = blocker;
+    _avoidance.blockerPosition = blocker->position();
+    if (stopsForEnemy(blocker)) {
+        return Avoidance::Failed;
+    }
+
+    // A walk that ends within reach of the blocker, at its height, stops
+    // here.
+    assert(_path);
+    const glm::vec3 at {blocker->position()};
+    const float reach = blocker->creaturePersonalSpace() + creaturePersonalSpace() + kAvoidanceSpace;
+    const glm::vec3 last {getLastPathPoint(pf, *_path)};
+    if (glm::distance2(glm::vec2(last), glm::vec2(at)) <= reach * reach &&
+        std::fabs(last.z - at.z) <= graphics::Walkmesh::kFloorHeadroom) {
+        return Avoidance::EndInHex;
+    }
+
+    // With room beside the blocker, the walker turns at once to pass it: away
+    // from the side of its step the blocker stands on, or the way preferred,
+    // unless only the other way has room.
+    if (auto passing = passingSide(pf, *blocker, stepDir)) {
+        side = *passing;
+    } else {
+        // Otherwise the path is planned again from where the walker stands,
+        // off the faces whose centres lie within reach of the blocker, at its
+        // height, so a creature on a floor over or under them leaves them
+        // open. With no such path there is no way past.
+        const Uniwalk &uni = pf.uni;
+        const FacePassable offBlocker = [&uni, at, reach](uint32_t face) {
+            const glm::vec3 &centre = uni.faces[face].centroid;
+            return glm::distance2(glm::vec2(centre), glm::vec2(at)) > reach * reach ||
+                   std::fabs(centre.z - at.z) > graphics::Walkmesh::kFloorHeadroom;
+        };
+        if (!replanPath(pf, *_path, _position, offBlocker)) {
+            _avoidance.foundEnemy.reset();
+            _game.scriptRunner().run(kPathFailScript, _id);
+            return Avoidance::Failed;
+        }
+    }
+    _avoidance.passing = blocker;
+    _avoidance.passingLeft = side;
+    if (auto way = wayPast(*blocker, side)) {
+        _steerHeading = *way;
+    }
+    return Avoidance::Planned;
+}
+
 bool Creature::canPushAside(const Creature &other) const {
     if (!_game.isTSL() || _game.isDialogUnderWay()) {
         return false;
@@ -10163,12 +10377,11 @@ bool Creature::pushAside(Creature &other, glm::vec3 a, glm::vec3 b, const glm::v
 void Creature::planStraightPath(const glm::vec3 &point) {
     clearPath();
     Pathfinder &pf = _game.module()->area()->pathfinder();
-    _avoidance.bumps = 0;
-    _path = createPath(pf, _position, point);
+    _avoidance.blockedTime = 0.0f;
+    _path = createStraightPath(pf, _position, point);
     if (!_path) {
         return;
     }
-    setPathPoints(pf, *_path, {_position, point}, 1);
     _attemptedMovementTarget.reset();
     resetBlockingCreature();
 }

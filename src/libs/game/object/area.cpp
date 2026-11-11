@@ -2515,6 +2515,26 @@ std::optional<std::reference_wrapper<const Creature>> Area::findBlockingCreature
     return collision.creature;
 }
 
+std::vector<std::reference_wrapper<const Creature>> Area::findCreaturesNear(const Creature &mover, float margin) const {
+    std::vector<std::reference_wrapper<const Creature>> near;
+    // Where floors lie over others, a creature counts only across the heights
+    // the mover spans.
+    const bool stacked = hasStackedFloors();
+    const float low = mover.position().z;
+    const float high = low + standingHeight(mover);
+    for (const auto &object : _objectsByType.at(ObjectType::Creature)) {
+        const auto &other = static_cast<const Creature &>(*object);
+        if (&other == &mover || other.isDead() || other.isTemporarilyDead() || (stacked && clearsHeights(other, low, high))) {
+            continue;
+        }
+        const float reach = mover.creaturePersonalSpace() + other.creaturePersonalSpace() + margin;
+        if (glm::distance2(glm::vec2(mover.position()), glm::vec2(other.position())) < reach * reach) {
+            near.push_back(other);
+        }
+    }
+    return near;
+}
+
 Area::DirectLineTest Area::testWalkStep(
     const Creature &mover,
     const glm::vec3 &from,

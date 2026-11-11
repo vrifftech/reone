@@ -57,6 +57,21 @@ struct Uniroom {
     std::vector<uint32_t> unifiedFaces;
 };
 
+/**
+ * The edges of the walkable ground, filed by the cells of a grid across the
+ * ground plan that each passes over, for the pushes away from them.
+ */
+struct EdgeGrid {
+    glm::vec2 origin {0.0f};
+    float cellSize {1.0f};
+    int columns {0};
+    int rows {0};
+    /** For each cell, row by row, where its edges start in edges; one more entry than cells. */
+    std::vector<uint32_t> cellStarts;
+    /** Edges, each as its face's index times three plus the edge's. */
+    std::vector<uint32_t> edges;
+};
+
 /// Unified walkmesh, assembled from walkmeshes of all rooms in the area.
 struct Uniwalk {
     std::vector<glm::vec3> vertices;
@@ -66,6 +81,8 @@ struct Uniwalk {
     std::vector<uint32_t> regions;
     /** Whether each vertex lies on the edge of the walkable ground: on an edge no other walkable face shares. */
     std::vector<uint8_t> boundary;
+    /** The edges no other walkable face shares, filed across the ground plan. */
+    EdgeGrid edgeGrid;
 };
 
 /// State of a face for A* algorithm.
@@ -111,11 +128,17 @@ struct AStarPath {
     /** The walker's radius: the path keeps that far from the corners it turns at. */
     float radius {0.0f};
     /**
+     * The path is one straight leg from its start to its end, walked as it is
+     * and never planned again; it has no faces.
+     */
+    bool straight {false};
+    /**
      * The points of the walk, walked straight one after another, and the index
      * of the one being walked to. While the path follows its faces they are its
      * start, the corners the funnel turns at and its end, planned with the
-     * path. Once a way round a creature has been spliced into the path, they
-     * are never planned again.
+     * path. A straight path's are its start and end. Once a way round a
+     * creature has been spliced into the path, which nothing does while the
+     * detours along a hexagon are switched off, they are never planned again.
      */
     std::vector<glm::vec3> points;
     uint32_t pointNext {1};
@@ -166,17 +189,26 @@ void uniwalkLoadRoom(struct Uniwalk &wm, graphics::Walkmesh &data, std::set<uint
 void uniwalkFinalize(struct Uniwalk &uni);
 
 /**
- * A path from one point to another over the faces \p passable lets the walker
- * cross, the faces it starts and ends on always among them. When no such path
- * is found, one over every face is looked for instead.
- */
-/**
- * A path from one point to another for a walker of \p radius: over the faces it
- * may pass over and through the gaps wide enough for it, when there is such a
- * path, and keeping that far from the corners it turns at.
+ * A path from one point to another for a walker of \p radius: over the faces
+ * \p passable lets it cross and through the gaps wide enough for it, when there
+ * is such a path, and keeping that far from the corners it turns at. The faces
+ * it starts and ends on always count as passable. When no such path is found,
+ * one over every face and gap is looked for instead.
  */
 std::optional<Path> createPath(Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to, const FacePassable &passable = {},
                                float radius = 0.0f);
+/**
+ * A path along the straight line from one point to another, when the walkmesh
+ * joins them.
+ */
+std::optional<Path> createStraightPath(Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to);
+/**
+ * Plan a path that follows its faces again from \p from, as it was planned,
+ * except that the faces \p keepOff turns down are never crossed, even when no
+ * other way is found. False, the path left as it was, when no way is found. A
+ * straight path, or one walking explicit points, is left as it is.
+ */
+bool replanPath(Pathfinder &pf, Path path, const glm::vec3 &from, const FacePassable &keepOff = {});
 /** Whether the walkmesh joins two points, without holding a path. */
 bool pathExists(const Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to);
 bool updatePath(Pathfinder &pf, Path p, const glm::vec3 &current);
@@ -184,6 +216,18 @@ void releasePath(Pathfinder &pf, Path path);
 
 glm::vec3 getNextPathPoint(Pathfinder &pf, Path path);
 glm::vec3 getLastPathPoint(Pathfinder &pf, Path path);
+/** Whether the path is one straight leg (see createStraightPath). */
+bool isStraightPath(const Pathfinder &pf, Path path);
+/**
+ * The points the path is walked through, from its start to its end, and in
+ * \p next the index of the one being walked to.
+ */
+const std::vector<glm::vec3> &getPathPoints(const Pathfinder &pf, Path path, uint32_t &next);
+
+// Explicit points and the way round a creature along a hexagon, spliced into
+// a path. A walk steers round creatures and plans again past them instead;
+// these are kept, but only reached while Creature's detours along a hexagon
+// are switched on.
 
 /**
  * The points of a path, from the one last left behind to the destination, and
@@ -250,12 +294,33 @@ std::vector<glm::vec3> findAvoidanceWay(const AvoidanceHex &hex, const Avoidance
 void insertAvoidanceWay(std::vector<glm::vec3> &points, uint32_t &next, int entryIndex, int exitIndex,
                         const std::vector<glm::vec3> &way);
 
-glm::vec3 computeKeepoutForce(const Uniwalk &uni, const glm::vec3 &position);
-
 /// Height of the walkable face under (x, y) that lies nearest to \p nearZ,
 /// searched over every room of the unified walkmesh. Empty when no face lies
 /// under (x, y).
 std::optional<float> walkmeshElevationAt(const Uniwalk &uni, const glm::vec2 &xy, float nearZ);
+
+// Steering near the edges of the walkable ground. Only edges within
+// graphics::Walkmesh::kFloorHeadroom of the walker's height count, and only
+// from the side of the walkable ground, so an edge beyond a thin wall or on
+// another floor does not; everything is measured across the ground plan.
+
+/**
+ * The push away from the edges within \p radius and a margin of a walker at
+ * \p position: for each, by how far the walker stands inside that reach, as a
+ * share of it. It never pushes the walker on along \p heading, and is at most
+ * one long.
+ */
+glm::vec2 computeKeepoutForce(const Uniwalk &uni, const glm::vec3 &position, float radius, const glm::vec2 &heading);
+/**
+ * A direction of travel slid along the edges within \p radius of a walker at
+ * \p position: what heads into an edge, or along it, is turned a little away.
+ */
+glm::vec2 slideAlongEdges(const Uniwalk &uni, const glm::vec3 &position, float radius, glm::vec2 direction);
+/**
+ * Whether a point stands on the walkable ground, as a path's ends do, with no
+ * edge within \p radius of it.
+ */
+bool isClearGround(const Pathfinder &pf, const glm::vec3 &point, float radius);
 
 } // namespace game
 

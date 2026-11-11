@@ -2564,14 +2564,17 @@ private:
     enum class Bump {
         /** The walk is over, as if arrived. */
         WalkEnded,
-        /** A way round is spliced into the path. */
+        /** The walk goes on past the creature. */
         Detoured
     };
 
     /** How planning a way round a creature in the path went. */
     enum class Avoidance {
         Failed,
-        /** The walk ends inside the hexagon round the blocker, so it stops. */
+        /**
+         * The walk ends within reach of the blocker, inside the hexagon round
+         * it for a detour along one, so it stops.
+         */
         EndInHex,
         Planned
     };
@@ -2603,10 +2606,18 @@ private:
         glm::vec3 blockerPosition {0.0f};
         /** The last hostile creature found in the way. */
         RuntimeObjectRef<Creature> foundEnemy;
-        /** Blocked steps since the path was planned. */
-        int bumps {0};
+        /** Seconds of blocked steps since the path was planned. */
+        float blockedTime {0.0f};
+        /** Seconds of blocked steps into the blocker, while it stands where it stood. */
+        float sameBlockerTime {0.0f};
         /** The next way round is tried counter-clockwise first. */
         bool side {false};
+        /**
+         * The creature a steered walk is passing, and whether the walker
+         * turns counter-clockwise round it, keeping it on the right.
+         */
+        RuntimeObjectRef<Creature> passing;
+        bool passingLeft {false};
     };
 
     /** An item property through which the creature can use a power. */
@@ -2858,7 +2869,8 @@ private:
     };
     std::optional<UseWalk> _useWalk;
     RuntimeObjectRef<Object> _attemptedMovementTarget;
-    glm::vec3 _pathVelocity;
+    /** The way a steered walk heads, across the ground plan; nothing until its first step. */
+    glm::vec2 _steerHeading {0.0f};
     /**
      * How much of its full speed a path walk goes at, which it carries from
      * one walk to the next; and the same for the pace of its walk and run
@@ -2871,10 +2883,11 @@ private:
     /** Seconds of walking since _previousPosition was taken. */
     float _progressTime {0.0f};
     PathAvoidance _avoidance;
-    // When there is no progress on the path, apply _stuckForce to steer the
-    // creature in a random direction until the timer runs out.
+    // When a steered walk gets nowhere, it is planned again from where the
+    // creature stands, and the creature sidesteps until the timer runs out,
+    // to the left when _stuckLeft is set; the side changes each time.
     Timer _stuckTimer;
-    glm::vec3 _stuckForce;
+    bool _stuckLeft {false};
     std::optional<ForcedMove> _forcedMove;
 
     /** The movement-rate row's walk and run speeds, metres a second. */
@@ -3171,14 +3184,49 @@ private:
      * else pushes, and in KotOR nobody does.
      */
     bool canPushAside(const Creature &other) const;
-    /** Deals with walking into \p blocker on a step along \p stepDir. */
-    Bump bumpIntoCreature(const std::shared_ptr<Creature> &blocker, Pathfinder &pf, const glm::vec2 &stepDir);
+    /** Deals with walking into \p blocker on a step along \p stepDir, of a frame \p dt long. */
+    Bump bumpIntoCreature(const std::shared_ptr<Creature> &blocker, Pathfinder &pf, const glm::vec2 &stepDir, float dt);
     /**
-     * Plans a way round \p blocker into the path. \p side picks the way tried
-     * first and is set to the way taken.
+     * Plans a way round \p blocker into the path, along a hexagon round it.
+     * \p side picks the way tried first and is set to the way taken. Switched
+     * off: planPastCreature is used instead.
      */
     Avoidance plotPathAroundCreature(const std::shared_ptr<Creature> &blocker, Pathfinder &pf, const glm::vec2 &stepDir,
                                      bool &side);
+    /**
+     * Turns the walker to pass \p blocker, walked into on a step along
+     * \p stepDir, on a side with room; with no room beside it, plans the path
+     * again off the faces it stands over first. \p side picks the way
+     * preferred and is set to the way taken.
+     */
+    Avoidance planPastCreature(const std::shared_ptr<Creature> &blocker, Pathfinder &pf, const glm::vec2 &stepDir, bool &side);
+    /**
+     * Whether walking into \p blocker leaves no way past it because it is an
+     * enemy: the walker runs its path-failure script, and has no way past
+     * unless the script took away its commandability.
+     */
+    bool stopsForEnemy(const std::shared_ptr<Creature> &blocker);
+    /**
+     * Which way the walker turns to pass \p other, heading along \p heading:
+     * true for counter-clockwise. It turns away from the side the other
+     * stands on, or the preferred way when it stands straight ahead, unless
+     * only the other way has room for the walker on the walkable ground.
+     * Empty when neither has.
+     */
+    std::optional<bool> passingSide(const Pathfinder &pf, const Creature &other, const glm::vec2 &heading) const;
+    /**
+     * The way a steered walk heading along \p heading turns to pass the first
+     * creature in its way within \p lookahead, when there is one with room to
+     * pass. The side is kept while the same creature is passed.
+     */
+    std::optional<glm::vec2> steerPastCreature(const Area &area, const Pathfinder &pf, const glm::vec2 &heading,
+                                               float lookahead);
+    /**
+     * The way past \p other: the line that touches the circle round it within
+     * which the walker keeps clear, counter-clockwise when \p left is set.
+     * From inside that circle, more than a quarter turn from the way to it.
+     */
+    std::optional<glm::vec2> wayPast(const Creature &other, bool left) const;
     /** Drop any walk under way and plan one along the straight line to a point. */
     void planStraightPath(const glm::vec3 &point);
     /** A walk ends where the creature stands, and \p target hears that as a click by it. */

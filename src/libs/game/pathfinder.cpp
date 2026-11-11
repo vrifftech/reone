@@ -31,13 +31,11 @@
    onto another floor.
 
    3. Steering behaviour takes a direction from the funnel algorithm, and turns
-      it into a "driving" force. It then calculates and combines other forces:
-
-      - "keepout" force to steer away from borders and corners
-      - "stuck" force to recover from pathfinding failures.
-
-     The combined force is then integrated to smooth changes of direction and make
-     the path more natural.
+      it into a "driving" force, flat across the ground plan. It heads round a
+      creature in the way instead, and sidesteps for a while when the walk
+      gets nowhere. A "keepout" force steers away from the edges of the
+      walkable ground. The walker turns toward the combined force at a
+      limited rate, and slides along creatures and edges it presses on.
 
    == Data structures
 
@@ -53,9 +51,10 @@
 
    == Omissions
 
-   1. Dynamic objects (creatures) are not handled by the global pathfinding.
-   A creature met on the way is walked round instead: a way along a hexagon
-   around it is spliced into the path as explicit points.
+   1. Dynamic objects (creatures) are not handled by the global pathfinding
+   as it plans. A creature met on the way is steered round; one walked into is
+   planned past, its faces kept off. (A way along a hexagon round it, spliced
+   into the path as explicit points, is kept but switched off.)
 
    2. Static objects that do not have a carve-out for them in the room walkmesh
       are not reflected in the Uniwalk yet. Each object has it is own
@@ -82,6 +81,16 @@ static const uint32_t kTriangleEdges[3][2] = {{0, 1}, {1, 2}, {2, 0}};
 // and a face more than this from a point's height is on another floor (see
 // graphics::Walkmesh::kFloorHeadroom).
 static constexpr float kFloorHeadroom = graphics::Walkmesh::kFloorHeadroom;
+
+// The cells of the grid filing the edges of the walkable ground are this
+// wide, unless the ground plan would need more than kMaxEdgeGridCells of
+// them; they are widened until it does not.
+static constexpr float kEdgeGridCellSize = 2.0f;
+static constexpr int64_t kMaxEdgeGridCells = 1 << 16;
+// The push away from an edge reaches this far beyond the walker's radius.
+static constexpr float kKeepoutMargin = 0.25f;
+// A direction slid along an edge heads away from it by at least this much.
+static constexpr float kSlideOffEdge = 0.01f;
 
 // Import a walkmesh of a single room into Uniwalk structure. Once all rooms are
 // imported, call uniwalkFinalize to establish connections between rooms.
@@ -218,6 +227,91 @@ static void markAdjecent(Uniwalk &uni, uint32_t faceA, uint32_t faceB) {
     }
 }
 
+// The cells of the edge grid a box across the ground plan covers, clamped to
+// the grid.
+struct GridSpan {
+    int x0, y0, x1, y1;
+};
+
+static GridSpan gridSpan(const EdgeGrid &grid, const glm::vec2 &min, const glm::vec2 &max) {
+    const auto cell = [&grid](float offset, int count) {
+        return static_cast<int>(std::clamp(std::floor(offset / grid.cellSize), 0.0f, static_cast<float>(count - 1)));
+    };
+    return {cell(min.x - grid.origin.x, grid.columns), cell(min.y - grid.origin.y, grid.rows),
+            cell(max.x - grid.origin.x, grid.columns), cell(max.y - grid.origin.y, grid.rows)};
+}
+
+static void edgeBounds(const Uniwalk &uni, uint32_t edge, glm::vec2 &min, glm::vec2 &max) {
+    const Uniface &face = uni.faces[edge / 3];
+    const glm::vec2 a {uni.vertices[face.vertices[kTriangleEdges[edge % 3][0]]]};
+    const glm::vec2 b {uni.vertices[face.vertices[kTriangleEdges[edge % 3][1]]]};
+    min = glm::min(a, b);
+    max = glm::max(a, b);
+}
+
+// Files every edge no other walkable face shares in each cell its box across
+// the ground plan covers.
+static void buildEdgeGrid(Uniwalk &uni) {
+    EdgeGrid &grid = uni.edgeGrid;
+    grid = EdgeGrid();
+    std::vector<uint32_t> edges;
+    glm::vec2 min {FLT_MAX};
+    glm::vec2 max {-FLT_MAX};
+    for (uint32_t i = 0; i < uni.faces.size(); ++i) {
+        for (uint32_t j = 0; j < 3; ++j) {
+            if (uni.faces[i].adjecent[j] != UINT32_MAX) {
+                continue;
+            }
+            const uint32_t edge = i * 3 + j;
+            glm::vec2 edgeMin, edgeMax;
+            edgeBounds(uni, edge, edgeMin, edgeMax);
+            min = glm::min(min, edgeMin);
+            max = glm::max(max, edgeMax);
+            edges.push_back(edge);
+        }
+    }
+    if (edges.empty()) {
+        return;
+    }
+
+    const glm::vec2 extent {max - min};
+    float cellSize = kEdgeGridCellSize;
+    const auto cellsAcross = [](float length, float size) {
+        return static_cast<int64_t>(std::floor(length / size)) + 1;
+    };
+    while (cellsAcross(extent.x, cellSize) * cellsAcross(extent.y, cellSize) > kMaxEdgeGridCells) {
+        cellSize *= 2.0f;
+    }
+    grid.origin = min;
+    grid.cellSize = cellSize;
+    grid.columns = static_cast<int>(cellsAcross(extent.x, cellSize));
+    grid.rows = static_cast<int>(cellsAcross(extent.y, cellSize));
+
+    // Count each cell's edges, then file them.
+    grid.cellStarts.assign(static_cast<size_t>(grid.columns) * grid.rows + 1, 0);
+    const auto forCells = [&](uint32_t edge, const auto &visit) {
+        glm::vec2 edgeMin, edgeMax;
+        edgeBounds(uni, edge, edgeMin, edgeMax);
+        const GridSpan span = gridSpan(grid, edgeMin, edgeMax);
+        for (int y = span.y0; y <= span.y1; ++y) {
+            for (int x = span.x0; x <= span.x1; ++x) {
+                visit(static_cast<size_t>(y) * grid.columns + x);
+            }
+        }
+    };
+    for (uint32_t edge : edges) {
+        forCells(edge, [&grid](size_t cell) { ++grid.cellStarts[cell + 1]; });
+    }
+    for (size_t i = 1; i < grid.cellStarts.size(); ++i) {
+        grid.cellStarts[i] += grid.cellStarts[i - 1];
+    }
+    grid.edges.resize(grid.cellStarts.back());
+    std::vector<uint32_t> filled(grid.cellStarts.begin(), grid.cellStarts.end() - 1);
+    for (uint32_t edge : edges) {
+        forCells(edge, [&](size_t cell) { grid.edges[filled[cell]++] = edge; });
+    }
+}
+
 void uniwalkFinalize(struct Uniwalk &uni) {
     // Deduplicate vertices, so that the same vertex gets the same index in all
     // faces. This way we can compare indices of two vertices instead of
@@ -262,6 +356,8 @@ void uniwalkFinalize(struct Uniwalk &uni) {
             }
         }
     }
+
+    buildEdgeGrid(uni);
 
     // Faces joined through shared edges form one region; a path exists
     // between two faces exactly when they share a region.
@@ -714,9 +810,10 @@ static void planPoints(AStarPath &path, const Uniwalk &uni) {
 
 // A path keeps clear of the faces the walker may not pass over, and of gaps
 // too narrow for it; when no path does, it is found over every face and gap,
-// and the funnel closes the gaps too narrow to a point.
+// and the funnel closes the gaps too narrow to a point. Faces \p keepOff turns
+// down are kept off either way.
 static bool findPath(AStarPath &path, Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to,
-                     const FacePassable &passable, float radius) {
+                     const FacePassable &passable, float radius, const FacePassable &keepOff = {}) {
     const Uniwalk &uni = pf.uni;
     AStarContext &astar = pf.astar;
     uint32_t fromFace = findFaceAt(pf, from);
@@ -726,9 +823,15 @@ static bool findPath(AStarPath &path, Pathfinder &pf, const glm::vec3 &from, con
         return false;
     }
 
-    bool found = findPathAStar(path, astar, uni, fromFace, toFace, passable, radius);
+    FacePassable first = passable;
+    if (keepOff) {
+        first = [&passable, &keepOff](uint32_t face) {
+            return keepOff(face) && (!passable || passable(face));
+        };
+    }
+    bool found = findPathAStar(path, astar, uni, fromFace, toFace, first, radius);
     if (!found && (passable || radius > 0.0f)) {
-        found = findPathAStar(path, astar, uni, fromFace, toFace, {}, 0.0f);
+        found = findPathAStar(path, astar, uni, fromFace, toFace, keepOff, 0.0f);
     }
     if (!found) {
         return false;
@@ -752,6 +855,7 @@ static bool findPath(AStarPath &path, Pathfinder &pf, const glm::vec3 &from, con
     path.radius = radius;
     path.current = 0;
     path.active = true;
+    path.straight = false;
     path.followsFaces = true;
     planPoints(path, uni);
 
@@ -797,6 +901,47 @@ std::optional<Path> createPath(Pathfinder &pf, const glm::vec3 &from, const glm:
     return std::nullopt;
 }
 
+std::optional<Path> createStraightPath(Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to) {
+    if (!pathExists(pf, from, to)) {
+        return std::nullopt;
+    }
+    for (int32_t i = 0; i < pf.paths.size(); ++i) {
+        AStarPath &path = pf.paths[i];
+        if (path.active) {
+            continue;
+        }
+        path.faces.clear();
+        path.pointFaces.clear();
+        path.from = from;
+        path.to = to;
+        path.radius = 0.0f;
+        path.current = 0;
+        path.straight = true;
+        path.followsFaces = true;
+        path.points = {from, to};
+        path.pointNext = 1;
+        path.passable = {};
+        path.active = true;
+        path.index = i;
+        return Path {i};
+    }
+    return std::nullopt;
+}
+
+bool replanPath(Pathfinder &pf, Path p, const glm::vec3 &from, const FacePassable &keepOff) {
+    AStarPath &path = pf.paths[p.index];
+    if (path.straight || !path.followsFaces) {
+        return true;
+    }
+    // The search runs on a copy, so a failed one leaves the path as it was.
+    AStarPath planned = path;
+    if (!findPath(planned, pf, from, path.to, path.passable, path.radius, keepOff)) {
+        return false;
+    }
+    path = std::move(planned);
+    return true;
+}
+
 void releasePath(Pathfinder &pf, Path path) {
     pf.paths[path.index].active = false;
     pf.paths[path.index].passable = {};
@@ -834,6 +979,9 @@ static void updatePathPoints(AStarPath &path, const glm::vec3 &current) {
 bool updatePath(Pathfinder &pf, Path p, const glm::vec3 &current) {
     AStarPath &path = pf.paths[p.index];
 
+    if (path.straight) {
+        return true;
+    }
     if (!path.followsFaces) {
         updatePathPoints(path, current);
         return true;
@@ -895,6 +1043,16 @@ glm::vec3 getLastPathPoint(Pathfinder &pf, Path p) {
     return path.followsFaces ? path.to : path.points.back();
 }
 
+bool isStraightPath(const Pathfinder &pf, Path p) {
+    return pf.paths[p.index].straight;
+}
+
+const std::vector<glm::vec3> &getPathPoints(const Pathfinder &pf, Path p, uint32_t &next) {
+    const AStarPath &path = pf.paths[p.index];
+    next = path.pointNext;
+    return path.points;
+}
+
 bool followsPathPoints(Pathfinder &pf, Path p) {
     return !pf.paths[p.index].followsFaces;
 }
@@ -916,6 +1074,7 @@ void setPathPoints(Pathfinder &pf, Path p, std::vector<glm::vec3> points, uint32
     assert(next < points.size());
     path.points = std::move(points);
     path.pointNext = next;
+    path.straight = false;
     path.followsFaces = false;
 }
 
@@ -1082,65 +1241,121 @@ std::optional<float> walkmeshElevationAt(const Uniwalk &uni, const glm::vec2 &xy
     }
     return best;
 }
-// Keepout vector points away from a border edge or a corner vertex.
-glm::vec3 computeKeepoutForce(const Uniwalk &uni, const glm::vec3 &position) {
-    float keepoutDistance2 = 4.0f;
-    float keepoutCornerDistance2 = 2.0f;
-    glm::vec3 keepout = {0.0f, 0.0f, 0.0f};
 
-    // A room counts within kFloorHeadroom over and under its box, and only
-    // edges and corners within kFloorHeadroom of the walker's height push it:
-    // the edges of a floor over or under its own do not.
-    const glm::vec3 headroom {0.0f, 0.0f, kFloorHeadroom};
-    const auto onLevel = [&position](const glm::vec3 &point) {
-        return std::fabs(point.z - position.z) <= kFloorHeadroom;
-    };
-    for (const Uniroom &room : uni.rooms) {
-        if (glm::any(glm::greaterThan(position, room.max + headroom)) ||
-            glm::any(glm::lessThan(position, room.min - headroom))) {
-            // Not in this room.
-            continue;
-        }
-        for (uint32_t i = room.begin; i < room.end; ++i) {
-            const Uniface &face = uni.faces[i];
-            for (uint32_t j = 0; j < 3; ++j) {
-                if (face.adjecent[j] != UINT32_MAX) {
-                    // Edges to other walkable faces do not contribute to
-                    // keepout.
+// An edge of the walkable ground as a walker at a point meets it: the
+// nearest point of the edge across the ground plan, the way from it to the
+// walker and how far that is, and whether the walker stands on the walkable
+// side of it and within kFloorHeadroom of its height there.
+struct EdgeContact {
+    glm::vec2 away {0.0f};
+    float distance {0.0f};
+    bool counts {false};
+};
+
+static EdgeContact meetEdge(const Uniwalk &uni, uint32_t edge, const glm::vec3 &position) {
+    const Uniface &face = uni.faces[edge / 3];
+    const uint32_t j = edge % 3;
+    const glm::vec3 &a = uni.vertices[face.vertices[kTriangleEdges[j][0]]];
+    const glm::vec3 &b = uni.vertices[face.vertices[kTriangleEdges[j][1]]];
+    // The face's third corner lies on the walkable side.
+    const glm::vec3 &c = uni.vertices[face.vertices[3 - kTriangleEdges[j][0] - kTriangleEdges[j][1]]];
+    const glm::vec2 along {glm::vec2(b) - glm::vec2(a)};
+    glm::vec2 inward {-along.y, along.x};
+    if (glm::dot(inward, glm::vec2(c) - glm::vec2(a)) < 0.0f) {
+        inward = -inward;
+    }
+    const float length2 = glm::dot(along, along);
+    const glm::vec2 fromA {glm::vec2(position) - glm::vec2(a)};
+    const float t = length2 > 0.0f ? std::clamp(glm::dot(fromA, along) / length2, 0.0f, 1.0f) : 0.0f;
+    const glm::vec3 nearest {a + (b - a) * t};
+
+    EdgeContact contact;
+    const glm::vec2 offset {glm::vec2(position) - glm::vec2(nearest)};
+    contact.distance = glm::length(offset);
+    const float inwardLength = glm::length(inward);
+    if (contact.distance > 1e-4f) {
+        contact.away = offset / contact.distance;
+    } else if (inwardLength > 0.0f) {
+        contact.away = inward / inwardLength;
+    }
+    contact.counts = glm::dot(fromA, inward) >= 0.0f && std::fabs(nearest.z - position.z) <= kFloorHeadroom;
+    return contact;
+}
+
+// Visits each edge filed in the cells within reach of a point once: in the
+// first cell both its box and the reach cover.
+template <typename Visit>
+static void forEdgesNear(const Uniwalk &uni, const glm::vec3 &position, float reach, const Visit &visit) {
+    const EdgeGrid &grid = uni.edgeGrid;
+    if (grid.edges.empty()) {
+        return;
+    }
+    const glm::vec2 centre {position};
+    const GridSpan span = gridSpan(grid, centre - reach, centre + reach);
+    for (int y = span.y0; y <= span.y1; ++y) {
+        for (int x = span.x0; x <= span.x1; ++x) {
+            const size_t cell = static_cast<size_t>(y) * grid.columns + x;
+            for (uint32_t k = grid.cellStarts[cell]; k < grid.cellStarts[cell + 1]; ++k) {
+                const uint32_t edge = grid.edges[k];
+                glm::vec2 edgeMin, edgeMax;
+                edgeBounds(uni, edge, edgeMin, edgeMax);
+                const GridSpan own = gridSpan(grid, edgeMin, edgeMax);
+                if (x != std::max(own.x0, span.x0) || y != std::max(own.y0, span.y0)) {
                     continue;
                 }
-                glm::vec3 v0 = uni.vertices[face.vertices[kTriangleEdges[j][0]]];
-                glm::vec3 v1 = uni.vertices[face.vertices[kTriangleEdges[j][1]]];
-                glm::vec3 edge = v0 - v1;
-                float edgeLen2 = glm::length2(edge);
-                float projRatio = glm::dot(edge, position - v1) / edgeLen2;
-                if (projRatio > 0.0f && projRatio < 1.0f) {
-                    // Current position projects to the edge.
-                    glm::vec3 proj = v1 + edge * projRatio;
-                    glm::vec3 fromEdge = position - proj;
-                    float fromEdgeLength2 = glm::length2(fromEdge);
-                    if (fromEdgeLength2 < keepoutDistance2 && onLevel(proj)) {
-                        keepout += fromEdge / fromEdgeLength2;
-                    }
-                }
-
-                // Corner points push outside.
-                glm::vec3 fromCorner0 = position - v0;
-                float fromCorner0Len2 = glm::length2(fromCorner0);
-                if (fromCorner0Len2 < keepoutCornerDistance2 && onLevel(v0)) {
-                    keepout += fromCorner0 / fromCorner0Len2;
-                }
-
-                glm::vec3 fromCorner1 = position - v1;
-                float fromCorner1Len2 = glm::length2(fromCorner1);
-                if (fromCorner1Len2 < keepoutCornerDistance2 && onLevel(v1)) {
-                    keepout += fromCorner1 / fromCorner1Len2;
-                }
+                visit(edge);
             }
         }
     }
+}
 
-    return keepout;
+glm::vec2 computeKeepoutForce(const Uniwalk &uni, const glm::vec3 &position, float radius, const glm::vec2 &heading) {
+    const float reach = radius + kKeepoutMargin;
+    glm::vec2 push {0.0f};
+    forEdgesNear(uni, position, reach, [&](uint32_t edge) {
+        const EdgeContact contact = meetEdge(uni, edge, position);
+        if (contact.counts && contact.distance < reach) {
+            push += contact.away * ((reach - contact.distance) / reach);
+        }
+    });
+    // An edge behind the walker does not push it on.
+    const float forward = glm::dot(push, heading);
+    if (forward > 0.0f) {
+        push -= heading * forward;
+    }
+    const float length = glm::length(push);
+    if (length > 1.0f) {
+        push /= length;
+    }
+    return push;
+}
+
+glm::vec2 slideAlongEdges(const Uniwalk &uni, const glm::vec3 &position, float radius, glm::vec2 direction) {
+    forEdgesNear(uni, position, radius, [&](uint32_t edge) {
+        const EdgeContact contact = meetEdge(uni, edge, position);
+        if (!contact.counts || contact.distance >= radius) {
+            return;
+        }
+        const float off = glm::dot(direction, contact.away);
+        if (off < kSlideOffEdge) {
+            direction += contact.away * (kSlideOffEdge - off);
+        }
+    });
+    return direction;
+}
+
+bool isClearGround(const Pathfinder &pf, const glm::vec3 &point, float radius) {
+    if (findFaceAt(pf, point) == UINT32_MAX) {
+        return false;
+    }
+    bool clear = true;
+    forEdgesNear(pf.uni, point, radius, [&](uint32_t edge) {
+        const EdgeContact contact = meetEdge(pf.uni, edge, point);
+        if (contact.counts && contact.distance < radius) {
+            clear = false;
+        }
+    });
+    return clear;
 }
 
 } // namespace game
