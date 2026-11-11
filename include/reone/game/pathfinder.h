@@ -48,6 +48,13 @@ struct Uniroom {
     uint32_t end;
     glm::vec3 min;
     glm::vec3 max;
+    /** The room walkmesh the faces came from. */
+    const graphics::Walkmesh *walkmesh {nullptr};
+    /**
+     * For each face of the room walkmesh, by its index there, the face of the
+     * unified walkmesh it became; UINT32_MAX for a face that is not walkable.
+     */
+    std::vector<uint32_t> unifiedFaces;
 };
 
 /// Unified walkmesh, assembled from walkmeshes of all rooms in the area.
@@ -68,11 +75,14 @@ struct AStarFace {
 
     Flag flag;
     uint32_t parent;
+    /** The length of the best way found to the face, from centroid to centroid. */
+    float travelled;
 };
 
 /// Element of a list of faces to consider next for A* algorithm.
 struct AStarOpenFace {
     uint32_t index;
+    /** The way travelled to the face, and the straight line from it to the goal. */
     float cost;
 };
 
@@ -96,6 +106,8 @@ struct AStarPath {
     glm::vec3 to;
     /** The face the funnel has reached. */
     uint32_t next;
+    /** The face of the path the walker was last found on. */
+    uint32_t current {0};
     /**
      * The points of the walk, walked straight one after another, and the index
      * of the one being walked to. While the path follows its faces they are
@@ -119,10 +131,28 @@ struct Path {
     int32_t index;
 };
 
+/** A face of a room walkmesh, by its index there. */
+struct RoomFaceRef {
+    const graphics::Walkmesh *walkmesh {nullptr};
+    uint32_t face {0};
+};
+
+/**
+ * The face of a room walkmesh a point stands on, as the area finds it; empty
+ * when the point stands on none.
+ */
+using FaceLocator = std::function<std::optional<RoomFaceRef>(const glm::vec3 &)>;
+
 struct Pathfinder : public boost::noncopyable {
     Uniwalk uni;
     AStarContext astar;
     std::vector<AStarPath> paths;
+    /**
+     * The face a point stands on, as the area finds it. Without one, the
+     * pathfinder finds it over the unified walkmesh by the same rule for its
+     * walkable faces (see graphics::Walkmesh::standingFace).
+     */
+    FaceLocator locate;
 };
 
 void uniwalkLoadRoom(struct Uniwalk &wm, graphics::Walkmesh &data, std::set<uint32_t> &walkableMaterial);

@@ -97,6 +97,8 @@ struct RoomFace {
     float height {0.0f};
     /** The face's normal. */
     glm::vec3 normal {0.0f};
+    /** The face's index in the room walkmesh. */
+    uint32_t index {0};
 };
 
 /** How a level walk through the rooms ends (see ISceneGraph::walkRooms). */

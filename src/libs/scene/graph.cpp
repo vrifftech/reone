@@ -1243,7 +1243,7 @@ std::optional<RoomFace> SceneGraph::findRoomFace(const WalkmeshSceneNode &room, 
         localHeight = -(face.normal.x * local.x + face.normal.y * local.y + distance) / face.normal.z;
     }
     const glm::vec3 point {room.absoluteTransform() * glm::vec4(local.x, local.y, localHeight, 1.0f)};
-    return RoomFace {face.material, point.z, glm::vec3 {room.absoluteTransform() * glm::vec4(face.normal, 0.0f)}};
+    return RoomFace {face.material, point.z, glm::vec3 {room.absoluteTransform() * glm::vec4(face.normal, 0.0f)}, standing->face};
 }
 
 RoomWalkEnd SceneGraph::walkRooms(const glm::vec3 &origin, const glm::vec3 &dest, std::optional<int> maxRooms, bool withBands,

@@ -75,6 +75,11 @@ namespace game {
 
 static const uint32_t kTriangleEdges[3][2] = {{0, 1}, {1, 2}, {2, 0}};
 
+// A floor more than this over a point is a floor over the one at its level,
+// and a face more than this from a point's height is on another floor (see
+// graphics::Walkmesh::kFloorHeadroom).
+static constexpr float kFloorHeadroom = graphics::Walkmesh::kFloorHeadroom;
+
 // Import a walkmesh of a single room into Uniwalk structure. Once all rooms are
 // imported, call uniwalkFinalize to establish connections between rooms.
 void uniwalkLoadRoom(struct Uniwalk &uni, graphics::Walkmesh &data, std::set<uint32_t> &walkableMaterial) {
@@ -84,7 +89,7 @@ void uniwalkLoadRoom(struct Uniwalk &uni, graphics::Walkmesh &data, std::set<uin
     // Copy all vertices without de-duplicating them with the previously loaded
     // meshes. Calculate AABB.
     glm::vec3 min = {FLT_MAX, FLT_MAX, FLT_MAX};
-    glm::vec3 max = {FLT_MIN, FLT_MIN, FLT_MIN};
+    glm::vec3 max = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
     uni.vertices.reserve(uni.vertices.size() + data.vertices.size());
     for (glm::vec3 v : data.vertices) {
         uni.vertices.push_back(v);
@@ -100,13 +105,15 @@ void uniwalkLoadRoom(struct Uniwalk &uni, graphics::Walkmesh &data, std::set<uin
     // Base of the face array for this room.
     uint32_t beginFace = uni.faces.size();
 
-    // Copy all walkable faces.
+    // Copy all walkable faces, noting which unified face each became.
     uni.faces.reserve(uni.faces.size() + data.faces.size());
+    std::vector<uint32_t> unifiedFaces(data.faces.size(), UINT32_MAX);
     for (uint32_t i = 0; i < data.faces.size(); ++i) {
         uint32_t material = data.materials[i];
         if (!graphics::Walkmesh::hasSurfaceMaterial(walkableMaterial, material)) {
             continue;
         }
+        unifiedFaces[i] = static_cast<uint32_t>(uni.faces.size());
 
         const graphics::Walkmesh::FaceVertices inputFace = data.faces[i];
         Uniface face = {0};
@@ -126,8 +133,10 @@ void uniwalkLoadRoom(struct Uniwalk &uni, graphics::Walkmesh &data, std::set<uin
         beginFace,
         endFace,
         min, max};
+    room.walkmesh = &data;
+    room.unifiedFaces = std::move(unifiedFaces);
 
-    uni.rooms.push_back(room);
+    uni.rooms.push_back(std::move(room));
 }
 
 static void drawDebugFace(const Uniwalk &uni, uint32_t index) {
@@ -275,7 +284,6 @@ struct CastResult {
 static CastResult castFace(const Uniwalk &uni, uint32_t face, glm::vec3 position) {
     // Offset position slightly to prevent rounding errors.
     glm::vec3 castPosition = position + glm::vec3(0.0f, 0.0f, 0.1f);
-    float maxDistance = 100.0f;
     float distance = 0.0f;
     glm::vec2 baryPosition(0.0f);
     glm::vec3 down(0.0f, 0.0f, -1.0f);
@@ -290,23 +298,64 @@ static CastResult castFace(const Uniwalk &uni, uint32_t face, glm::vec3 position
     return {intersection, intersects};
 }
 
-static uint32_t findFaceAt(const Uniwalk &uni, glm::vec3 position) {
+// Whether a point stands on a face: the vertical through it meets the face no
+// more than kFloorHeadroom under it, so a floor beneath its own does not count.
+static bool standsOnFace(const Uniwalk &uni, uint32_t face, const glm::vec3 &position) {
+    const CastResult res = castFace(uni, face, position);
+    return res.intersects && position.z - res.intersection.z <= kFloorHeadroom;
+}
+
+// The unified face a point stands on. With the area's locator, it is the face
+// the area finds, so a walk and its path keep to the same floor; a point the
+// area finds on a face that is not walkable stands on none. Without one, it is
+// found by the same rule over the walkable faces: the highest face on the
+// vertical through the point, unless that lies more than kFloorHeadroom over
+// the point, when the highest within kFloorHeadroom of its height is stood on
+// instead, if any.
+static uint32_t findFaceAt(const Pathfinder &pf, const glm::vec3 &position) {
+    const Uniwalk &uni = pf.uni;
+    if (pf.locate) {
+        const auto ref = pf.locate(position);
+        if (!ref) {
+            return UINT32_MAX;
+        }
+        for (const Uniroom &room : uni.rooms) {
+            if (room.walkmesh == ref->walkmesh) {
+                return ref->face < room.unifiedFaces.size() ? room.unifiedFaces[ref->face] : UINT32_MAX;
+            }
+        }
+        return UINT32_MAX;
+    }
+
+    uint32_t highest = UINT32_MAX;
+    float highestZ = 0.0f;
+    uint32_t level = UINT32_MAX;
+    float levelZ = 0.0f;
     for (const Uniroom &room : uni.rooms) {
-        // Skip the room if the if the position is not in its AABB.
-        if (glm::any(glm::greaterThan(position, room.max)) || glm::any(glm::lessThan(position, room.min))) {
+        if (position.x > room.max.x || position.y > room.max.y || position.x < room.min.x || position.y < room.min.y) {
             continue;
         }
-
-        // Raycast to each face in the room.
+        const glm::vec3 top {position.x, position.y, room.max.z + 1.0f};
         for (uint32_t i = room.begin; i < room.end; ++i) {
-            CastResult res = castFace(uni, i, position);
-            if (res.intersects) {
-                return i;
+            const CastResult res = castFace(uni, i, top);
+            if (!res.intersects) {
+                continue;
+            }
+            const float z = res.intersection.z;
+            if (highest == UINT32_MAX || z > highestZ) {
+                highest = i;
+                highestZ = z;
+            }
+            if (std::fabs(z - position.z) <= kFloorHeadroom && (level == UINT32_MAX || z > levelZ)) {
+                level = i;
+                levelZ = z;
             }
         }
     }
-
-    return UINT32_MAX;
+    if (highest != UINT32_MAX && highestZ > position.z + kFloorHeadroom && level != UINT32_MAX) {
+        return level;
+    }
+    return highest;
 }
 
 /// Find a face with the minimum cost and remove it from the open list.
@@ -349,8 +398,13 @@ static bool findPathAStar(AStarPath &path, AStarContext &ctx, const Uniwalk &uni
     // Initialize the algorithm. Find a reverse path - a path from toFace to
     // fromFace. When the algorithm reaches the fromFace, it backtracks and
     // reverses the path, so it transforms to natural order [fromFace, toFace].
-    ctx.state[toFace].flag = AStarFace::Open;
-    ctx.open.push_back({toFace, 0.0f});
+    // A face is ranked by the way travelled to it, centroid to centroid, and
+    // the straight line from it to the goal, fromFace; the line never
+    // overstates what is left, so the first way to reach the goal is the
+    // shortest over the centroids.
+    const glm::vec3 goal = uni.faces[fromFace].centroid;
+    ctx.state[toFace] = {AStarFace::Open, UINT32_MAX, 0.0f};
+    ctx.open.push_back({toFace, glm::distance(uni.faces[toFace].centroid, goal)});
 
     // Each face is asked once a search whether the walker may pass over it.
     // The search starts from the face the walk ends on and ends on the face
@@ -397,32 +451,33 @@ static bool findPathAStar(AStarPath &path, AStarContext &ctx, const Uniwalk &uni
                 continue;
             }
 
-            glm::vec3 currentCentroid = uni.faces[current.index].centroid;
-            glm::vec3 adjCentroid = uni.faces[adj].centroid;
-            float distance = glm::distance2(currentCentroid, adjCentroid);
-            float heuristic = glm::distance2(adjCentroid, uni.faces[toFace].centroid);
-            float cost = current.cost + distance + heuristic;
+            const glm::vec3 &adjCentroid = uni.faces[adj].centroid;
+            const float travelled = ctx.state[current.index].travelled +
+                                    glm::distance(uni.faces[current.index].centroid, adjCentroid);
+            const float cost = travelled + glm::distance(adjCentroid, goal);
 
             if (ctx.state[adj].flag == AStarFace::Open) {
+                if (travelled >= ctx.state[adj].travelled) {
+                    continue;
+                }
+                // The adjacent face is reached by a shorter way through the
+                // current face.
                 bool foundOpen = false;
                 for (AStarOpenFace &open : ctx.open) {
                     if (open.index != adj) {
                         continue;
                     }
                     foundOpen = true;
-
-                    if (cost < open.cost) {
-                        // Adjecent face is "best" reachable from the current face.
-                        open.cost = cost;
-                        ctx.state[adj].parent = current.index;
-                    }
+                    open.cost = cost;
                     break;
                 }
                 assert(foundOpen);
+                ctx.state[adj].parent = current.index;
+                ctx.state[adj].travelled = travelled;
             } else {
                 // Open the adjecent face.
                 ctx.open.push_back({adj, cost});
-                ctx.state[adj] = {AStarFace::Open, current.index};
+                ctx.state[adj] = {AStarFace::Open, current.index, travelled};
             }
         }
     }
@@ -628,10 +683,12 @@ static glm::vec3 funnelPath(AStarPath &path, const Uniwalk &uni, const glm::vec3
     return path.to;
 }
 
-static bool findPath(AStarPath &path, AStarContext &astar, const Uniwalk &uni,
-                     const glm::vec3 &from, const glm::vec3 &to, const FacePassable &passable) {
-    uint32_t fromFace = findFaceAt(uni, from);
-    uint32_t toFace = findFaceAt(uni, to);
+static bool findPath(AStarPath &path, Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to,
+                     const FacePassable &passable) {
+    const Uniwalk &uni = pf.uni;
+    AStarContext &astar = pf.astar;
+    uint32_t fromFace = findFaceAt(pf, from);
+    uint32_t toFace = findFaceAt(pf, to);
 
     if (fromFace == UINT32_MAX || toFace == UINT32_MAX) {
         return false;
@@ -661,6 +718,7 @@ static bool findPath(AStarPath &path, AStarContext &astar, const Uniwalk &uni,
     path.from = from;
     path.to = to;
     path.next = 0;
+    path.current = 0;
     path.active = true;
     const glm::vec3 first = funnelPath(path, uni, from);
     path.points = {from, first};
@@ -670,8 +728,8 @@ static bool findPath(AStarPath &path, AStarContext &astar, const Uniwalk &uni,
 }
 
 bool pathExists(const Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to) {
-    const uint32_t fromFace = findFaceAt(pf.uni, from);
-    const uint32_t toFace = findFaceAt(pf.uni, to);
+    const uint32_t fromFace = findFaceAt(pf, from);
+    const uint32_t toFace = findFaceAt(pf, to);
     if (fromFace == UINT32_MAX || toFace == UINT32_MAX) {
         return false;
     }
@@ -685,7 +743,7 @@ std::optional<Path> createPath(Pathfinder &pf, const glm::vec3 &from, const glm:
             continue;
         }
 
-        bool found = findPath(path, pf.astar, pf.uni, from, to, passable);
+        bool found = findPath(path, pf, from, to, passable);
         if (!found) {
             return std::nullopt;
         }
@@ -739,21 +797,23 @@ bool updatePath(Pathfinder &pf, Path p, const glm::vec3 &current) {
         return true;
     }
 
-    uint32_t checkFrom = (path.next == 0) ? path.next : path.next - 1;
-    uint32_t checkTo = path.next + 1;
+    // The walker is looked for on the path's faces from the one before where
+    // it was last found to the one past where the funnel has reached. The
+    // funnel runs ahead of the walker, so the faces between are its way there.
+    const uint32_t checkFrom = path.current > 0 ? path.current - 1 : 0;
+    const uint32_t checkTo = std::min<uint32_t>(path.next + 1, static_cast<uint32_t>(path.faces.size()) - 1);
 
     bool isOnPath = false;
-    uint32_t currentFace = UINT32_MAX;
-    for (uint32_t i = checkFrom; i < checkTo; ++i) {
-        CastResult res = castFace(pf.uni, path.faces[i], current);
-        if (res.intersects) {
+    for (uint32_t i = checkFrom; i <= checkTo; ++i) {
+        if (standsOnFace(pf.uni, path.faces[i], current)) {
+            path.current = i;
             isOnPath = true;
             break;
         }
     }
     if (!isOnPath) {
         // Wandered off the path, recalculate.
-        bool foundNewPath = findPath(path, pf.astar, pf.uni, current, path.to, path.passable);
+        bool foundNewPath = findPath(path, pf, current, path.to, path.passable);
         if (!foundNewPath) {
             return false;
         }
@@ -992,8 +1052,16 @@ glm::vec3 computeKeepoutForce(const Uniwalk &uni, const glm::vec3 &position) {
     float keepoutCornerDistance2 = 2.0f;
     glm::vec3 keepout = {0.0f, 0.0f, 0.0f};
 
+    // A room counts within kFloorHeadroom over and under its box, and only
+    // edges and corners within kFloorHeadroom of the walker's height push it:
+    // the edges of a floor over or under its own do not.
+    const glm::vec3 headroom {0.0f, 0.0f, kFloorHeadroom};
+    const auto onLevel = [&position](const glm::vec3 &point) {
+        return std::fabs(point.z - position.z) <= kFloorHeadroom;
+    };
     for (const Uniroom &room : uni.rooms) {
-        if (glm::any(glm::greaterThan(position, room.max)) || glm::any(glm::lessThan(position, room.min))) {
+        if (glm::any(glm::greaterThan(position, room.max + headroom)) ||
+            glm::any(glm::lessThan(position, room.min - headroom))) {
             // Not in this room.
             continue;
         }
@@ -1015,7 +1083,7 @@ glm::vec3 computeKeepoutForce(const Uniwalk &uni, const glm::vec3 &position) {
                     glm::vec3 proj = v1 + edge * projRatio;
                     glm::vec3 fromEdge = position - proj;
                     float fromEdgeLength2 = glm::length2(fromEdge);
-                    if (fromEdgeLength2 < keepoutDistance2) {
+                    if (fromEdgeLength2 < keepoutDistance2 && onLevel(proj)) {
                         keepout += fromEdge / fromEdgeLength2;
                     }
                 }
@@ -1023,13 +1091,13 @@ glm::vec3 computeKeepoutForce(const Uniwalk &uni, const glm::vec3 &position) {
                 // Corner points push outside.
                 glm::vec3 fromCorner0 = position - v0;
                 float fromCorner0Len2 = glm::length2(fromCorner0);
-                if (fromCorner0Len2 < keepoutCornerDistance2) {
+                if (fromCorner0Len2 < keepoutCornerDistance2 && onLevel(v0)) {
                     keepout += fromCorner0 / fromCorner0Len2;
                 }
 
                 glm::vec3 fromCorner1 = position - v1;
                 float fromCorner1Len2 = glm::length2(fromCorner1);
-                if (fromCorner1Len2 < keepoutCornerDistance2) {
+                if (fromCorner1Len2 < keepoutCornerDistance2 && onLevel(v1)) {
                     keepout += fromCorner1 / fromCorner1Len2;
                 }
             }

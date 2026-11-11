@@ -916,6 +916,20 @@ void Area::loadLYT() {
     }
 
     uniwalkFinalize(_pathfinder.uni);
+    // The pathfinder finds the face a point stands on as the area does, so a
+    // walk's path keeps to the floor the walker stands on.
+    _pathfinder.locate = [this](const glm::vec3 &point) -> std::optional<RoomFaceRef> {
+        auto &sceneGraph = _services.scene.graphs.get(_sceneName);
+        const auto room = sceneGraph.findRoomWalkmesh(point);
+        if (!room) {
+            return std::nullopt;
+        }
+        const auto face = sceneGraph.findRoomFace(*room, point, scene::RoomFaceProbe::Locating);
+        if (!face) {
+            return std::nullopt;
+        }
+        return RoomFaceRef {&room->walkmesh(), face->index};
+    };
     // Allow up to 64 concurrent paths.
     _pathfinder.paths.resize(64);
     // Rooms are found under points from the moment they are loaded, and the
