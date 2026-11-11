@@ -2602,7 +2602,8 @@ Area::DirectLineTest Area::testDirectLine(
     const Creature &mover,
     const glm::vec3 &from,
     const glm::vec3 &to,
-    std::optional<std::reference_wrapper<const Creature>> ignored) const {
+    std::optional<std::reference_wrapper<const Creature>> ignored,
+    float roomSpaceShrink) const {
     // In TSL a walk is followed through no more than this many rooms.
     static constexpr int kMaxRoomsOnWalk = 100;
     // Room walls are looked for this far below the heights the walk spans in
@@ -2636,7 +2637,9 @@ Area::DirectLineTest Area::testDirectLine(
         stretches.push_back(scene::RoomStretch {});
     }
     const auto blocking = blockingSurfaces(_services.game.surfaces);
-    const float radius = mover.personalSpace();
+    // A room's walls count within the walker's personal space, less the
+    // shrink asked for, and never less than none.
+    const float radius = std::max(0.0f, mover.personalSpace() - roomSpaceShrink);
     for (size_t i = 0; i < stretches.size(); ++i) {
         const scene::RoomStretch &stretch = stretches[i];
         const glm::vec3 start {from + line * stretch.from};

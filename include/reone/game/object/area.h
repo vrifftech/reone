@@ -433,7 +433,8 @@ public:
         const Creature &mover,
         const glm::vec3 &from,
         const glm::vec3 &to,
-        std::optional<std::reference_wrapper<const Creature>> ignored = std::nullopt) const;
+        std::optional<std::reference_wrapper<const Creature>> ignored = std::nullopt,
+        float roomSpaceShrink = 0.0f) const;
     /**
      * Whether a walking creature, or a driven leader, can take a step from
      * one point to another. Walls are found by a thin level line just above

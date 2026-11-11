@@ -781,6 +781,33 @@ public:
      * to the facing of the trail step the point lies on.
      */
     glm::vec3 formationSpot(int slot) const;
+    /** The trail's steps: how many it holds, and where the next is written. */
+    int followStepCount() const { return _followCount; }
+    int followStepHead() const { return _followHead; }
+    /** Where the trail step at \p index lies. */
+    const glm::vec3 &followStepPosition(int index) const { return _followSteps[index].position; }
+    /** A slot's formation offset as the leader faced at the trail step at \p index. */
+    glm::vec3 formationOffsetAt(int slot, int index) const;
+    /** The trail step a slot's follow point lies on. */
+    int followPointStep(int slot) const { return _followSlots[slot].index; }
+    /** The follow points are worked out again from the trail. */
+    void refreshFollowPoints() { recalculateFollowPoints(); }
+    /** The number of steps the trail holds at most. */
+    static int trailCapacity() { return kFollowSteps; }
+    /**
+     * How many times the party has turned back on its trail, its formation
+     * swapping sides. A follower on the trail takes up its place from the
+     * new follow point each time.
+     */
+    int followTurnBacks() const { return _followTurnBacks; }
+    /** How many times the trail has been reset; a follower starts over each time. */
+    int followPathResets() const { return _followPathResets; }
+    /**
+     * Whether the follower in a slot, after the leader changed, waits for the
+     * leader to move 7 m off before it starts along the trail.
+     */
+    bool waitsForLeaderDistance(int slot) const { return _followSlots[slot].waitForLeaderDistance; }
+    void stopWaitingForLeaderDistance(int slot) { _followSlots[slot].waitForLeaderDistance = false; }
     /** How far behind the leader the followers keep, by the party's follow state. */
     float followRange() const;
     /**
@@ -822,6 +849,8 @@ private:
         int index {0};
         glm::vec3 formationOffset {0.0f};
         glm::vec3 lastFacing {0.0f, 1.0f, 0.0f};
+        /** See waitsForLeaderDistance. */
+        bool waitForLeaderDistance {false};
     };
 
     Game &_game;
@@ -870,6 +899,8 @@ private:
     float _followAnchorFacing {0.0f};
     /** Seconds of world time since a follower last ran k_hen_retreat, up to the retreat interval. */
     float _retreatScriptTimer {0.0f};
+    int _followTurnBacks {0};
+    int _followPathResets {0};
 
     // END Follow path
 

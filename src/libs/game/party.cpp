@@ -1327,6 +1327,10 @@ void Party::onLeaderChanged(const std::shared_ptr<Creature> &previous, bool soun
     const auto newLeader = leader;
     if (newLeader && newLeader != previous) {
         resetFollowPath(area, newLeader->position(), newLeader->getFacing(), true);
+        // Followers let the new leader move off before they follow.
+        for (auto &slot : _followSlots) {
+            slot.waitForLeaderDistance = true;
+        }
         _game.scriptRunner().run(kLeaderChangedScript, newLeader->id());
         if (_members.empty() || _members[0].creature != newLeader) {
             return;
@@ -1823,6 +1827,7 @@ void Party::resetFollowSlots() {
     _followSteps.fill(FollowStep());
     _followHead = 0;
     _followCount = 0;
+    ++_followPathResets;
     _lastClearStep = glm::vec3(0.0f);
     _followSlots.fill(FollowSlot());
     _followSlots[1].formationOffset = kFirstFollowerFormation;
@@ -1879,6 +1884,7 @@ void Party::resetFollowPath(Area &area, const glm::vec3 &position, float facing,
     }
     _followHead = 0;
     _followCount = 0;
+    ++_followPathResets;
     // An unseeded reset records no step. A seeded one records the seeded
     // spots nearest first, then the position itself; while they are recorded
     // the trail is judged against the followers' points from before the reset.
@@ -2016,10 +2022,14 @@ void Party::updateFollowPath() {
     }
 }
 
+glm::vec3 Party::formationOffsetAt(int slot, int index) const {
+    const glm::quat facing {glm::angleAxis(_followSteps[index].facing, glm::vec3(0.0f, 0.0f, 1.0f))};
+    return facing * _followSlots[slot].formationOffset;
+}
+
 glm::vec3 Party::formationSpot(int slot) const {
     const auto &follow = _followSlots[slot];
-    const glm::quat facing {glm::angleAxis(_followSteps[follow.index].facing, glm::vec3(0.0f, 0.0f, 1.0f))};
-    return follow.point + facing * follow.formationOffset;
+    return follow.point + formationOffsetAt(slot, follow.index);
 }
 
 void Party::noteFollowerFacing(const Creature &follower, const glm::vec3 &forward) {
@@ -2212,6 +2222,7 @@ bool Party::turnBack() {
     for (int slot = 1; slot < kPartyFollowSlots; ++slot) {
         _followSlots[slot].formationOffset.x = -_followSlots[slot].formationOffset.x;
     }
+    ++_followTurnBacks;
     return true;
 }
 

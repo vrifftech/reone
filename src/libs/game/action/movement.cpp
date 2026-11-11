@@ -893,33 +893,514 @@ std::shared_ptr<Action> FollowCheckAction::restore(const SavedActionRecord &reco
 
 static constexpr float kGlanceDistance = 8.0f;
 
+// A follower is this far, squared, from its follow point to run to it, or
+// this far from where it may stand.
+static constexpr float kFollowRunLag2 = 16.0f;
+static constexpr float kFollowRunStray2 = 100.0f;
+// A follower walks at this share of its walk speed when its point lags its
+// follow point, and otherwise closes on its place at this share of its run
+// speed.
+static constexpr float kFollowWalkShare = 0.9f;
+static constexpr float kFollowNearShare = 0.6f;
+// The leader counts as moving from this speed.
+static constexpr float kLeaderMovingSpeed = 0.1f;
+// A follower's walk this update is its speed times this, by how far it lags:
+// within a metre, within fifteen, or farther.
+static constexpr float kFollowCloseScale = 0.9f;
+static constexpr float kFollowMidScale = 1.2f;
+static constexpr float kFollowFarScale = 1.5f;
+static constexpr float kFollowCloseLag2 = 1.0f;
+static constexpr float kFollowMidLag2 = 225.0f;
+// Walking straight to or from the trail covers this share of the walk.
+static constexpr float kStraightShare = 0.7f;
+// The walls a follower's straight walks meet count within its personal space
+// less this.
+static constexpr float kFollowSpaceShrink = 0.1f;
+// After this many seconds on the trail, a follower whose place alongside it
+// is clear for five metres steps over to it.
+static constexpr float kTrailToOffsetTime = 3.0f;
+static constexpr float kOffsetLookAhead = 5.0f;
+// A trail shorter than this many steps is not followed yet.
+static constexpr int kMinTrailSteps = 5;
+// A follower that cannot stand at its place plans a walk to a spot this near
+// its follow point.
+static constexpr float kFollowSafeRadius = 3.0f;
+// A follower springs this share of the way to where it may stand in each
+// sixtieth of a second, whatever the frame rate.
+static constexpr float kSpringShare = 0.5f;
+static constexpr float kSpringUpdatesPerSecond = 60.0f;
+// This many state changes in one update start the follower over.
+static constexpr int kMaxStateChanges = 51;
+// A planned walk counts as there within this range. After one fails, the
+// follower plans again no sooner than this many seconds on.
+static constexpr float kPlannedWalkRange = 0.5f;
+static constexpr float kPlanRetryDelay = 1.0f;
+// A follower waits this many seconds at a closed door before it plans a walk.
+static constexpr float kDoorWaitTime = 3.0f;
+// A follower found off where its action left it, by more than rounding, was
+// moved by something else.
+static constexpr float kMovedElsewhere = 0.001f;
+// After the leader changes, a waiting follower lets the new leader move this
+// far off, squared, before it follows.
+static constexpr float kLeaderMoveOff2 = 49.0f;
+
+// The party's follow action. It ends for a creature outside the party, dead,
+// down for the moment, not free to move, or leading; otherwise it walks the
+// follower along the leader's trail, as a state machine, and keeps running
+// once the follower has caught up.
 void FollowLeaderAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
-    // The party has no leader while it is empty: before it is first populated,
-    // after a module transition resets it, and once the last member is removed
-    // by RemovePartyMember. A FollowLeader action queued on a creature can still
-    // be executed in those windows, so there is nothing to follow and the action
-    // is dropped instead of dereferencing a null leader.
-    auto leader = _game.party().getLeader();
-    if (!leader) {
+    auto &party = _game.party();
+    auto leader = party.getLeader();
+    auto follower = _game.getObjectById<Creature>(actor.id());
+    if (!leader || !follower || follower == leader || !party.isMember(*follower) || follower->isDead() ||
+        follower->isTemporarilyDead() || (follower->effectAIStateMask() & Creature::kAIStateMove) == 0) {
+        // A planned walk left unfinished gives up its path.
+        if (follower && _state == State::PlannedWalk) {
+            follower->clearPath();
+        }
         complete();
         return;
     }
-
-    // Only a party member other than the leader follows; for it the action
-    // keeps running once it has caught up.
-    auto creatureActor = _game.getObjectById<Creature>(actor.id());
-    if (!creatureActor || creatureActor == leader || !_game.party().isMember(*creatureActor)) {
-        complete();
+    auto module = _game.module();
+    auto area = module ? module->area() : nullptr;
+    int slot = -1;
+    for (int i = 1; i < party.getSize() && i < kPartyFollowSlots; ++i) {
+        if (party.getMember(i) == follower) {
+            slot = i;
+        }
+    }
+    if (!area || slot < 0 || dt <= 0.0f) {
+        return;
+    }
+    _planRetryDelay = std::max(0.0f, _planRetryDelay - dt);
+    // A follower moved by anything but this action, as by a jump, a push or
+    // its own fighting, or whose trail was reset, starts over from where it
+    // stands.
+    if (_seenPathResets != party.followPathResets()) {
+        _seenPathResets = party.followPathResets();
+        restart(*follower);
+    }
+    if (_lastPosition && glm::distance(*_lastPosition, glm::vec2(follower->position())) > kMovedElsewhere) {
+        restart(*follower);
+    }
+    // When the party turns back on its trail, a follower on it takes up its
+    // place from the new follow point.
+    if (_seenTurnBacks != party.followTurnBacks()) {
+        _seenTurnBacks = party.followTurnBacks();
+        if (_state != State::New && _state != State::WaitingForPath && _state != State::FindPath && _state != State::PlannedWalk) {
+            _pathIndex = party.followPointStep(slot);
+            _pathPoint = party.followPoint(slot);
+            _state = State::MovingToOffset;
+        }
+    }
+    // A planned walk is walked out first.
+    if (_state == State::PlannedWalk) {
+        const glm::vec2 before {follower->position()};
+        const bool arrived = follower->navigateTo(_plannedDestination, true, kPlannedWalkRange, dt);
+        if (arrived || follower->navigationFailed()) {
+            _state = State::WaitingForPath;
+            _safePosition = follower->position();
+            if (!arrived) {
+                _planRetryDelay = kPlanRetryDelay;
+            }
+        }
+        _lastPosition = glm::vec2(follower->position());
+        glanceAtLeader(*follower, leader, before != glm::vec2(follower->position()));
         return;
     }
 
-    glm::vec3 destination {leader->position()};
-    float distance2 = creatureActor->getSquareDistanceTo(glm::vec2(destination));
-    bool run = distance2 > kDistanceWalk;
+    // How fast the follower goes: it runs when well behind, keeps the
+    // leader's pace while the leader moves, walks while its point catches up
+    // with its follow point, and otherwise closes on it.
+    const glm::vec3 followPoint {party.followPoint(slot)};
+    const float lag2 = glm::distance2(followPoint, _pathPoint);
+    const float stray2 = glm::distance2(followPoint, _safePosition);
+    float leaderSpeed = 0.0f;
+    if (leader->isDriven()) {
+        leaderSpeed = leader->driveSpeed();
+    } else if (leader->movementType() == Creature::MovementType::Run) {
+        leaderSpeed = leader->runSpeed();
+    } else if (leader->movementType() == Creature::MovementType::Walk) {
+        leaderSpeed = leader->walkSpeed();
+    }
+    float speed;
+    if (lag2 >= kFollowRunLag2 || stray2 >= kFollowRunStray2) {
+        speed = follower->runSpeed();
+        if (leaderSpeed > kLeaderMovingSpeed) {
+            speed = std::max(speed, leaderSpeed);
+        }
+    } else if (leaderSpeed > kLeaderMovingSpeed) {
+        speed = leaderSpeed;
+    } else if (lag2 >= 0.001f) {
+        speed = kFollowWalkShare * follower->walkSpeed();
+    } else {
+        speed = follower->runSpeed() * kFollowNearShare;
+    }
+    const float scale = lag2 <= kFollowCloseLag2 ? kFollowCloseScale : (lag2 <= kFollowMidLag2 ? kFollowMidScale : kFollowFarScale);
+    float budget = speed * scale * dt;
 
-    const glm::vec2 before {creatureActor->position()};
-    creatureActor->navigateTo(destination, run, kDefaultFollowDistance, dt);
-    glanceAtLeader(*creatureActor, leader, before != glm::vec2(creatureActor->position()));
+    if (_state == State::FollowingPath) {
+        _followingTime += dt;
+    }
+    _doorWaitTime = _blockingDoorId ? _doorWaitTime + dt : 0.0f;
+    int changes = 0;
+    while (budget >= 0.0f) {
+        const State before = _state;
+        const bool done = runState(*follower, slot, budget);
+        if (_state != before && ++changes >= kMaxStateChanges) {
+            _state = State::New;
+            break;
+        }
+        if (done) {
+            break;
+        }
+    }
+
+    // The follower springs toward where it may stand, when it can walk
+    // straight there; otherwise it is put there, when it fits there.
+    const glm::vec3 start {follower->position()};
+    if (_state != State::PlannedWalk) {
+        const bool clear = lineClear(*follower, _safePosition, start, 0.0f, false);
+        glm::vec3 to {start};
+        if (glm::distance2(_safePosition, start) >= 0.001f) {
+            if (clear) {
+                to = start + (_safePosition - start) * (1.0f - std::pow(1.0f - kSpringShare, kSpringUpdatesPerSecond * dt));
+            } else if (area->isSafeLocationPoint(_safePosition, *follower)) {
+                to = _safePosition;
+            }
+        } else if (clear) {
+            to = _safePosition;
+        }
+        if (to != start) {
+            area->stepCreatureTo(follower, glm::vec3(glm::vec2(to), area->roomLookupHeight(start.z)), Area::MoveFacing::Keep);
+        }
+    }
+    _lastPosition = glm::vec2(follower->position());
+    const glm::vec3 moved {follower->position() - start};
+    const bool hasMoved = moved.x != 0.0f || moved.y != 0.0f;
+    if (hasMoved) {
+        follower->setFacing(-glm::atan(moved.x, moved.y));
+        const bool run = speed > follower->walkSpeed();
+        follower->setMovementType(run ? Creature::MovementType::Run : Creature::MovementType::Walk);
+        follower->setRunning(run);
+    } else if (_state != State::PlannedWalk) {
+        follower->setMovementType(Creature::MovementType::None);
+    }
+    glanceAtLeader(*follower, leader, hasMoved);
+}
+
+void FollowLeaderAction::restart(Creature &follower) {
+    // A planned walk left unfinished gives up its path.
+    if (_state == State::PlannedWalk) {
+        follower.clearPath();
+    }
+    _state = State::New;
+    _blockingDoorId.reset();
+    _lastPosition.reset();
+}
+
+bool FollowLeaderAction::onWallBlocked(Creature &follower, const Door *door) {
+    if (door && (door->state() == DoorState::Closed || door->isOpening())) {
+        if (_blockingDoorId != door->id()) {
+            _blockingDoorId = door->id();
+            _doorWaitTime = 0.0f;
+            if (door->state() == DoorState::Closed && !door->isOpening()) {
+                follower.runBlockedScript(door->id());
+            }
+        }
+        if (_doorWaitTime < kDoorWaitTime) {
+            return true;
+        }
+    } else {
+        _blockingDoorId.reset();
+    }
+    _state = State::FindPath;
+    return false;
+}
+
+bool FollowLeaderAction::lineClear(const Creature &follower, const glm::vec3 &from, const glm::vec3 &to, float shrink, bool memberClear) const {
+    auto area = _game.module()->area();
+    const auto line = area->testDirectLine(follower, from, to, std::nullopt, shrink);
+    if (line.result == Area::DirectLine::Clear) {
+        return true;
+    }
+    return memberClear && line.result == Area::DirectLine::CreatureBlocked && line.blocker &&
+           _game.party().isMember(line.blocker->get());
+}
+
+float FollowLeaderAction::advanceOnTrail(int slot, float distance, const glm::vec3 &from, int index, glm::vec3 &outPoint, int &outIndex) const {
+    const auto &party = _game.party();
+    const int capacity = Party::trailCapacity();
+    const int head = party.followStepHead();
+    const glm::vec3 followPoint {party.followPoint(slot)};
+    const int followIndex = party.followPointStep(slot);
+    glm::vec3 cursor {from};
+    outPoint = from;
+    if (distance > 0.0f) {
+        // Within reach of the follow point, the point is put on it.
+        if (glm::distance2(followPoint, from) <= distance * distance) {
+            outPoint = followPoint;
+            outIndex = followIndex;
+            return distance - std::sqrt(glm::distance2(followPoint, from));
+        }
+        // The point goes no further than the newest step.
+        const int newest = head > 0 ? head - 1 : capacity - 1;
+        bool atNewest = false;
+        do {
+            const glm::vec3 &stepPoint = party.followStepPosition(index);
+            const float stepLength = std::sqrt(glm::distance2(stepPoint, cursor));
+            const float move = std::min(stepLength, distance);
+            if (stepLength > 0.0f) {
+                outPoint += (stepPoint - cursor) / stepLength * move;
+            }
+            if (distance >= stepLength) {
+                cursor = stepPoint;
+                if (index == newest) {
+                    atNewest = true;
+                } else {
+                    index = index >= capacity - 1 ? 0 : index + 1;
+                }
+            }
+            distance -= move;
+        } while (distance > 0.0f && !atNewest);
+    }
+    outIndex = index;
+    return distance;
+}
+
+bool FollowLeaderAction::runState(Creature &follower, int slot, float &budget) {
+    auto &party = _game.party();
+    auto area = _game.module()->area();
+    const int capacity = Party::trailCapacity();
+    const auto offsetAt = [&](int index) { return party.formationOffsetAt(slot, index); };
+    // Walks straight toward a point from where the follower may stand, with
+    // part of the budget; reaching it passes to \p next.
+    const auto walkStraight = [&](const glm::vec3 &dest, State next, glm::vec3 &outPoint) {
+        const float step = budget * kStraightShare;
+        const float d2 = glm::distance2(dest, _safePosition);
+        if (d2 > step * step) {
+            outPoint = _safePosition + glm::normalize(dest - _safePosition) * step;
+            budget = 0.0f;
+            return std::make_pair(_state, true);
+        }
+        outPoint = dest;
+        budget -= std::sqrt(d2) / kStraightShare;
+        return std::make_pair(next, false);
+    };
+    switch (_state) {
+    case State::New:
+        _safePosition = follower.position();
+        _state = State::WaitingForPath;
+        return false;
+
+    case State::WaitingForPath: {
+        if (party.followStepCount() < kMinTrailSteps) {
+            return true;
+        }
+        if (party.waitsForLeaderDistance(slot)) {
+            const auto leader = party.getLeader();
+            if (leader && glm::distance2(leader->position(), follower.position()) < kLeaderMoveOff2) {
+                return true;
+            }
+            party.stopWaitingForLeaderDistance(slot);
+        }
+        _pathPoint = party.followPoint(slot);
+        _pathIndex = party.followPointStep(slot);
+        if (lineClear(follower, _safePosition, _pathPoint + offsetAt(_pathIndex), kFollowSpaceShrink, false)) {
+            _state = State::MovingToOffset;
+            return true;
+        }
+        if (lineClear(follower, _safePosition, _pathPoint, kFollowSpaceShrink, false)) {
+            _state = State::MovingToPath;
+            return true;
+        }
+        // Soon after a planned walk failed, it waits.
+        if (_planRetryDelay > 0.0f) {
+            return true;
+        }
+        _state = State::FindPath;
+        return false;
+    }
+
+    case State::FindPath: {
+        if (_planRetryDelay > 0.0f) {
+            _state = State::WaitingForPath;
+            return true;
+        }
+        party.refreshFollowPoints();
+        const glm::vec3 followPoint {party.followPoint(slot)};
+        const int followIndex = party.followPointStep(slot);
+        _pathPoint = followPoint;
+        _pathIndex = followIndex;
+        const glm::vec3 place {followPoint + offsetAt(followIndex)};
+        if (area->isSafeLocationPoint(place, follower)) {
+            _plannedDestination = place;
+        } else {
+            _plannedDestination = area->computeSafeLocation(followPoint, kFollowSafeRadius, follower, false).value_or(followPoint);
+        }
+        _state = State::PlannedWalk;
+        return true;
+    }
+
+    case State::MovingToPath: {
+        glm::vec3 next;
+        auto [state, done] = walkStraight(_pathPoint, State::FollowingPath, next);
+        const auto line = area->testDirectLine(follower, _safePosition, next, std::nullopt, kFollowSpaceShrink);
+        if (line.result == Area::DirectLine::CreatureBlocked && line.blocker && !party.isMember(line.blocker->get())) {
+            _state = State::TeleportForward;
+            return true;
+        }
+        if (line.result == Area::DirectLine::CreatureBlocked) {
+            return true;
+        }
+        if (line.result != Area::DirectLine::Clear) {
+            return onWallBlocked(follower, line.door ? &line.door->get() : nullptr);
+        }
+        _blockingDoorId.reset();
+        _followingTime = 0.0f;
+        _safePosition = next;
+        _state = state;
+        return done;
+    }
+
+    case State::FollowingPath: {
+        glm::vec3 advanced;
+        int index = _pathIndex;
+        const float left = advanceOnTrail(slot, budget, _pathPoint, _pathIndex, advanced, index);
+        auto line = area->testDirectLine(follower, _pathPoint, advanced, std::nullopt, kFollowSpaceShrink);
+        if (line.result == Area::DirectLine::CreatureBlocked && line.blocker) {
+            if (party.isMember(line.blocker->get())) {
+                return true;
+            }
+            // Held up by someone else, it tries the step it was heading for.
+            if (_pathIndex != index) {
+                index = _pathIndex;
+                advanced = party.followStepPosition(index);
+                line = area->testDirectLine(follower, _pathPoint, advanced, std::nullopt, kFollowSpaceShrink);
+                if (line.result == Area::DirectLine::CreatureBlocked && line.blocker && party.isMember(line.blocker->get())) {
+                    return true;
+                }
+            }
+            if (line.result == Area::DirectLine::CreatureBlocked) {
+                _state = State::TeleportForward;
+                return true;
+            }
+        }
+        if (line.result != Area::DirectLine::Clear) {
+            budget = 0.0f;
+            return onWallBlocked(follower, line.door ? &line.door->get() : nullptr);
+        }
+        _blockingDoorId.reset();
+        _pathPoint = advanced;
+        _pathIndex = index;
+        _safePosition = advanced;
+        budget = left;
+        // After a while on the trail, a place alongside it that stays clear
+        // for five metres ahead is stepped over to.
+        if (_followingTime < kTrailToOffsetTime || !lineClear(follower, advanced, advanced + offsetAt(index), 0.0f, false)) {
+            return true;
+        }
+        glm::vec3 cursor {advanced + offsetAt(index)};
+        float walked = 0.0f;
+        bool allClear = true;
+        bool atFollowPoint = false;
+        int i = _pathIndex;
+        do {
+            glm::vec3 next;
+            if (i == party.followPointStep(slot)) {
+                next = party.followPoint(slot) + offsetAt(i);
+                if (next != cursor) {
+                    next = cursor + glm::normalize(next - cursor) * (kOffsetLookAhead - walked);
+                }
+                atFollowPoint = true;
+            } else {
+                next = party.followStepPosition(i) + offsetAt(i);
+            }
+            if (next == cursor) {
+                return true;
+            }
+            allClear = allClear && lineClear(follower, cursor, next, 0.0f, false);
+            walked += glm::length(next - cursor);
+            cursor = next;
+            i = i >= capacity - 1 ? 0 : i + 1;
+        } while (walked <= kOffsetLookAhead && allClear && !atFollowPoint);
+        if (allClear) {
+            _state = State::MovingToOffset;
+            budget = 0.0f;
+        }
+        return true;
+    }
+
+    case State::MovingToOffset: {
+        glm::vec3 next;
+        auto [state, done] = walkStraight(_pathPoint + offsetAt(_pathIndex), State::Offset, next);
+        if (lineClear(follower, _safePosition, next, kFollowSpaceShrink, false)) {
+            _blockingDoorId.reset();
+            _safePosition = next;
+            _state = state;
+            return done;
+        }
+        const auto line = area->testDirectLine(follower, _safePosition, _pathPoint, std::nullopt, kFollowSpaceShrink);
+        if (line.result == Area::DirectLine::CreatureBlocked && line.blocker && party.isMember(line.blocker->get())) {
+            return true;
+        }
+        if (line.result == Area::DirectLine::Clear) {
+            _state = State::MovingToPath;
+            return false;
+        }
+        _state = State::TeleportForward;
+        return true;
+    }
+
+    case State::Offset: {
+        // The point on the trail moves on, and the follower keeps beside it:
+        // its place between the two steps either side, as far along.
+        glm::vec3 advanced;
+        int index = _pathIndex;
+        advanceOnTrail(slot, budget, _pathPoint, _pathIndex, advanced, index);
+        const int previous = index < 1 ? index + capacity - 1 : index - 1;
+        const glm::vec3 &current = party.followStepPosition(index);
+        const glm::vec3 &before = party.followStepPosition(previous);
+        const float span = glm::length(current - before);
+        const float along = span > 0.0f ? glm::length(advanced - before) / span : 1.0f;
+        const glm::vec3 placeBefore {before + offsetAt(previous)};
+        const glm::vec3 placeNow {current + offsetAt(index)};
+        const glm::vec3 goal {placeBefore + (placeNow - placeBefore) * along};
+        if (lineClear(follower, _safePosition, goal, 0.0f, false) && lineClear(follower, goal, advanced, 0.0f, true)) {
+            _blockingDoorId.reset();
+            _safePosition = goal;
+            _pathPoint = advanced;
+            _pathIndex = index;
+            return true;
+        }
+        _state = State::MovingToPath;
+        return false;
+    }
+
+    case State::TeleportForward: {
+        // The first step ahead on the trail where the follower fits.
+        const int head = party.followStepHead();
+        int i = _pathIndex >= capacity - 1 ? 0 : _pathIndex + 1;
+        while (i != head && !area->isSafeLocationPoint(party.followStepPosition(i), follower)) {
+            i = i >= capacity - 1 ? 0 : i + 1;
+        }
+        if (i == head) {
+            // Nowhere ahead fits: it plans a walk instead.
+            _state = State::FindPath;
+            return false;
+        }
+        _pathIndex = i;
+        _pathPoint = party.followStepPosition(i);
+        _safePosition = _pathPoint;
+        budget = 0.0f;
+        _state = State::MovingToPath;
+        return true;
+    }
+
+    case State::PlannedWalk:
+        return true;
+    }
+    return true;
 }
 
 // A follower on the move faces where it went and stops looking. One standing
