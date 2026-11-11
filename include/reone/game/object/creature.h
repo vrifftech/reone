@@ -2892,6 +2892,44 @@ private:
     glm::vec2 _moveVelocity {0.0f};
     /** The steps the creature was carried since moveVelocity was last taken. */
     glm::vec2 _carried {0.0f};
+    /** The destination of the walk under way, as navigateTo was last asked for it. */
+    glm::vec3 _walkDestination {0.0f};
+    /**
+     * A walker giving way to another where neither can pass: the walker it
+     * gives way to, the spot it stands aside at, and the destination of its
+     * own walk, which it carries on to once the other has gone by.
+     */
+    struct GiveWay {
+        uint32_t to {0};
+        glm::vec3 spot {0.0f};
+        glm::vec3 destination {0.0f};
+        /** The walk's own path has been put aside for the walk to the spot. */
+        bool started {false};
+        /** Standing at the spot. */
+        bool aside {false};
+        /** Seconds of game time since it began walking to the spot, or waiting there. */
+        float time {0.0f};
+        /** The walk has run it since the last update; one the walk no longer runs is dropped. */
+        bool ticked {true};
+    };
+    std::optional<GiveWay> _giveWay;
+    /** The walk to the spot runs as an ordinary walk while this is set. */
+    bool _steppingAside {false};
+    /**
+     * The walker this one found no spot to give way to, which gives way
+     * instead, and for how many more seconds of game time that holds.
+     */
+    std::optional<uint32_t> _cannotGiveWayTo;
+    float _cannotGiveWayTime {0.0f};
+    /**
+     * The walker this one stands waiting for while it steps aside for it,
+     * and whether the walk has waited since the last update; a wait the walk
+     * no longer keeps up is dropped.
+     */
+    std::optional<uint32_t> _waitingFor;
+    bool _waitingTicked {false};
+    /** Seconds of game time the walker has waited without a step. */
+    float _waitTime {0.0f};
     /**
      * How much of its full speed a path walk goes at, which it carries from
      * one walk to the next; and the same for the pace of its walk and run
@@ -3247,6 +3285,54 @@ private:
      */
     std::optional<glm::vec2> wayPast(const Creature &other, bool left, const glm::vec2 &velocity = glm::vec2(0.0f),
                                      const glm::vec2 &otherVelocity = glm::vec2(0.0f), float share = 1.0f) const;
+    /**
+     * The creature is on the move toward \p target: moving that way, or
+     * facing it while held up. Being carried by a push or a leap is not.
+     */
+    bool walksToward(const Creature &target) const;
+    /**
+     * Which of two walkers meeting where neither can pass gives way: never
+     * the one the player controls; otherwise the one with the lower id. Both
+     * come to the same answer.
+     */
+    bool givesWayTo(const Creature &other) const;
+    /** The creature's walk is one it can step off to give way (see meetInPassage). */
+    bool canGiveWay() const;
+    /**
+     * Walking to a spot to stand aside for \p other, which waits for it; once
+     * standing there the walker is passed as any creature.
+     */
+    bool isSteppingAsideFor(const Creature &other) const { return _giveWay && _giveWay->to == other.id() && !_giveWay->aside; }
+    /** Standing waiting for \p other while it steps aside for this walker. */
+    bool isWaitingFor(const Creature &other) const { return _waitingFor == other.id(); }
+    /**
+     * Meet \p other, walking toward this walker where neither can pass the
+     * other. When this walker gives way (see givesWayTo), or the other cannot,
+     * having found nowhere to or being on no walk it can step off, it
+     * looks for a spot to stand aside at; finding none, it leaves giving way
+     * to the other, and does not look again for it while that lasts.
+     */
+    void meetInPassage(const Pathfinder &pf, const Creature &other);
+    /**
+     * The nearest spot the walker can stand at, clear of the edges of the
+     * walkable ground and joined to where it stands, that keeps out of reach
+     * of \p other's way ahead and short of the other: nearby, or else back
+     * along the other's way past the walker. The other's way is its path, or
+     * the line it moves along when it has none.
+     */
+    std::optional<glm::vec3> findGiveWaySpot(const Pathfinder &pf, const Creature &other) const;
+    /**
+     * An update of giving way: walking to the spot, then standing there until
+     * the other has gone by. False once it is over, the walk's own path to be
+     * planned again from where the walker stands.
+     */
+    bool giveWay(Pathfinder &pf, bool run, float dt);
+    /**
+     * Drops giving way, and waiting for a walker giving way, that the walk no
+     * longer runs, and counts down the time another walker is left to give
+     * way.
+     */
+    void updateGiveWay(float dt);
     /** Drop any walk under way and plan one along the straight line to a point. */
     void planStraightPath(const glm::vec3 &point);
     /** A walk ends where the creature stands, and \p target hears that as a click by it. */

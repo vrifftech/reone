@@ -34,6 +34,7 @@
 #include "reone/game/action/castspellatobject.h"
 #include "reone/game/action/changefacing.h"
 #include "reone/game/action/drive.h"
+#include "reone/game/action/followleader.h"
 #include "reone/game/action/movetoobject.h"
 #include "reone/game/action/movetopoint.h"
 #include "reone/game/action/switchweapons.h"
@@ -526,6 +527,33 @@ static constexpr float kStraightAheadSpan = 0.05f;
 static constexpr float kOncomingCosine = -0.7f;
 // The share of the turn to pass each makes then.
 static constexpr float kOncomingPassShare = 0.5f;
+// A walker giving way to another where neither can pass looks for a spot to
+// stand aside at nearby: this far at most, on rings this far apart, every
+// sixteenth of a turn round each, in this order of sixteenths from straight
+// back from the other, either way: straight aside first, then a little back
+// and a little forward, and so on.
+static constexpr float kGiveWayNearby = 4.0f;
+static constexpr float kGiveWayStep = 0.5f;
+static constexpr int kGiveWayOrder[] {4, 3, 5, 2, 6, 1, 7, 0, 8};
+// Failing that, it looks back along the other's way past it, every step this
+// far at most, just out of the other's reach on either side, by this much.
+static constexpr float kGiveWayBack = 50.0f;
+static constexpr float kGiveWayMargin = 0.1f;
+// It stands aside once within this of the spot. It gives up the walk there
+// after this long, and waiting there after this long, in seconds of game
+// time, whatever the other does.
+static constexpr float kGiveWaySpotRange = 0.2f;
+// A walk to the spot that ends within this of it reached it; one that ends
+// further off, against a wall or a creature, did not.
+static constexpr float kGiveWayReached = 0.3f;
+static constexpr float kGiveWayMaxWalk = 60.0f;
+static constexpr float kGiveWayMaxWait = 10.0f;
+// A walk giving way whose destination has since moved this far, squared, as
+// a walk after a moving target's may, is another walk.
+static constexpr float kGiveWayWalkChange2 = 9.0f;
+// A walker waiting for another stepping aside for it stands once it has
+// waited this long, in seconds of game time, without a step.
+static constexpr float kStandAfterWait = 0.3f;
 // From inside the circle it keeps clear of round a creature, a walker passing
 // it heads this far from the way to it, in radians: 100 degrees.
 static constexpr float kInsideReachTurn = 1.7453293f;
@@ -2656,6 +2684,7 @@ void Creature::update(float dt) {
     updateMineCheck(dt);
     updateForcedMove(dt);
     measureMoveVelocity(dt);
+    updateGiveWay(dt);
     updateStateHeartbeat(dt);
     updateFidget();
     updateTurning();
@@ -4987,6 +5016,10 @@ void Creature::clearAllActions(bool force, bool evenUncommandable) {
     _useWalk.reset();
     _attemptedMovementTarget.reset();
     resetBlockingCreature();
+    _giveWay.reset();
+    _cannotGiveWayTo.reset();
+    _waitingFor.reset();
+    _waitTime = 0.0f;
     // Clearing the actions also ends a push or leap carrying the creature.
     endForcedMove();
 }
@@ -9858,7 +9891,9 @@ std::optional<glm::vec2> Creature::steerPastCreature(const Area &area, const Pat
     if (passing.get() != &other) {
         const auto side = passingSide(pf, other, glm::normalize(closing), meeting);
         if (!side) {
+            // Neither side has room: one of two walkers meeting here gives way.
             _avoidance.passing.reset();
+            meetInPassage(pf, other);
             return std::nullopt;
         }
         _avoidance.passing = _game.getObjectById<Creature>(other.id());
@@ -9871,6 +9906,252 @@ std::optional<glm::vec2> Creature::steerPastCreature(const Area &area, const Pat
         oncoming = otherPath.active && !otherPath.straight && otherPath.followsFaces;
     }
     return wayPast(other, _avoidance.passingLeft, velocity, otherVelocity, oncoming ? kOncomingPassShare : 1.0f);
+}
+
+// Giving way, and waiting for a walker giving way, last only while the walk
+// runs them; and another walker is left to give way for a while only.
+void Creature::updateGiveWay(float dt) {
+    if (_giveWay) {
+        if (_giveWay->ticked) {
+            _giveWay->ticked = false;
+        } else {
+            _giveWay.reset();
+        }
+    }
+    if (_waitingFor) {
+        if (_waitingTicked) {
+            _waitingTicked = false;
+        } else {
+            _waitingFor.reset();
+            _waitTime = 0.0f;
+        }
+    }
+    if (_cannotGiveWayTo) {
+        _cannotGiveWayTime -= dt;
+        if (_cannotGiveWayTime <= 0.0f) {
+            _cannotGiveWayTo.reset();
+        }
+    }
+}
+
+// The way a creature on the move goes: the way it last moved, or the way it
+// faces while held up.
+static glm::vec2 movingWay(const Creature &creature) {
+    const glm::vec2 velocity {creature.moveVelocity()};
+    if (glm::dot(velocity, velocity) > 0.0f) {
+        return velocity;
+    }
+    const float facing = creature.getFacing();
+    return glm::vec2(-glm::sin(facing), glm::cos(facing));
+}
+
+bool Creature::walksToward(const Creature &target) const {
+    if (_movementType == MovementType::None || _forcedMove) {
+        return false;
+    }
+    return glm::dot(movingWay(*this), glm::vec2(target.position()) - glm::vec2(_position)) > 0.0f;
+}
+
+// Only a walk that plans its way can step off it to give way: not a drive,
+// nor a follower walking the leader's trail rather than a planned walk.
+bool Creature::canGiveWay() const {
+    const auto current = getCurrentAction();
+    if (!current || isDriven()) {
+        return false;
+    }
+    if (auto follow = dyn_cast<FollowLeaderAction>(current)) {
+        return follow->walksPlannedWay();
+    }
+    return true;
+}
+
+bool Creature::givesWayTo(const Creature &other) const {
+    const auto leader = _game.party().getLeader();
+    if (leader.get() == this) {
+        return false;
+    }
+    if (leader.get() == &other) {
+        return true;
+    }
+    return id() < other.id();
+}
+
+void Creature::meetInPassage(const Pathfinder &pf, const Creature &other) {
+    if (_giveWay || _steppingAside || !other.walksToward(*this)) {
+        return;
+    }
+    const bool otherCannot = !other.canGiveWay() || other._cannotGiveWayTo == id();
+    const bool gives = givesWayTo(other) || (otherCannot && _game.party().getLeader().get() != this);
+    // Having found no spot, the walker does not look again for the same
+    // walker until the time it is left to the other runs out.
+    if (!gives || _cannotGiveWayTo == other.id()) {
+        return;
+    }
+    if (auto spot = findGiveWaySpot(pf, other)) {
+        _giveWay = GiveWay {other.id(), *spot, _walkDestination};
+        _cannotGiveWayTo.reset();
+    } else {
+        _cannotGiveWayTo = other.id();
+        _cannotGiveWayTime = kGiveWayMaxWait;
+    }
+}
+
+// Nearby spots are looked for ring by ring outward from the walker, round
+// each in the order of kGiveWayOrder; then spots back along the other's way,
+// nearest first, off it on either side.
+std::optional<glm::vec3> Creature::findGiveWaySpot(const Pathfinder &pf, const Creature &other) const {
+    const glm::vec2 here {_position};
+    const glm::vec2 there {other.position()};
+    const float apart = glm::distance(here, there);
+    if (apart <= 0.0f) {
+        return std::nullopt;
+    }
+    // The other's way ahead, from where it stands: its path, or for a walker
+    // without one, the straight line it goes along for as far as the ground
+    // under it reaches.
+    std::vector<glm::vec3> way {other.position()};
+    if (other._path) {
+        uint32_t next = 0;
+        const std::vector<glm::vec3> &points = getPathPoints(pf, *other._path, next);
+        way.insert(way.end(), points.begin() + std::min<size_t>(next, points.size()), points.end());
+    } else {
+        const glm::vec2 heading {glm::normalize(movingWay(other))};
+        float ahead = 0.0f;
+        while (ahead + kGiveWayStep <= kGiveWayBack &&
+               isClearGround(pf, other.position() + glm::vec3(heading * (ahead + kGiveWayStep), 0.0f), 0.0f)) {
+            ahead += kGiveWayStep;
+        }
+        if (ahead > 0.0f) {
+            way.push_back(other.position() + glm::vec3(heading * ahead, 0.0f));
+        }
+    }
+    const float reach = creaturePersonalSpace() + other.creaturePersonalSpace() + kAvoidanceSpace;
+    const auto clearOfWay = [&way, reach](const glm::vec2 &spot) {
+        for (size_t i = 0; i + 1 < way.size(); ++i) {
+            const glm::vec2 from {way[i]};
+            const glm::vec2 along {glm::vec2(way[i + 1]) - from};
+            const float length2 = glm::dot(along, along);
+            const float t = length2 > 0.0f ? std::clamp(glm::dot(spot - from, along) / length2, 0.0f, 1.0f) : 0.0f;
+            if (glm::distance(spot, from + along * t) <= reach) {
+                return false;
+            }
+        }
+        return way.size() > 1 || glm::distance(spot, glm::vec2(way.front())) > reach;
+    };
+    // A spot ahead must leave the other room to come no nearer than reach,
+    // and not lie past it.
+    const glm::vec2 toward {(there - here) / apart};
+    const auto fits = [&](const glm::vec2 &spot, float z) -> std::optional<glm::vec3> {
+        if (glm::distance(spot, there) <= reach || glm::dot(spot - here, toward) >= apart - reach || !clearOfWay(spot)) {
+            return std::nullopt;
+        }
+        const glm::vec3 point {spot, z};
+        if (!isClearGround(pf, point, _personalSpace) || !pathExists(pf, _position, point)) {
+            return std::nullopt;
+        }
+        return point;
+    };
+    const glm::vec2 back {(here - there) / apart};
+    const int rings = static_cast<int>(kGiveWayNearby / kGiveWayStep);
+    for (int ring = 1; ring <= rings; ++ring) {
+        const float radius = ring * kGiveWayStep;
+        for (int sixteenths : kGiveWayOrder) {
+            for (int sign : {1, -1}) {
+                if (sign < 0 && (sixteenths == 0 || sixteenths == 8)) {
+                    continue;
+                }
+                const float angle = sign * sixteenths * glm::two_pi<float>() / 16.0f;
+                if (auto point = fits(here + turned(back, angle) * radius, _position.z)) {
+                    return point;
+                }
+            }
+        }
+    }
+    // Back along the other's way, from where it passes nearest the walker,
+    // at the height of the way there.
+    size_t from = 0;
+    float fromT = 0.0f;
+    float nearest = std::numeric_limits<float>::max();
+    for (size_t i = 0; i + 1 < way.size(); ++i) {
+        const glm::vec2 along {glm::vec2(way[i + 1]) - glm::vec2(way[i])};
+        const float length2 = glm::dot(along, along);
+        const float t = length2 > 0.0f ? std::clamp(glm::dot(here - glm::vec2(way[i]), along) / length2, 0.0f, 1.0f) : 0.0f;
+        const float distance = glm::distance(here, glm::vec2(way[i]) + along * t);
+        if (distance < nearest) {
+            nearest = distance;
+            from = i;
+            fromT = t;
+        }
+    }
+    float walked = 0.0f;
+    for (size_t i = from; i + 1 < way.size() && walked < kGiveWayBack; ++i) {
+        const glm::vec2 along {glm::vec2(way[i + 1]) - glm::vec2(way[i])};
+        const float length = glm::length(along);
+        if (length <= 0.0f) {
+            continue;
+        }
+        const glm::vec2 dir {along / length};
+        const glm::vec2 side {-dir.y, dir.x};
+        for (float s = (i == from ? fromT * length : 0.0f) + kGiveWayStep; s <= length && walked < kGiveWayBack; s += kGiveWayStep) {
+            walked += kGiveWayStep;
+            const glm::vec2 onWay {glm::vec2(way[i]) + dir * s};
+            const float z = glm::mix(way[i].z, way[i + 1].z, s / length);
+            for (float sign : {1.0f, -1.0f}) {
+                if (auto point = fits(onWay + side * (sign * (reach + kGiveWayMargin)), z)) {
+                    return point;
+                }
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+bool Creature::giveWay(Pathfinder &pf, bool run, float dt) {
+    _giveWay->ticked = true;
+    _giveWay->time += dt;
+    auto other = _game.getObjectById<Creature>(_giveWay->to);
+    const bool stopped = other && other->movementType() == MovementType::None && !other->isWaitingFor(*this);
+    const bool over = !other || other->isDead() || stopped ||
+                      _giveWay->time >= (_giveWay->aside ? kGiveWayMaxWait : kGiveWayMaxWalk);
+    if (!over && _giveWay->aside) {
+        // The other has gone by once it is out of reach and walking away.
+        const glm::vec2 away {glm::vec2(other->position()) - glm::vec2(_position)};
+        const float reach = creaturePersonalSpace() + other->creaturePersonalSpace() + kAvoidanceSpace;
+        if (glm::length(away) <= reach || glm::dot(other->moveVelocity(), away) <= 0.0f) {
+            setMovementType(MovementType::None);
+            return true;
+        }
+    } else if (!over) {
+        if (!_giveWay->started) {
+            _giveWay->started = true;
+            clearPath();
+        }
+        const glm::vec3 spot {_giveWay->spot};
+        _steppingAside = true;
+        const bool ended = navigateTo(spot, run, kGiveWaySpotRange, dt);
+        _steppingAside = false;
+        // A script the walk runs, such as a door's blocked script, may clear
+        // the walker's actions, and giving way goes with them.
+        if (!_giveWay) {
+            clearPath();
+            _navigationFailed = false;
+            return true;
+        }
+        if (!_navigationFailed && !ended) {
+            return true;
+        }
+        if (!_navigationFailed && glm::distance2(glm::vec2(_position), glm::vec2(spot)) <= kGiveWayReached * kGiveWayReached) {
+            _giveWay->aside = true;
+            _giveWay->time = 0.0f;
+            clearPath();
+            setMovementType(MovementType::None);
+            return true;
+        }
+    }
+    _giveWay.reset();
+    clearPath();
+    _navigationFailed = false;
+    return false;
 }
 
 // The next pace of a walk that went at \p pace: full speed until the ground
@@ -9921,6 +10202,19 @@ bool Creature::navigateTo(const glm::vec3 &dest, bool run, float distance, float
 
     Area &area = *module->area();
     Pathfinder &pf = area.pathfinder();
+
+    // A walk giving way to another where neither can pass steps aside, waits
+    // there until the other has gone by, then carries on.
+    if (!_steppingAside) {
+        _walkDestination = dest;
+        if (_giveWay && glm::distance2(_giveWay->destination, dest) > kGiveWayWalkChange2) {
+            _giveWay.reset();
+            clearPath();
+        }
+        if (_giveWay && giveWay(pf, run, dt)) {
+            return false;
+        }
+    }
 
     // A creature within reach of the destination but without a clear line to
     // it, past a wall or anything that blocks sight, walks all the way onto
@@ -10107,6 +10401,8 @@ bool Creature::navigateTo(const glm::vec3 &dest, bool run, float distance, float
         // a pace of their own, which follows each step it actually takes.
         const glm::vec3 before {_position};
         advanceOnPath(_position + dir * step, dir, run, distance, dt);
+        _waitingFor.reset();
+        _waitTime = 0.0f;
         if (_position != before) {
             _clipPace = nextWalkPace(_clipPace, remaining(_position, false), moveSpeed, dt, kClipPaceGain);
         }
@@ -10146,6 +10442,33 @@ bool Creature::navigateTo(const glm::vec3 &dest, bool run, float distance, float
 }
 
 Creature::Bump Creature::bumpIntoCreature(const std::shared_ptr<Creature> &blocker, Pathfinder &pf, const glm::vec2 &stepDir, float dt) {
+    // A walker stepping aside for this one is waited for, as long as it
+    // gives way. Two walkers meeting where neither can pass, one gives way;
+    // the walk to the spot to stand aside at meets the other as any walk.
+    // The walker waiting takes no step, and stands once it has waited a
+    // while without one: one close behind a walker going its way, catching
+    // it up now and then, keeps walking. Standing, it sets out again as from
+    // standing.
+    if (blocker->isSteppingAsideFor(*this)) {
+        if (_waitingFor != blocker->id()) {
+            _waitTime = 0.0f;
+        }
+        _waitingFor = blocker->id();
+        _waitingTicked = true;
+        _waitTime += dt;
+        if (_waitTime >= kStandAfterWait && _movementType != MovementType::None) {
+            setMovementType(MovementType::None);
+            _walkPace = kMinimumWalkPace;
+            _clipPace = kMinimumWalkPace;
+        }
+        return Bump::Detoured;
+    }
+    if (!_steppingAside && blocker->walksToward(*this) && !passingSide(pf, *blocker, stepDir, blocker->position())) {
+        meetInPassage(pf, *blocker);
+        if (_giveWay) {
+            return Bump::Detoured;
+        }
+    }
     // Each blocked step counts for the time it stands still. A walk blocked
     // long enough since its path was planned ends.
     if (_avoidance.blockedTime >= kMaxBlockedTime) {

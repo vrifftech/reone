@@ -41,6 +41,8 @@ public:
     std::optional<SavedActionRecord> saveFacingState() const override;
     /** A saved FollowLeader command. */
     static std::shared_ptr<Action> restore(const SavedActionRecord &record, Game &game);
+    /** The follower walks a planned way to its place, rather than the leader's trail. */
+    bool walksPlannedWay() const { return _state == State::PlannedWalk; }
 
 private:
     /** Where the follower is in its walk along the leader's trail. */
