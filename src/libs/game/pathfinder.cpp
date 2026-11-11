@@ -98,7 +98,7 @@ static constexpr float kSlideOffEdge = 0.01f;
 
 // Import a walkmesh of a single room into Uniwalk structure. Once all rooms are
 // imported, call uniwalkFinalize to establish connections between rooms.
-void uniwalkLoadRoom(struct Uniwalk &uni, graphics::Walkmesh &data, std::set<uint32_t> &walkableMaterial) {
+void uniwalkLoadRoom(struct Uniwalk &uni, const graphics::Walkmesh &data, const std::set<uint32_t> &walkableMaterial) {
     // Base of the vertex array for this room.
     uint32_t beginVertex = uni.vertices.size();
 
@@ -979,13 +979,95 @@ void uniwalkFinalize(struct Uniwalk &uni, const std::vector<Obstacle> &obstacles
     for (uint32_t i = 0; i < uni.faces.size(); ++i) {
         uni.regions[i] = root(i);
     }
+}
 
-    drawDebugUniwalk(uni);
+// The paths planned over the walkmesh being replaced keep their faces where
+// each face of a room's walkmesh they cross was cut into the same pieces in
+// both, blocked or not alike: the same triangles, under their new indices. A
+// path over any other face is left to be planned again as it is next
+// followed.
+static void carryPathsOver(Pathfinder &pf, const Uniwalk &old, uint32_t oldGeneration) {
+    // Corners nearer than this are the same.
+    static constexpr float kSameCorner = 1e-4f;
+    const Uniwalk &uni = pf.uni;
+    if (old.rooms.size() != uni.rooms.size()) {
+        return;
+    }
+    for (size_t r = 0; r < uni.rooms.size(); ++r) {
+        if (old.rooms[r].walkmesh != uni.rooms[r].walkmesh ||
+            old.rooms[r].unifiedFaces.size() != uni.rooms[r].unifiedFaces.size()) {
+            return;
+        }
+    }
+    const auto pieces = [](const Uniroom &room, size_t face) -> std::pair<uint32_t, uint32_t> {
+        const uint32_t first = room.unifiedFaces[face];
+        if (first == UINT32_MAX) {
+            return {0, 0};
+        }
+        const uint32_t end = face < room.unifiedFaceEnds.size() ? room.unifiedFaceEnds[face] : first + 1;
+        return {first, std::max(first, end)};
+    };
+    const auto blocked = [](const Uniwalk &walk, uint32_t face) {
+        return !walk.blocked.empty() && walk.blocked[face] != 0;
+    };
+    const auto same = [&](uint32_t before, uint32_t after) {
+        if (blocked(old, before) != blocked(uni, after)) {
+            return false;
+        }
+        for (int i = 0; i < 3; ++i) {
+            if (glm::distance2(old.vertices[old.faces[before].vertices[i]], uni.vertices[uni.faces[after].vertices[i]]) >
+                kSameCorner * kSameCorner) {
+                return false;
+            }
+        }
+        return true;
+    };
+    // Each old face's new index, when it is carried over.
+    std::vector<uint32_t> carried;
+    for (AStarPath &path : pf.paths) {
+        if (!path.active || path.straight || !path.followsFaces || path.generation != oldGeneration) {
+            continue;
+        }
+        if (carried.empty()) {
+            carried.assign(old.faces.size(), UINT32_MAX);
+            for (size_t r = 0; r < old.rooms.size(); ++r) {
+                for (size_t f = 0; f < old.rooms[r].unifiedFaces.size(); ++f) {
+                    const auto [beforeFirst, beforeEnd] = pieces(old.rooms[r], f);
+                    const auto [afterFirst, afterEnd] = pieces(uni.rooms[r], f);
+                    if (beforeEnd - beforeFirst != afterEnd - afterFirst) {
+                        continue;
+                    }
+                    bool all = true;
+                    for (uint32_t k = 0; all && k < beforeEnd - beforeFirst; ++k) {
+                        all = same(beforeFirst + k, afterFirst + k);
+                    }
+                    for (uint32_t k = 0; all && k < beforeEnd - beforeFirst; ++k) {
+                        carried[beforeFirst + k] = afterFirst + k;
+                    }
+                }
+            }
+        }
+        std::vector<uint32_t> faces;
+        faces.reserve(path.faces.size());
+        for (uint32_t face : path.faces) {
+            if (face >= carried.size() || carried[face] == UINT32_MAX) {
+                break;
+            }
+            faces.push_back(carried[face]);
+        }
+        if (faces.size() == path.faces.size()) {
+            path.faces = std::move(faces);
+            path.generation = pf.generation;
+        }
+    }
 }
 
 void replaceUniwalk(Pathfinder &pf, Uniwalk uni) {
+    Uniwalk old = std::move(pf.uni);
     pf.uni = std::move(uni);
-    ++pf.generation;
+    const uint32_t oldGeneration = pf.generation++;
+    carryPathsOver(pf, old, oldGeneration);
+    drawDebugUniwalk(pf.uni);
 }
 
 struct CastResult {
@@ -1476,6 +1558,7 @@ static bool findPath(AStarPath &path, Pathfinder &pf, const glm::vec3 &from, con
     path.current = 0;
     path.active = true;
     path.generation = pf.generation;
+    path.replan = false;
     path.straight = false;
     path.followsFaces = true;
     planPoints(path, uni);
@@ -1539,6 +1622,7 @@ std::optional<Path> createStraightPath(Pathfinder &pf, const glm::vec3 &from, co
         path.current = 0;
         path.straight = true;
         path.generation = pf.generation;
+        path.replan = false;
         path.followsFaces = true;
         path.points = {from, to};
         path.pointNext = 1;
@@ -1562,6 +1646,49 @@ bool replanPath(Pathfinder &pf, Path p, const glm::vec3 &from, const FacePassabl
     }
     path = std::move(planned);
     return true;
+}
+
+// Whether the level segment between two points passes through a box across
+// the ground plan.
+static bool segmentCrossesBox(const glm::vec2 &a, const glm::vec2 &b, const glm::vec2 &min, const glm::vec2 &max) {
+    float enter = 0.0f;
+    float leave = 1.0f;
+    for (int axis = 0; axis < 2; ++axis) {
+        const float along = b[axis] - a[axis];
+        if (std::fabs(along) < 1e-6f) {
+            if (a[axis] < min[axis] || a[axis] > max[axis]) {
+                return false;
+            }
+            continue;
+        }
+        float t0 = (min[axis] - a[axis]) / along;
+        float t1 = (max[axis] - a[axis]) / along;
+        if (t0 > t1) {
+            std::swap(t0, t1);
+        }
+        enter = std::max(enter, t0);
+        leave = std::min(leave, t1);
+        if (enter > leave) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void markPathsAcross(Pathfinder &pf, const glm::vec2 &min, const glm::vec2 &max) {
+    for (AStarPath &path : pf.paths) {
+        if (!path.active || path.straight || !path.followsFaces || path.replan || path.points.size() < 2) {
+            continue;
+        }
+        const glm::vec2 reach {path.radius};
+        const size_t first = path.pointNext > 0 ? path.pointNext - 1 : 0;
+        for (size_t i = first; i + 1 < path.points.size(); ++i) {
+            if (segmentCrossesBox(glm::vec2(path.points[i]), glm::vec2(path.points[i + 1]), min - reach, max + reach)) {
+                path.replan = true;
+                break;
+            }
+        }
+    }
 }
 
 void releasePath(Pathfinder &pf, Path path) {
@@ -1601,10 +1728,12 @@ static void updatePathPoints(AStarPath &path, const glm::vec3 &current) {
 bool updatePath(Pathfinder &pf, Path p, const glm::vec3 &current) {
     AStarPath &path = pf.paths[p.index];
 
-    // A path planned over a walkmesh since put out of place is planned again
-    // from where the walker stands; one walked straight keeps its points.
-    if (path.generation != pf.generation) {
+    // A path planned over a walkmesh since put out of place, or marked to be
+    // planned again, is planned again from where the walker stands; one walked
+    // straight keeps its points.
+    if (path.generation != pf.generation || path.replan) {
         path.generation = pf.generation;
+        path.replan = false;
         if (!path.straight && path.followsFaces && !findPath(path, pf, current, path.to, path.passable, path.radius)) {
             return false;
         }

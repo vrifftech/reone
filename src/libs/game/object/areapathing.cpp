@@ -18,7 +18,9 @@
 #include "reone/game/object/areapathing.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cfloat>
+#include <future>
 #include <set>
 
 #include "reone/game/di/services.h"
@@ -30,6 +32,8 @@
 #include "reone/game/surfaces.h"
 #include "reone/graphics/walkmesh.h"
 #include "reone/scene/node/walkmesh.h"
+#include "reone/system/di/services.h"
+#include "reone/system/threadpool.h"
 
 #include "staticwalls.h"
 
@@ -37,9 +41,48 @@ namespace reone {
 
 namespace game {
 
+// Seconds of game time a walkmesh put together away from the area takes to
+// be put in place, whatever the frame rate.
+static constexpr float kBuildDelay = 0.25f;
+
+// A walkmesh put together away from the area: its rooms' walkmeshes, the
+// surfaces walked on and the placeables' blocking faces are taken when it is
+// asked for, and the placeables' outlines are taken from those as it is put
+// together. Either a worker of the thread pool or the area, whichever comes first,
+// puts it together.
+struct AreaPathing::Build {
+    std::vector<std::shared_ptr<graphics::Walkmesh>> rooms;
+    std::set<uint32_t> walkable;
+    std::vector<ObstacleSource> sources;
+    bool stacked {false};
+    /** The placeables as they stood when their blocking faces were taken. */
+    std::vector<Pose> poses;
+    std::atomic_bool claimed {false};
+    std::promise<Uniwalk> promise;
+    std::future<Uniwalk> result;
+    /** Seconds of game time until the walkmesh is put in place. */
+    float wait {0.0f};
+
+    Uniwalk build() const {
+        Uniwalk uni;
+        for (const auto &walkmesh : rooms) {
+            uniwalkLoadRoom(uni, *walkmesh, walkable);
+        }
+        uniwalkFinalize(uni, obstacles(sources, stacked));
+        return uni;
+    }
+};
+
 AreaPathing::AreaPathing(Area &area, Pathfinder &pathfinder) :
     _area(area),
     _pathfinder(pathfinder) {
+}
+
+// A walkmesh still being put together away from the area is dropped with it.
+AreaPathing::~AreaPathing() {
+    if (_build) {
+        _build->claimed = true;
+    }
 }
 
 namespace {
@@ -76,8 +119,9 @@ static std::vector<DoorBox> doorBoxes(const ObjectList &objects) {
     return doors;
 }
 
-// Each door is tested against a face only near the box round its
-// walkmeshes, and as it stands when the face is asked about. The blocking surfaces, the walker's reach and
+// Each door, and each placeable not yet cut out of the walkmesh, is tested
+// against a face only near the box round its walkmeshes, and as it stands
+// when the face is asked about. The blocking surfaces, the walker's reach and
 // the heights it meets walls across are taken once.
 FacePassable AreaPathing::facesClearOfStaticWalls(const Creature &walker) const {
     auto doors = doorBoxes(_area.getObjectsByType(ObjectType::Door));
@@ -100,6 +144,15 @@ FacePassable AreaPathing::facesClearOfStaticWalls(const Creature &walker) const 
             }
             auto door = _area.game().getObjectById<Door>(box.id);
             if (door && hasDoorWallWithin(*door, *blocking, centre, centre, radius, centre.z + band.low, centre.z + band.high)) {
+                return false;
+            }
+        }
+        for (const Pose &pose : uncutPlaceables()) {
+            if (!near(pose.min, pose.max)) {
+                continue;
+            }
+            auto placeable = _area.game().getObjectById<Placeable>(pose.id);
+            if (placeable && hasBlockingFaceWithin(placeable->walkmesh(), *blocking, centre, centre, radius, centre.z + band.low, centre.z + band.high)) {
                 return false;
             }
         }
@@ -128,7 +181,7 @@ static float distanceToTriangle(const glm::vec2 &point, const std::vector<glm::v
 
 // The blocking faces of each placeable's walkmesh, in the walkmesh's own
 // coordinates, and where it stands: what the placeables' outlines are taken
-// from.
+// from, away from the area.
 std::vector<AreaPathing::ObstacleSource> AreaPathing::obstacleSources() const {
     const auto blocking = blockingSurfaces(_area.services().game.surfaces);
     std::vector<ObstacleSource> sources;
@@ -249,21 +302,102 @@ std::vector<Obstacle> AreaPathing::obstacles(const std::vector<ObstacleSource> &
     return obstacles;
 }
 
-// The ids of the placeables with walkmeshes, in order.
-static std::vector<uint32_t> placeablesWithWalkmeshes(const ObjectList &placeables) {
-    std::vector<uint32_t> ids;
-    for (const auto &object : placeables) {
+// The box round a walkmesh, as it stands, across the ground plan.
+static void groundBox(const scene::WalkmeshSceneNode &node, glm::vec2 &min, glm::vec2 &max) {
+    min = glm::vec2(FLT_MAX);
+    max = glm::vec2(-FLT_MAX);
+    const glm::mat4 &transform = node.absoluteTransform();
+    for (const glm::vec3 &vertex : node.walkmesh().vertices) {
+        const glm::vec2 point {transform * glm::vec4(vertex, 1.0f)};
+        min = glm::min(min, point);
+        max = glm::max(max, point);
+    }
+}
+
+std::vector<AreaPathing::Pose> AreaPathing::poses() const {
+    std::vector<Pose> poses;
+    for (const auto &object : _area.getObjectsByType(ObjectType::Placeable)) {
         const auto node = static_cast<const Placeable &>(*object).walkmesh();
-        if (node && node->isEnabled()) {
-            ids.push_back(object->id());
+        if (!node || !node->isEnabled()) {
+            continue;
+        }
+        Pose pose;
+        pose.id = object->id();
+        pose.transform = node->absoluteTransform();
+        groundBox(*node, pose.min, pose.max);
+        poses.push_back(pose);
+    }
+    std::sort(poses.begin(), poses.end(), [](const Pose &a, const Pose &b) { return a.id < b.id; });
+    return poses;
+}
+
+bool AreaPathing::hasPose(const std::vector<Pose> &poses, const Pose &pose) {
+    auto it = std::lower_bound(poses.begin(), poses.end(), pose.id, [](const Pose &p, uint32_t id) { return p.id < id; });
+    return it != poses.end() && *it == pose;
+}
+
+const std::vector<AreaPathing::Pose> &AreaPathing::uncutPlaceables() const {
+    if (!_uncutStale) {
+        return _uncut;
+    }
+    _uncutStale = false;
+    _uncut.clear();
+    // A pathfinder not put together from rooms' walkmeshes has no placeables
+    // cut out of it, nor tests them.
+    if (_roomWalkmeshes.empty()) {
+        return _uncut;
+    }
+    for (const Pose &pose : poses()) {
+        if (!hasPose(_cut, pose) && pose.min.x <= pose.max.x) {
+            _uncut.push_back(pose);
         }
     }
-    std::sort(ids.begin(), ids.end());
-    return ids;
+    return _uncut;
 }
 
 void AreaPathing::markObstaclesStale() {
     _stale = true;
+    _uncutStale = true;
+}
+
+void AreaPathing::replanAcross(const Pose &pose) {
+    if (pose.min.x <= pose.max.x) {
+        markPathsAcross(_pathfinder, pose.min, pose.max);
+    }
+}
+
+// Paths keep their faces where those are left whole (see replaceUniwalk);
+// those near a placeable that came, went or moved between the two walkmeshes
+// are planned again, round it or over the ground it left.
+void AreaPathing::putInPlace(Uniwalk uni, std::vector<Pose> cut) {
+    replaceUniwalk(_pathfinder, std::move(uni));
+    for (const Pose &pose : _cut) {
+        if (!hasPose(cut, pose)) {
+            replanAcross(pose);
+        }
+    }
+    for (const Pose &pose : cut) {
+        if (!hasPose(_cut, pose)) {
+            replanAcross(pose);
+        }
+    }
+    _cut = std::move(cut);
+    // A placeable still not cut out as it stands, having moved since the
+    // paths across it were marked, has them marked again where it stands.
+    // Each is marked once more at most until the next walkmesh is in place.
+    auto marked = std::move(_marked);
+    _marked.clear();
+    for (const Pose &pose : _seen) {
+        if (hasPose(_cut, pose)) {
+            continue;
+        }
+        const auto it = marked.find(pose.id);
+        if (it == marked.end() || it->second != pose.transform) {
+            replanAcross(pose);
+        }
+        _marked[pose.id] = pose.transform;
+    }
+    _uncutStale = true;
 }
 
 void AreaPathing::rebuild() {
@@ -271,26 +405,77 @@ void AreaPathing::rebuild() {
     if (_roomWalkmeshes.empty()) {
         return;
     }
-    auto walkable = _area.services().game.surfaces.getWalkableSurfaces();
-    Uniwalk uni;
-    for (const auto &walkmesh : _roomWalkmeshes) {
-        uniwalkLoadRoom(uni, *walkmesh, walkable);
+    // A walkmesh being put together away from the area is dropped.
+    if (_build) {
+        _build->claimed = true;
+        _build.reset();
     }
-    uniwalkFinalize(uni, obstacles(obstacleSources(), _area.hasStackedFloors()));
-    _cutIds = placeablesWithWalkmeshes(_area.getObjectsByType(ObjectType::Placeable));
-    replaceUniwalk(_pathfinder, std::move(uni));
+    Build build;
+    build.rooms = _roomWalkmeshes;
+    build.walkable = _area.services().game.surfaces.getWalkableSurfaces();
+    build.sources = obstacleSources();
+    build.stacked = _area.hasStackedFloors();
+    _seen = poses();
+    putInPlace(build.build(), _seen);
 }
 
-// A placeable that went and came back, as a placeable does when the area is
-// shown again, changes nothing.
-void AreaPathing::update() {
-    if (!_stale) {
+// When a placeable comes, goes or moves, the walkmesh is put together again by
+// a worker of the thread pool, and put in place kBuildDelay of game time
+// later. Should the worker not be done by then, the area waits for it; should
+// it not have started, the area puts the walkmesh together itself.
+// Placeables that come, go or move meanwhile are taken into the next
+// walkmesh, begun once this one is in place, so a run of changes holds none
+// of them back for longer than two such waits. Until then, paths are planned
+// round a placeable not yet cut out as it stands (see
+// facesClearOfStaticWalls), and the paths whose way ahead it came or moved
+// across are planned again at once: once until the next walkmesh is in place,
+// however often it moves, and then where it stands, if it is still not cut
+// out there. A placeable that went and came back where it stood,
+// as a placeable does when the area is shown again, changes nothing.
+void AreaPathing::update(float dt) {
+    if (_stale) {
+        _stale = false;
+        auto now = poses();
+        if (!_roomWalkmeshes.empty() && now != _seen) {
+            for (const Pose &pose : now) {
+                if (!hasPose(_seen, pose) && _marked.emplace(pose.id, pose.transform).second) {
+                    replanAcross(pose);
+                }
+            }
+            _seen = std::move(now);
+        }
+    }
+    if (_build) {
+        _build->wait -= dt;
+        if (_build->wait > 0.0f) {
+            return;
+        }
+        auto build = std::move(_build);
+        Uniwalk uni = build->claimed.exchange(true) ? build->result.get() : build->build();
+        putInPlace(std::move(uni), std::move(build->poses));
+    }
+    if (_roomWalkmeshes.empty() || _seen == _cut) {
         return;
     }
-    _stale = false;
-    if (placeablesWithWalkmeshes(_area.getObjectsByType(ObjectType::Placeable)) != _cutIds) {
-        rebuild();
-    }
+    auto build = std::make_shared<Build>();
+    build->rooms = _roomWalkmeshes;
+    build->walkable = _area.services().game.surfaces.getWalkableSurfaces();
+    build->sources = obstacleSources();
+    build->stacked = _area.hasStackedFloors();
+    build->poses = _seen;
+    build->result = build->promise.get_future();
+    build->wait = kBuildDelay;
+    _area.services().system.threadPool.enqueue([build](const std::atomic_bool &canceled) {
+        if (canceled || build->claimed.exchange(true)) {
+            return;
+        }
+        try {
+            build->promise.set_value(build->build());
+        } catch (...) {
+            build->promise.set_exception(std::current_exception());
+        }
+    });
+    _build = std::move(build);
 }
 
 } // namespace game

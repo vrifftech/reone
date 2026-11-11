@@ -3084,7 +3084,7 @@ bool Area::handleKeyDown(const input::KeyEvent &event) {
 
 void Area::update(float dt) {
     doDestroyObjects();
-    _pathing.update();
+    _pathing.update(dt);
     updatePartSounds();
     updateReleasedPresentation(dt);
     updateObjectSelection();

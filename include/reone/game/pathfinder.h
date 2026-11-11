@@ -183,6 +183,11 @@ struct AStarPath {
     FacePassable passable;
     /** The unified walkmesh the path was planned over (see Pathfinder::generation). */
     uint32_t generation {0};
+    /**
+     * The path is planned again as it is next followed, as when a placeable
+     * came or moved across it (see markPathsAcross).
+     */
+    bool replan {false};
 
     int32_t index;
     bool active;
@@ -222,14 +227,20 @@ struct Pathfinder : public boost::noncopyable {
     uint32_t generation {0};
 };
 
-void uniwalkLoadRoom(struct Uniwalk &wm, graphics::Walkmesh &data, std::set<uint32_t> &walkableMaterial);
+void uniwalkLoadRoom(struct Uniwalk &wm, const graphics::Walkmesh &data, const std::set<uint32_t> &walkableMaterial);
 /**
  * Join the rooms' faces into one walkable ground. Each obstacle cuts the faces
  * under it into pieces, those inside it marked blocked; pieces are joined to
- * their neighbours as whole faces are.
+ * their neighbours as whole faces are. It touches nothing but \p uni, so it
+ * may run away from the main thread.
  */
 void uniwalkFinalize(struct Uniwalk &uni, const std::vector<Obstacle> &obstacles = {});
-/** Put a unified walkmesh in place of the pathfinder's own. */
+/**
+ * Put a unified walkmesh in place of the pathfinder's own, and draw it for
+ * debugging. A path planned over the old one keeps its faces when every face
+ * of a room's walkmesh it crosses was cut into the same pieces in both, and
+ * blocked or not alike; any other is planned again as it is next followed.
+ */
 void replaceUniwalk(Pathfinder &pf, Uniwalk uni);
 
 /**
@@ -257,6 +268,12 @@ bool replanPath(Pathfinder &pf, Path path, const glm::vec3 &from, const FacePass
 /** Whether the walkmesh joins two points, without holding a path. */
 bool pathExists(const Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to);
 bool updatePath(Pathfinder &pf, Path p, const glm::vec3 &current);
+/**
+ * Have each path that follows its faces, and whose way ahead passes through a
+ * box across the ground plan widened by its walker's radius, planned again as
+ * it is next followed.
+ */
+void markPathsAcross(Pathfinder &pf, const glm::vec2 &min, const glm::vec2 &max);
 void releasePath(Pathfinder &pf, Path path);
 
 glm::vec3 getNextPathPoint(Pathfinder &pf, Path path);

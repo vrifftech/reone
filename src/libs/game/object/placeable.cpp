@@ -523,11 +523,16 @@ void Placeable::receiveDeathSignal(uint32_t killerId) {
     _game.scriptRunner().run(_onDeath, {{script::ArgKind::Caller, Variable::ofObject(_id)}});
 }
 
+// A placeable that moves while in an area has the area's pathfinder cut
+// again.
 void Placeable::updateTransform() {
     Object::updateTransform();
 
-    if (_walkmesh) {
+    if (_walkmesh && _walkmesh->localTransform() != _transform) {
         _walkmesh->setLocalTransform(_transform);
+        if (_spatialArea) {
+            _spatialArea->pathing().markObstaclesStale();
+        }
     }
 }
 
