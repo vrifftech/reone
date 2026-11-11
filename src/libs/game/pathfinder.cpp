@@ -25,7 +25,10 @@
    effort to make it "natural" from the player perspective.
 
    2. Funnel algorithm takes a sequence of faces from the global pathfinding,
-   and attempts to make a straight-line path through it.
+   and turns it into straight legs: the path's start, each corner the funnel
+   turns at and its end. Corners on the edge of the walkable ground are drawn
+   in by the walker's radius, and a leg ends where the path climbs or drops
+   onto another floor.
 
    3. Steering behaviour takes a direction from the funnel algorithm, and turns
       it into a "driving" force. It then calculates and combines other forces:
@@ -248,6 +251,18 @@ void uniwalkFinalize(struct Uniwalk &uni) {
         }
     }
 
+    // A vertex of an edge no other walkable face shares lies on the edge of
+    // the walkable ground.
+    uni.boundary.assign(uni.vertices.size(), 0);
+    for (const Uniface &face : uni.faces) {
+        for (uint32_t j = 0; j < 3; ++j) {
+            if (face.adjecent[j] == UINT32_MAX) {
+                uni.boundary[face.vertices[kTriangleEdges[j][0]]] = 1;
+                uni.boundary[face.vertices[kTriangleEdges[j][1]]] = 1;
+            }
+        }
+    }
+
     // Faces joined through shared edges form one region; a path exists
     // between two faces exactly when they share a region.
     uni.regions.resize(uni.faces.size());
@@ -358,6 +373,45 @@ static uint32_t findFaceAt(const Pathfinder &pf, const glm::vec3 &position) {
     return highest;
 }
 
+/// Portal is an edge between two consecutive faces on a path.
+struct Portal {
+    uint32_t left;
+    uint32_t right;
+};
+
+/// Find an edge between \p face and \p nextFace.
+static Portal findPortal(const Uniwalk &uni, uint32_t face, uint32_t nextFace) {
+    uint32_t found[2];
+    uint32_t numFound = 0;
+
+    for (uint32_t vi : uni.faces[face].vertices) {
+        for (uint32_t vj : uni.faces[nextFace].vertices) {
+            if (vi != vj) {
+                continue;
+            }
+            found[numFound] = vi;
+            ++numFound;
+            if (numFound == 2) {
+                return Portal {found[0], found[1]};
+            }
+        }
+    }
+    assert(0 && "faces are not adjecent");
+    return Portal {0, 0};
+}
+
+// Whether the walker is too wide for the gap between two faces: both ends of
+// the shared edge lie on the edge of the walkable ground, and they are less
+// than the walker's width apart across the ground.
+static bool isNarrowGap(const Uniwalk &uni, uint32_t face, uint32_t nextFace, float radius) {
+    const Portal portal = findPortal(uni, face, nextFace);
+    if (!uni.boundary[portal.left] || !uni.boundary[portal.right]) {
+        return false;
+    }
+    const glm::vec2 across {glm::vec2(uni.vertices[portal.left]) - glm::vec2(uni.vertices[portal.right])};
+    return glm::dot(across, across) < 4.0f * radius * radius;
+}
+
 /// Find a face with the minimum cost and remove it from the open list.
 static AStarOpenFace popOpenFace(std::vector<AStarOpenFace> &open) {
     assert(open.size() >= 1);
@@ -389,7 +443,7 @@ static AStarOpenFace popOpenFace(std::vector<AStarOpenFace> &open) {
 }
 
 static bool findPathAStar(AStarPath &path, AStarContext &ctx, const Uniwalk &uni,
-                          uint32_t fromFace, uint32_t toFace, const FacePassable &passable) {
+                          uint32_t fromFace, uint32_t toFace, const FacePassable &passable, float radius) {
     // Reset the context.
     ctx.state.resize(uni.faces.size());
     memset(&ctx.state[0], 0xFF, sizeof(ctx.state[0]) * ctx.state.size());
@@ -446,8 +500,9 @@ static bool findPathAStar(AStarPath &path, AStarContext &ctx, const Uniwalk &uni
             }
 
             // Skip adjacent vertex if it is closed, or one the walker may not
-            // pass over.
-            if (ctx.state[adj].flag == AStarFace::Closed || !mayPass(adj)) {
+            // pass over, or reached through a gap too narrow for the walker.
+            if (ctx.state[adj].flag == AStarFace::Closed || !mayPass(adj) ||
+                (radius > 0.0f && isNarrowGap(uni, current.index, adj, radius))) {
                 continue;
             }
 
@@ -486,205 +541,182 @@ static bool findPathAStar(AStarPath &path, AStarContext &ctx, const Uniwalk &uni
     return false;
 }
 
-/// Portal is an edge between two consecutive faces on a path.
-struct Portal {
-    uint32_t left;
-    uint32_t right;
+// The funnel works across the ground: a point lies to the left of the line
+// from a to b when this is positive.
+static float crossAcross(const glm::vec3 &a, const glm::vec3 &b, const glm::vec3 &c) {
+    return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+}
+
+static bool samePlace(const glm::vec3 &a, const glm::vec3 &b) {
+    return glm::distance2(glm::vec2(a), glm::vec2(b)) < 1e-8f;
+}
+
+/// A gap of a path, its ends as seen walking through it.
+struct FunnelPortal {
+    glm::vec3 left;
+    glm::vec3 right;
 };
 
-/// Find an edge between \p face and \p nextFace.
-static Portal findPortal(const Uniwalk &uni, uint32_t face, uint32_t nextFace) {
-    uint32_t found[2];
-    uint32_t numFound = 0;
+// The gaps between the path's faces in order. A gap's left and right are as
+// seen going from its first face into the next: away from the first face's
+// third corner. An end on the edge of the walkable ground is drawn in along
+// the gap by the walker's radius, so the walk keeps that far from the corner;
+// a gap too narrow for that closes to a point, its middle when both ends are
+// drawn in.
+static std::vector<FunnelPortal> pathPortals(const Uniwalk &uni, const AStarPath &path) {
+    std::vector<FunnelPortal> portals;
+    if (path.faces.size() < 2) {
+        return portals;
+    }
+    portals.reserve(path.faces.size() - 1);
+    for (size_t k = 0; k + 1 < path.faces.size(); ++k) {
+        const Portal shared = findPortal(uni, path.faces[k], path.faces[k + 1]);
+        const uint32_t *corners = uni.faces[path.faces[k]].vertices;
+        uint32_t third = corners[0];
+        for (int i = 0; i < 3; ++i) {
+            if (corners[i] != shared.left && corners[i] != shared.right) {
+                third = corners[i];
+            }
+        }
+        const glm::vec3 &behind = uni.vertices[third];
+        const glm::vec3 &a = uni.vertices[shared.left];
+        const glm::vec3 &b = uni.vertices[shared.right];
+        const glm::vec3 middle {(a + b) * 0.5f};
+        const bool aLeft = crossAcross(behind, middle, a) > crossAcross(behind, middle, b);
+        const uint32_t leftIndex = aLeft ? shared.left : shared.right;
+        const uint32_t rightIndex = aLeft ? shared.right : shared.left;
+        glm::vec3 left = uni.vertices[leftIndex];
+        glm::vec3 right = uni.vertices[rightIndex];
+        const float width = glm::length(glm::vec2(right) - glm::vec2(left));
+        if (path.radius > 0.0f && width > 0.0f) {
+            const bool leftDrawn = uni.boundary[leftIndex] != 0;
+            const bool rightDrawn = uni.boundary[rightIndex] != 0;
+            const float needed = (leftDrawn ? path.radius : 0.0f) + (rightDrawn ? path.radius : 0.0f);
+            if (needed >= width) {
+                if (leftDrawn && rightDrawn) {
+                    left = right = (left + right) * 0.5f;
+                } else if (leftDrawn) {
+                    left = right;
+                } else if (rightDrawn) {
+                    right = left;
+                }
+            } else {
+                const glm::vec3 inward {(right - left) * (path.radius / width)};
+                if (leftDrawn) {
+                    left += inward;
+                }
+                if (rightDrawn) {
+                    right -= inward;
+                }
+            }
+        }
+        portals.push_back({left, right});
+    }
+    return portals;
+}
 
-    for (uint32_t vi : uni.faces[face].vertices) {
-        for (uint32_t vj : uni.faces[nextFace].vertices) {
-            if (vi != vj) {
+// The straight legs from a start through the gaps [begin, end) to a goal,
+// added to the path's points: each corner the funnel turns at, then the goal.
+// Each point notes the gap it lies in, by the index of the face before it;
+// the goal notes goalFace. A point in the same place as the one before is
+// not added again.
+static void funnelLegs(AStarPath &path, const std::vector<FunnelPortal> &portals, const glm::vec3 &start,
+                       size_t begin, size_t end, const glm::vec3 &goal, uint32_t goalFace) {
+    // The start and the goal stand at either end of the gaps as gaps of no
+    // width.
+    const size_t count = end - begin + 2;
+    const auto gapAt = [&](size_t i) -> FunnelPortal {
+        if (i == 0) {
+            return {start, start};
+        }
+        if (i == count - 1) {
+            return {goal, goal};
+        }
+        return portals[begin + i - 1];
+    };
+    const auto faceAt = [&](size_t i) {
+        return i == 0 ? static_cast<uint32_t>(begin) : (i == count - 1 ? goalFace : static_cast<uint32_t>(begin + i - 1));
+    };
+    const auto add = [&path](const glm::vec3 &point, uint32_t face) {
+        if (!path.points.empty() && samePlace(path.points.back(), point)) {
+            return;
+        }
+        path.points.push_back(point);
+        path.pointFaces.push_back(face);
+    };
+
+    glm::vec3 apex = start;
+    glm::vec3 left = start;
+    glm::vec3 right = start;
+    size_t leftAt = 0;
+    size_t rightAt = 0;
+    for (size_t i = 1; i < count; ++i) {
+        const FunnelPortal gap = gapAt(i);
+        // A right end left of the funnel's right side narrows it, unless it
+        // crosses over the left side: then the funnel turns at its left
+        // corner, and goes on from the gap after it.
+        if (crossAcross(apex, right, gap.right) >= 0.0f) {
+            if (samePlace(apex, right) || crossAcross(apex, left, gap.right) < 0.0f) {
+                right = gap.right;
+                rightAt = i;
+            } else {
+                add(left, faceAt(leftAt));
+                apex = left;
+                right = left;
+                rightAt = leftAt;
+                i = leftAt;
                 continue;
             }
-            found[numFound] = vi;
-            ++numFound;
-            if (numFound == 2) {
-                return Portal {found[0], found[1]};
+        }
+        // The same for a left end, mirrored.
+        if (crossAcross(apex, left, gap.left) <= 0.0f) {
+            if (samePlace(apex, left) || crossAcross(apex, right, gap.left) > 0.0f) {
+                left = gap.left;
+                leftAt = i;
+            } else {
+                add(right, faceAt(rightAt));
+                apex = right;
+                left = right;
+                leftAt = rightAt;
+                i = rightAt;
+                continue;
             }
         }
     }
-    assert(0 && "faces are not adjecent");
-    return Portal {0, 0};
+    add(goal, goalFace);
 }
 
-/// Funnel is a segment of a path where all portals are reachable in a straight
-/// line from the base.
-struct Funnel {
-    // Apex of the funnel
-    glm::vec3 base;
-
-    // Left and right edges of the funnel.
-    uint32_t left;
-    uint32_t right;
-
-    // Last processed portal
-    Portal portal;
-};
-
-/// FunnelUpdate describes how a funnel changes with the next portal.
-
-/// A funnel can only narrow, so attempts to expand a funnel should be
-/// ignored. A funnel collapses when it has to go around the corner (i.e. when
-/// the right edge goes over the left edge and vise versa).
-struct FunnelUpdate {
-    enum Change {
-        Expand,
-        Narrow,
-        Corner,
-    };
-
-    // Direction of Expand or Corner.
-    enum Direction {
-        Left,
-        Right,
-    };
-
-    Change change;
-    Direction direction;
-};
-
-static FunnelUpdate checkFunnelUpdate(Funnel funnel, Portal portal, const Uniwalk &uni) {
-    glm::vec3 left = uni.vertices[funnel.left] - funnel.base;
-    glm::vec3 right = uni.vertices[funnel.right] - funnel.base;
-
-    glm::vec3 portLeft = uni.vertices[portal.left] - funnel.base;
-    glm::vec3 portRight = uni.vertices[portal.right] - funnel.base;
-
-    if (funnel.portal.left != portal.left) {
-        float leftToPort = glm::cross(left, portLeft).z;
-        float leftToRight = glm::cross(left, right).z;
-        if ((leftToPort * leftToRight) >= 0.0f) {
-            float rightToPort = glm::cross(right, portLeft).z;
-            float portToLeft = glm::cross(portLeft, left).z;
-            if ((rightToPort * portToLeft) >= 0) {
-                // Portal left narrows the funnel.
-                return {FunnelUpdate::Narrow, FunnelUpdate::Left};
-            }
-            // Portal left went over the right edge - mark the right point as
-            // the corner.
-            return {FunnelUpdate::Corner, FunnelUpdate::Right};
+// The path's points, from its start through the funnel's corners to its end.
+// Where the gaps climb or drop more than kFloorHeadroom from where the
+// current straight leg started, the leg ends at the middle of the gap and the
+// next starts there, so no leg crosses over or under another floor of the
+// path.
+static void planPoints(AStarPath &path, const Uniwalk &uni) {
+    path.points.clear();
+    path.pointFaces.clear();
+    path.points.push_back(path.from);
+    path.pointFaces.push_back(0);
+    const std::vector<FunnelPortal> portals = pathPortals(uni, path);
+    glm::vec3 start = path.from;
+    size_t begin = 0;
+    for (size_t j = 0; j < portals.size(); ++j) {
+        const glm::vec3 middle {(portals[j].left + portals[j].right) * 0.5f};
+        if (std::fabs(middle.z - start.z) > kFloorHeadroom) {
+            funnelLegs(path, portals, start, begin, j, middle, static_cast<uint32_t>(j));
+            start = middle;
+            begin = j + 1;
         }
-        // Funnel tries to expand to the left.
-        return {FunnelUpdate::Expand, FunnelUpdate::Left};
     }
-
-    float rightToPort = glm::cross(right, portRight).z;
-    float rightToLeft = glm::cross(right, left).z;
-    if ((rightToPort * rightToLeft) >= 0.0f) {
-        float leftToPort = glm::cross(left, portRight).z;
-        float portToRight = glm::cross(portRight, right).z;
-        if ((leftToPort * portToRight) >= 0) {
-            // Portal right narrows the funnel.
-            return {FunnelUpdate::Narrow, FunnelUpdate::Right};
-        }
-        // Portal right went over the right edge - mark left point as the
-        // corner and restart the algorithm.
-        return {FunnelUpdate::Corner, FunnelUpdate::Left};
-    }
-    // Funnel tries to expand to the right.
-    return {FunnelUpdate::Expand, FunnelUpdate::Right};
+    funnelLegs(path, portals, start, begin, portals.size(), path.to,
+               static_cast<uint32_t>(path.faces.size() - 1));
+    path.pointNext = 1;
 }
 
-static void drawDebugFunnel(const Funnel &funnel, const Uniwalk &uni, int32_t id) {
-    drawdebug::pushId(id);
-    drawdebug::pushId("funnel");
-    drawdebug::clear();
-    if (isShowPathEnabled()) {
-        drawdebug::line(funnel.base, uni.vertices[funnel.left], 0xC0FF3EFF, 0.1f);
-        drawdebug::line(funnel.base, uni.vertices[funnel.right], 0xFF7F24FF, 0.1f);
-    }
-    drawdebug::popId();
-    drawdebug::popId();
-}
-
-/// Find a straight line path from the current point through a complete path.
-/// If there is a corner that makes a straight path imposible, return a midpoint
-/// of the farthest edge on the path that we can reach with a straight line.
-static glm::vec3 funnelPath(AStarPath &path, const Uniwalk &uni, const glm::vec3 &current) {
-    Funnel funnel;
-    funnel.base = current;
-
-    bool initialized = false;
-    for (; path.next + 1 < path.faces.size(); ++path.next) {
-        Portal portal = findPortal(uni, path.faces[path.next], path.faces[path.next + 1]);
-        if (!initialized) {
-            funnel.left = portal.left;
-            funnel.right = portal.right;
-            funnel.portal = portal;
-            initialized = true;
-            continue;
-        }
-
-        // Keep left/right consistent.
-        if ((funnel.portal.left == portal.right) || funnel.portal.right == portal.left) {
-            std::swap(portal.left, portal.right);
-        }
-
-        FunnelUpdate upd = checkFunnelUpdate(funnel, portal, uni);
-        funnel.portal = portal;
-        switch (upd.change) {
-        case FunnelUpdate::Expand: {
-            // Never expand the funnel.
-            break;
-        }
-        case FunnelUpdate::Narrow: {
-            switch (upd.direction) {
-            case FunnelUpdate::Left: {
-                funnel.left = portal.left;
-                break;
-            }
-            case FunnelUpdate::Right: {
-                funnel.right = portal.right;
-                break;
-            }
-            }
-            break;
-        }
-        case FunnelUpdate::Corner: {
-            // Path goes around a corner. Pick a midpoint between funnel edges
-            // to avoid getting stuck at a corner.
-            glm::vec3 left = uni.vertices[funnel.left];
-            glm::vec3 right = uni.vertices[funnel.right];
-            drawDebugFunnel(funnel, uni, path.index);
-            return (left + right) * 0.5f;
-        }
-        }
-    }
-
-    if (!initialized) {
-        // Trivial path between two points.
-        return path.to;
-    }
-
-    // Check that the destination is within the funnel. Otherwise move to the
-    // funnel edge, same as when we hit a corner.
-    glm::vec3 left = uni.vertices[funnel.left] - funnel.base;
-    glm::vec3 right = uni.vertices[funnel.right] - funnel.base;
-    glm::vec3 last = path.to - funnel.base;
-
-    float leftToLast = glm::cross(left, last).z;
-    float leftToRight = glm::cross(left, right).z;
-    float rightToLast = glm::cross(right, last).z;
-    float rightToLeft = glm::cross(right, left).z;
-
-    drawDebugFunnel(funnel, uni, path.index);
-
-    if ((leftToLast * leftToRight) < 0.0f || (rightToLast * rightToLeft) < 0.0f) {
-        // Hit a corner.
-        return (uni.vertices[funnel.left] + uni.vertices[funnel.right]) * 0.5f;
-    }
-
-    return path.to;
-}
-
+// A path keeps clear of the faces the walker may not pass over, and of gaps
+// too narrow for it; when no path does, it is found over every face and gap,
+// and the funnel closes the gaps too narrow to a point.
 static bool findPath(AStarPath &path, Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to,
-                     const FacePassable &passable) {
+                     const FacePassable &passable, float radius) {
     const Uniwalk &uni = pf.uni;
     AStarContext &astar = pf.astar;
     uint32_t fromFace = findFaceAt(pf, from);
@@ -694,9 +726,9 @@ static bool findPath(AStarPath &path, Pathfinder &pf, const glm::vec3 &from, con
         return false;
     }
 
-    bool found = findPathAStar(path, astar, uni, fromFace, toFace, passable);
-    if (!found && passable) {
-        found = findPathAStar(path, astar, uni, fromFace, toFace, {});
+    bool found = findPathAStar(path, astar, uni, fromFace, toFace, passable, radius);
+    if (!found && (passable || radius > 0.0f)) {
+        found = findPathAStar(path, astar, uni, fromFace, toFace, {}, 0.0f);
     }
     if (!found) {
         return false;
@@ -717,13 +749,22 @@ static bool findPath(AStarPath &path, Pathfinder &pf, const glm::vec3 &from, con
 
     path.from = from;
     path.to = to;
-    path.next = 0;
+    path.radius = radius;
     path.current = 0;
     path.active = true;
-    const glm::vec3 first = funnelPath(path, uni, from);
-    path.points = {from, first};
-    path.pointNext = 1;
     path.followsFaces = true;
+    planPoints(path, uni);
+
+    if (isShowPathEnabled()) {
+        drawdebug::pushId(path.index);
+        drawdebug::pushId("funnel");
+        drawdebug::clear();
+        for (size_t i = 1; i < path.points.size(); ++i) {
+            drawdebug::line(path.points[i - 1], path.points[i], 0xC0FF3EFF, 0.1f);
+        }
+        drawdebug::popId();
+        drawdebug::popId();
+    }
     return true;
 }
 
@@ -736,14 +777,15 @@ bool pathExists(const Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to
     return pf.uni.regions[fromFace] == pf.uni.regions[toFace];
 }
 
-std::optional<Path> createPath(Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to, const FacePassable &passable) {
+std::optional<Path> createPath(Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to, const FacePassable &passable,
+                               float radius) {
     for (int32_t i = 0; i < pf.paths.size(); ++i) {
         AStarPath &path = pf.paths[i];
         if (path.active) {
             continue;
         }
 
-        bool found = findPath(path, pf, from, to, passable);
+        bool found = findPath(path, pf, from, to, passable, radius);
         if (!found) {
             return std::nullopt;
         }
@@ -798,10 +840,11 @@ bool updatePath(Pathfinder &pf, Path p, const glm::vec3 &current) {
     }
 
     // The walker is looked for on the path's faces from the one before where
-    // it was last found to the one past where the funnel has reached. The
-    // funnel runs ahead of the walker, so the faces between are its way there.
+    // it was last found to the one past the gap of the point it walks to:
+    // the faces between are its way there.
     const uint32_t checkFrom = path.current > 0 ? path.current - 1 : 0;
-    const uint32_t checkTo = std::min<uint32_t>(path.next + 1, static_cast<uint32_t>(path.faces.size()) - 1);
+    const uint32_t checkTo = std::min<uint32_t>(path.pointFaces[path.pointNext] + 1,
+                                                static_cast<uint32_t>(path.faces.size()) - 1);
 
     bool isOnPath = false;
     for (uint32_t i = checkFrom; i <= checkTo; ++i) {
@@ -813,20 +856,19 @@ bool updatePath(Pathfinder &pf, Path p, const glm::vec3 &current) {
     }
     if (!isOnPath) {
         // Wandered off the path, recalculate.
-        bool foundNewPath = findPath(path, pf, current, path.to, path.passable);
+        bool foundNewPath = findPath(path, pf, current, path.to, path.passable, path.radius);
         if (!foundNewPath) {
             return false;
         }
     }
 
-    float eps2 = 0.01f;
-    if (path.next < path.faces.size()) {
-        if (glm::distance2(path.points[path.pointNext], current) < eps2) {
-            // Reached an intermediate point, move to the next.
-            const glm::vec3 reached = path.points[path.pointNext];
-            path.points = {reached, funnelPath(path, pf.uni, current)};
-            path.pointNext = 1;
-        }
+    // A corner is passed once the walker is within a tenth of a metre of it,
+    // or stands on a face past its gap; the end of the path is not passed.
+    const float eps2 = 0.01f;
+    while (path.pointNext + 1 < path.points.size() &&
+           (glm::distance2(path.points[path.pointNext], current) < eps2 ||
+            path.current > path.pointFaces[path.pointNext])) {
+        ++path.pointNext;
     }
 
     drawdebug::pushId(p.index);
@@ -863,16 +905,10 @@ std::vector<glm::vec3> pathPoints(Pathfinder &pf, Path p, uint32_t &next) {
         next = path.pointNext;
         return path.points;
     }
-    // The funnel is walked ahead on a copy of the path, each point taken from
-    // the one before, until it yields the destination. Every step either
-    // passes a portal or yields the destination, so this ends.
-    AStarPath ahead = path;
-    std::vector<glm::vec3> points = path.points;
-    while (points.back() != path.to) {
-        points.push_back(funnelPath(ahead, pf.uni, points.back()));
-    }
+    // A path that follows its faces gives its points from the one last
+    // passed, as the legs already walked are behind the walker.
     next = 1;
-    return points;
+    return std::vector<glm::vec3>(path.points.begin() + (path.pointNext - 1), path.points.end());
 }
 
 void setPathPoints(Pathfinder &pf, Path p, std::vector<glm::vec3> points, uint32_t next) {

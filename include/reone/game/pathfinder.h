@@ -64,6 +64,8 @@ struct Uniwalk {
     std::vector<Uniroom> rooms;
     /** Region of each face: faces joined through shared edges share one. */
     std::vector<uint32_t> regions;
+    /** Whether each vertex lies on the edge of the walkable ground: on an edge no other walkable face shares. */
+    std::vector<uint8_t> boundary;
 };
 
 /// State of a face for A* algorithm.
@@ -104,19 +106,24 @@ struct AStarPath {
     std::vector<uint32_t> faces;
     glm::vec3 from;
     glm::vec3 to;
-    /** The face the funnel has reached. */
-    uint32_t next;
     /** The face of the path the walker was last found on. */
     uint32_t current {0};
+    /** The walker's radius: the path keeps that far from the corners it turns at. */
+    float radius {0.0f};
     /**
      * The points of the walk, walked straight one after another, and the index
-     * of the one being walked to. While the path follows its faces they are
-     * the point last left behind and the one the funnel gives next. Once a way
-     * round a creature has been spliced into the path, they run on to the
-     * destination and are never planned again.
+     * of the one being walked to. While the path follows its faces they are its
+     * start, the corners the funnel turns at and its end, planned with the
+     * path. Once a way round a creature has been spliced into the path, they
+     * are never planned again.
      */
     std::vector<glm::vec3> points;
     uint32_t pointNext {1};
+    /**
+     * While the path follows its faces, the gap each point lies in, by the
+     * index in faces of the face before it; the end's is the last face.
+     */
+    std::vector<uint32_t> pointFaces;
     /** The path takes each next point from its faces, rather than walking its points. */
     bool followsFaces {true};
     /** The faces the walker may pass over, kept for planning the path again. */
@@ -163,7 +170,13 @@ void uniwalkFinalize(struct Uniwalk &uni);
  * cross, the faces it starts and ends on always among them. When no such path
  * is found, one over every face is looked for instead.
  */
-std::optional<Path> createPath(Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to, const FacePassable &passable = {});
+/**
+ * A path from one point to another for a walker of \p radius: over the faces it
+ * may pass over and through the gaps wide enough for it, when there is such a
+ * path, and keeping that far from the corners it turns at.
+ */
+std::optional<Path> createPath(Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to, const FacePassable &passable = {},
+                               float radius = 0.0f);
 /** Whether the walkmesh joins two points, without holding a path. */
 bool pathExists(const Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to);
 bool updatePath(Pathfinder &pf, Path p, const glm::vec3 &current);

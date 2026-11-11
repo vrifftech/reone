@@ -9939,8 +9939,9 @@ bool Creature::navigateTo(const glm::vec3 &dest, bool run, float distance, float
     // Find a path and start following it.
     _avoidance.bumps = 0;
     // The path keeps clear of doors and placeables by the walker's personal
-    // space, unless no path does.
-    _path = createPath(pf, position(), dest, area.pathFacesClearOfStaticWalls(*this));
+    // space, passes only through gaps wide enough for it and keeps that far
+    // from the corners it turns at, unless no path does.
+    _path = createPath(pf, position(), dest, area.pathFacesClearOfStaticWalls(*this), _personalSpace);
     if (!_path) {
         // No path is found either when none reaches the destination or when
         // every path slot is taken. Only the first is a failure: the second
