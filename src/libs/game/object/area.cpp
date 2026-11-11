@@ -2482,6 +2482,19 @@ void Area::jumpCarriedAreaEffects(const Creature &carrier) {
     }
 }
 
+FacePassable Area::pathFacesClearOfStaticWalls(const Creature &walker) const {
+    const uint32_t walkerId = walker.id();
+    return [this, walkerId](uint32_t face) {
+        auto walker = _game.getObjectById<Creature>(walkerId);
+        if (!walker || face >= _pathfinder.uni.faces.size()) {
+            return true;
+        }
+        const glm::vec3 &centre = _pathfinder.uni.faces[face].centroid;
+        const auto band = staticWallBand(*walker, centre.z, centre.z);
+        return !findStaticWallAlong(centre, centre, *walker, band.low, band.high);
+    };
+}
+
 std::optional<std::reference_wrapper<const Creature>> Area::findBlockingCreature(const Creature &mover, const glm::vec3 &from, const glm::vec3 &to) const {
     CreatureCollision collision;
     findCreatureCollision(mover, from, to, collision);

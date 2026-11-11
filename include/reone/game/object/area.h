@@ -311,6 +311,12 @@ public:
      */
     std::optional<std::reference_wrapper<const Object>> findStaticWallAlong(
         const glm::vec3 &from, const glm::vec3 &to, const Creature &creature, float minZ, float maxZ) const;
+    /**
+     * The faces of the pathfinder's walkmesh a walker's planned path may pass
+     * over: those whose centre has no door or placeable wall, as it stands,
+     * within the walker's personal space.
+     */
+    FacePassable pathFacesClearOfStaticWalls(const Creature &walker) const;
     /** Which face of the room under a point gives the ground height there. */
     enum class GroundFace {
         Locating, /**< the walk-check face by which the room is found, within a thousand units of the point's height */

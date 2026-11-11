@@ -79,7 +79,15 @@ struct AStarOpenFace {
 struct AStarContext {
     std::vector<AStarFace> state;
     std::vector<AStarOpenFace> open;
+    /** Per face, whether the walker may pass over it: -1 not asked yet, 0 no, 1 yes. */
+    std::vector<int8_t> passes;
 };
+
+/**
+ * Whether a walker may pass over a face of the unified walkmesh (an index
+ * into Uniwalk::faces).
+ */
+using FacePassable = std::function<bool(uint32_t)>;
 
 /// Fully calculated path.
 struct AStarPath {
@@ -99,6 +107,8 @@ struct AStarPath {
     uint32_t pointNext {1};
     /** The path takes each next point from its faces, rather than walking its points. */
     bool followsFaces {true};
+    /** The faces the walker may pass over, kept for planning the path again. */
+    FacePassable passable;
 
     int32_t index;
     bool active;
@@ -118,7 +128,12 @@ struct Pathfinder : public boost::noncopyable {
 void uniwalkLoadRoom(struct Uniwalk &wm, graphics::Walkmesh &data, std::set<uint32_t> &walkableMaterial);
 void uniwalkFinalize(struct Uniwalk &uni);
 
-std::optional<Path> createPath(Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to);
+/**
+ * A path from one point to another over the faces \p passable lets the walker
+ * cross, the faces it starts and ends on always among them. When no such path
+ * is found, one over every face is looked for instead.
+ */
+std::optional<Path> createPath(Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to, const FacePassable &passable = {});
 /** Whether the walkmesh joins two points, without holding a path. */
 bool pathExists(const Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to);
 bool updatePath(Pathfinder &pf, Path p, const glm::vec3 &current);

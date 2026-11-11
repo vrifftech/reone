@@ -340,7 +340,7 @@ static AStarOpenFace popOpenFace(std::vector<AStarOpenFace> &open) {
 }
 
 static bool findPathAStar(AStarPath &path, AStarContext &ctx, const Uniwalk &uni,
-                          uint32_t fromFace, uint32_t toFace) {
+                          uint32_t fromFace, uint32_t toFace, const FacePassable &passable) {
     // Reset the context.
     ctx.state.resize(uni.faces.size());
     memset(&ctx.state[0], 0xFF, sizeof(ctx.state[0]) * ctx.state.size());
@@ -351,6 +351,23 @@ static bool findPathAStar(AStarPath &path, AStarContext &ctx, const Uniwalk &uni
     // reverses the path, so it transforms to natural order [fromFace, toFace].
     ctx.state[toFace].flag = AStarFace::Open;
     ctx.open.push_back({toFace, 0.0f});
+
+    // Each face is asked once a search whether the walker may pass over it.
+    // The search starts from the face the walk ends on and ends on the face
+    // the walk starts from, so neither is asked.
+    if (passable) {
+        ctx.passes.assign(uni.faces.size(), -1);
+    }
+    const auto mayPass = [&](uint32_t face) {
+        if (!passable || face == fromFace) {
+            return true;
+        }
+        int8_t &passes = ctx.passes[face];
+        if (passes < 0) {
+            passes = passable(face) ? 1 : 0;
+        }
+        return passes != 0;
+    };
 
     while (!ctx.open.empty()) {
         // Extract face with least total cost from open list and close it.
@@ -374,8 +391,9 @@ static bool findPathAStar(AStarPath &path, AStarContext &ctx, const Uniwalk &uni
                 continue;
             }
 
-            // Skip adjacent vertex if it is closed.
-            if (ctx.state[adj].flag == AStarFace::Closed) {
+            // Skip adjacent vertex if it is closed, or one the walker may not
+            // pass over.
+            if (ctx.state[adj].flag == AStarFace::Closed || !mayPass(adj)) {
                 continue;
             }
 
@@ -611,7 +629,7 @@ static glm::vec3 funnelPath(AStarPath &path, const Uniwalk &uni, const glm::vec3
 }
 
 static bool findPath(AStarPath &path, AStarContext &astar, const Uniwalk &uni,
-                     const glm::vec3 &from, const glm::vec3 &to) {
+                     const glm::vec3 &from, const glm::vec3 &to, const FacePassable &passable) {
     uint32_t fromFace = findFaceAt(uni, from);
     uint32_t toFace = findFaceAt(uni, to);
 
@@ -619,7 +637,10 @@ static bool findPath(AStarPath &path, AStarContext &astar, const Uniwalk &uni,
         return false;
     }
 
-    bool found = findPathAStar(path, astar, uni, fromFace, toFace);
+    bool found = findPathAStar(path, astar, uni, fromFace, toFace, passable);
+    if (!found && passable) {
+        found = findPathAStar(path, astar, uni, fromFace, toFace, {});
+    }
     if (!found) {
         return false;
     }
@@ -657,17 +678,18 @@ bool pathExists(const Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to
     return pf.uni.regions[fromFace] == pf.uni.regions[toFace];
 }
 
-std::optional<Path> createPath(Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to) {
+std::optional<Path> createPath(Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to, const FacePassable &passable) {
     for (int32_t i = 0; i < pf.paths.size(); ++i) {
         AStarPath &path = pf.paths[i];
         if (path.active) {
             continue;
         }
 
-        bool found = findPath(path, pf.astar, pf.uni, from, to);
+        bool found = findPath(path, pf.astar, pf.uni, from, to, passable);
         if (!found) {
             return std::nullopt;
         }
+        path.passable = passable;
         path.index = i;
         return Path {i};
     }
@@ -677,6 +699,7 @@ std::optional<Path> createPath(Pathfinder &pf, const glm::vec3 &from, const glm:
 
 void releasePath(Pathfinder &pf, Path path) {
     pf.paths[path.index].active = false;
+    pf.paths[path.index].passable = {};
 
     if (isShowPathEnabled()) {
         drawdebug::pushId(path.index);
@@ -730,7 +753,7 @@ bool updatePath(Pathfinder &pf, Path p, const glm::vec3 &current) {
     }
     if (!isOnPath) {
         // Wandered off the path, recalculate.
-        bool foundNewPath = findPath(path, pf.astar, pf.uni, current, path.to);
+        bool foundNewPath = findPath(path, pf.astar, pf.uni, current, path.to, path.passable);
         if (!foundNewPath) {
             return false;
         }
