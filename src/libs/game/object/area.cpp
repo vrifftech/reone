@@ -2493,6 +2493,44 @@ LegBlocker Area::legsClearOfStandingCreatures(const Creature &walker, const glm:
     };
 }
 
+// Each other creature is swept for as the two move relative to each other:
+// standing still, it is met where it stands, as on a step of the mover's;
+// walking, it is met where both will be. One closing on the mover from
+// behind is left to pass the mover itself.
+std::optional<Area::OncomingCreature> Area::findOncomingCreature(const Creature &mover, const glm::vec2 &velocity, float horizon, float reach) const {
+    std::optional<OncomingCreature> first;
+    // Where floors lie over others, a creature counts only across the heights
+    // the mover spans.
+    const bool stacked = hasStackedFloors();
+    const float low = mover.position().z;
+    const float high = low + standingHeight(mover);
+    const glm::vec2 origin {mover.position()};
+    for (const auto &object : _objectsByType.at(ObjectType::Creature)) {
+        const auto &other = static_cast<const Creature &>(*object);
+        if (&other == &mover || other.isDead() || other.isTemporarilyDead() || (stacked && clearsHeights(other, low, high)) ||
+            glm::dot(velocity, glm::vec2(other.position()) - origin) <= 0.0f) {
+            continue;
+        }
+        const glm::vec2 closing {velocity - other.moveVelocity()};
+        const float closingSpeed = glm::length(closing);
+        if (closingSpeed <= 0.0f) {
+            continue;
+        }
+        const float length = std::max(reach, closingSpeed * horizon);
+        const float radius = mover.creaturePersonalSpace() + other.creaturePersonalSpace() + kCreatureCollisionEpsilon;
+        float time;
+        glm::vec2 normal;
+        if (!sweepCircle(origin, origin + closing / closingSpeed * length, glm::vec2(other.position()), radius, time, normal)) {
+            continue;
+        }
+        const float seconds = time * length / closingSpeed;
+        if (!first || seconds < first->time) {
+            first = OncomingCreature {std::cref(other), seconds};
+        }
+    }
+    return first;
+}
+
 std::vector<std::reference_wrapper<const Creature>> Area::findCreaturesNear(const Creature &mover, float margin) const {
     std::vector<std::reference_wrapper<const Creature>> near;
     // Where floors lie over others, a creature counts only across the heights
@@ -3266,7 +3304,7 @@ bool Area::moveCreatureByDistance(const std::shared_ptr<Creature> &creature,
     return stepCreatureTo(creature, glm::vec3(glm::vec2(dest), creature->position().z), facing);
 }
 
-bool Area::stepCreatureTo(const std::shared_ptr<Creature> &creature, const glm::vec3 &point, MoveFacing facing) {
+bool Area::stepCreatureTo(const std::shared_ptr<Creature> &creature, const glm::vec3 &point, MoveFacing facing, MoveKind kind) {
     auto &sceneGraph = _services.scene.graphs.get(_sceneName);
     const auto walkmesh = sceneGraph.findRoomWalkmesh(point);
     if (!walkmesh) {
@@ -3290,6 +3328,9 @@ bool Area::stepCreatureTo(const std::shared_ptr<Creature> &creature, const glm::
     const glm::vec2 step {glm::vec2(dest) - glm::vec2(origin)};
     if (facing == MoveFacing::Turn && step != glm::vec2(0.0f)) {
         creature->turnAlongStep(step);
+    }
+    if (kind == MoveKind::Step) {
+        creature->addCarried(step);
     }
 
     if (creature == _game.party().getLeader()) {

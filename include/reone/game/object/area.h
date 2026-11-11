@@ -404,6 +404,19 @@ public:
      * other than the dead and party members down at no vitality.
      */
     std::optional<std::reference_wrapper<const Creature>> findBlockingCreature(const Creature &mover, const glm::vec3 &from, const glm::vec3 &to) const;
+    /** A creature a mover closes on, and how many seconds from now it would walk into it. */
+    struct OncomingCreature {
+        std::reference_wrapper<const Creature> creature;
+        float time {0.0f};
+    };
+    /**
+     * The creature ahead, by the rules of findBlockingCreature, a mover going
+     * at \p velocity across the ground plan walks into first, each other
+     * creature going on as it last moved (see Creature::moveVelocity). Each
+     * is looked for as far as the two close in \p horizon seconds, and at
+     * least \p reach metres. Creatures behind the mover are not looked for.
+     */
+    std::optional<OncomingCreature> findOncomingCreature(const Creature &mover, const glm::vec2 &velocity, float horizon, float reach) const;
     /**
      * The creatures, by the rules of findBlockingCreature, whose personal
      * spaces come within \p margin of the mover's where it stands.
@@ -582,6 +595,12 @@ public:
         Keep  /**< not at all */
     };
 
+    /** How a move takes a creature to a point. */
+    enum class MoveKind {
+        Step, /**< carries it there, a step of its way (see Creature::moveVelocity) */
+        Put   /**< puts it there */
+    };
+
     /**
      * Move a creature a distance along a direction over walkable ground,
      * sliding along other creatures, and turn it as facing asks. Returns
@@ -591,17 +610,19 @@ public:
                                 const glm::vec2 &direction, float distance,
                                 MoveFacing facing = MoveFacing::Turn);
     /**
-     * Step a creature to a point it has been found free to walk straight to:
-     * onto the ground there, at the height of the face by which the room
-     * under the point is found, noting that room, the leader's trail,
-     * triggers and subareas. False, and no step, when no room lies under the
-     * point.
+     * Step a creature to a point it has been found free to walk straight to,
+     * or put it at one it has been found to fit at: onto the ground there, at
+     * the height of the face by which the room under the point is found,
+     * noting that room, the leader's trail, triggers and subareas. False, and
+     * no step, when no room lies under the point.
      *
      * @param point where the creature steps; its height is where the room is
      *        looked for from
+     * @param kind whether the creature is carried there, the step counting
+     *        toward Creature::moveVelocity, or put there
      */
     bool stepCreatureTo(const std::shared_ptr<Creature> &creature, const glm::vec3 &point,
-                        MoveFacing facing = MoveFacing::Turn);
+                        MoveFacing facing = MoveFacing::Turn, MoveKind kind = MoveKind::Step);
 
     bool moveCreature(const std::shared_ptr<Creature> &creature, const glm::vec2 &dir, bool run, float dt,
                       float maxDistance = FLT_MAX, MoveFacing facing = MoveFacing::Turn);

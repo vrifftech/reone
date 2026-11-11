@@ -515,11 +515,17 @@ static constexpr float kStuckSidestepAngle = glm::quarter_pi<float>();
 // second, whatever the frame rate.
 static constexpr float kSteerTurnRate = glm::two_pi<float>();
 // A steered walk looks this far ahead for creatures in its way: this long at
-// its pace, and at least this far.
+// the speed it closes on each, and at least this far.
 static constexpr float kSteerLookaheadTime = 0.75f;
 static constexpr float kMinimumSteerLookahead = 2.0f;
 // A creature this near the walker's way, across it, stands straight ahead.
 static constexpr float kStraightAheadSpan = 0.05f;
+// Two walkers closing on each other from no more than this, in the cosine
+// of the angle between their ways, from straight against each other, pass
+// each other half and half.
+static constexpr float kOncomingCosine = -0.7f;
+// The share of the turn to pass each makes then.
+static constexpr float kOncomingPassShare = 0.5f;
 // From inside the circle it keeps clear of round a creature, a walker passing
 // it heads this far from the way to it, in radians: 100 degrees.
 static constexpr float kInsideReachTurn = 1.7453293f;
@@ -1355,6 +1361,8 @@ void Creature::retireAreaRuntime(
         _path.reset();
     }
     _steerHeading = glm::vec2(0.0f);
+    _carried = glm::vec2(0.0f);
+    _moveVelocity = glm::vec2(0.0f);
     _previousPosition = _position;
     _progressTime = 0.0f;
     _stuckTimer.reset(0.0f);
@@ -2647,6 +2655,7 @@ void Creature::update(float dt) {
     standOnGround();
     updateMineCheck(dt);
     updateForcedMove(dt);
+    measureMoveVelocity(dt);
     updateStateHeartbeat(dt);
     updateFidget();
     updateTurning();
@@ -9730,9 +9739,7 @@ glm::vec3 Creature::computeSteeringForce(const Uniwalk &uni, const glm::vec3 &ne
     // The speed of the walk's last steps, walking or running.
     const float speed = _movementType == MovementType::Run ? runSpeed() : walkSpeed();
     if (area) {
-        // The walk looks ahead as far as its last step's pace carries it.
-        const float lookahead = std::max(kMinimumSteerLookahead, speed * kSteerLookaheadTime);
-        if (auto way = steerPastCreature(*area, area->pathfinder(), heading, lookahead)) {
+        if (auto way = steerPastCreature(*area, area->pathfinder(), heading, speed)) {
             desired = *way;
         }
     }
@@ -9784,7 +9791,7 @@ glm::vec3 Creature::computeSteeringForce(const Uniwalk &uni, const glm::vec3 &ne
     return glm::vec3(combined, 0.0f);
 }
 
-std::optional<bool> Creature::passingSide(const Pathfinder &pf, const Creature &other, const glm::vec2 &heading) const {
+std::optional<bool> Creature::passingSide(const Pathfinder &pf, const Creature &other, const glm::vec2 &heading, const glm::vec3 &at) const {
     const glm::vec2 toOther {glm::vec2(other.position()) - glm::vec2(_position)};
     // Positive when the other stands left of the heading.
     const float across = heading.x * toOther.y - heading.y * toOther.x;
@@ -9794,8 +9801,8 @@ std::optional<bool> Creature::passingSide(const Pathfinder &pf, const Creature &
     const glm::vec2 left {-heading.y, heading.x};
     const float reach = other.creaturePersonalSpace() + creaturePersonalSpace();
     const auto hasRoom = [&](bool turnsLeft) {
-        const glm::vec2 pass {glm::vec2(other.position()) + left * (turnsLeft ? reach : -reach)};
-        return isClearGround(pf, glm::vec3(pass, other.position().z), _personalSpace);
+        const glm::vec2 pass {glm::vec2(at) + left * (turnsLeft ? reach : -reach)};
+        return isClearGround(pf, glm::vec3(pass, at.z), _personalSpace);
     };
     if (hasRoom(first)) {
         return first;
@@ -9806,7 +9813,7 @@ std::optional<bool> Creature::passingSide(const Pathfinder &pf, const Creature &
     return std::nullopt;
 }
 
-std::optional<glm::vec2> Creature::wayPast(const Creature &other, bool left) const {
+std::optional<glm::vec2> Creature::wayPast(const Creature &other, bool left, const glm::vec2 &velocity, const glm::vec2 &otherVelocity, float share) const {
     const glm::vec2 toOther {glm::vec2(other.position()) - glm::vec2(_position)};
     const float distance = glm::length(toOther);
     if (distance <= 0.0f) {
@@ -9814,25 +9821,42 @@ std::optional<glm::vec2> Creature::wayPast(const Creature &other, bool left) con
     }
     const float reach = other.creaturePersonalSpace() + creaturePersonalSpace() + kAvoidanceSpace;
     const float turn = distance > reach ? std::asin(reach / distance) : kInsideReachTurn;
-    return turned(toOther / distance, left ? turn : -turn);
+    // The way the walker is to move relative to the other.
+    const glm::vec2 relative {turned(toOther / distance, left ? turn : -turn)};
+    // The walker turns its own way by its share of the change that takes the
+    // way it closes on the other onto the relative way, at the same speed.
+    // Past a creature standing still, that is the relative way.
+    const glm::vec2 closing {velocity - otherVelocity};
+    const glm::vec2 way {velocity + (relative * glm::length(closing) - closing) * share};
+    const float wayLength = glm::length(way);
+    return wayLength > 0.0f ? way / wayLength : relative;
 }
 
-std::optional<glm::vec2> Creature::steerPastCreature(const Area &area, const Pathfinder &pf, const glm::vec2 &heading, float lookahead) {
+// The walker and the other are taken to go on as they go: the walker along
+// its heading at its speed, the other as it last walked. The walker passes
+// where they would meet, on the side away from the other across the way it
+// closes on it, so two creatures closing on each other pass on opposite
+// sides. Two walking against each other, each steering, each make half the
+// turn; otherwise the walker makes all of it.
+std::optional<glm::vec2> Creature::steerPastCreature(const Area &area, const Pathfinder &pf, const glm::vec2 &heading, float speed) {
     if (glm::dot(heading, heading) <= 0.0f) {
         _avoidance.passing.reset();
         return std::nullopt;
     }
-    const glm::vec3 ahead {_position + glm::vec3(heading * lookahead, 0.0f)};
-    const auto found = area.findBlockingCreature(*this, _position, ahead);
+    const glm::vec2 velocity {heading * speed};
+    const auto found = area.findOncomingCreature(*this, velocity, kSteerLookaheadTime, kMinimumSteerLookahead);
     // Walking into the object the walk heads for is arriving.
-    if (!found || found->get().id() == attemptedMovementTarget()) {
+    if (!found || found->creature.get().id() == attemptedMovementTarget()) {
         _avoidance.passing.reset();
         return std::nullopt;
     }
-    const Creature &other = found->get();
+    const Creature &other = found->creature.get();
+    const glm::vec2 otherVelocity {other.moveVelocity()};
+    const glm::vec2 closing {velocity - otherVelocity};
+    const glm::vec3 meeting {other.position() + glm::vec3(otherVelocity * found->time, 0.0f)};
     auto passing = _avoidance.passing.resolve();
     if (passing.get() != &other) {
-        const auto side = passingSide(pf, other, heading);
+        const auto side = passingSide(pf, other, glm::normalize(closing), meeting);
         if (!side) {
             _avoidance.passing.reset();
             return std::nullopt;
@@ -9840,7 +9864,13 @@ std::optional<glm::vec2> Creature::steerPastCreature(const Area &area, const Pat
         _avoidance.passing = _game.getObjectById<Creature>(other.id());
         _avoidance.passingLeft = *side;
     }
-    return wayPast(other, _avoidance.passingLeft);
+    bool oncoming = false;
+    if (other._path && glm::dot(otherVelocity, otherVelocity) > 0.0f &&
+        glm::dot(glm::normalize(otherVelocity), heading) < kOncomingCosine) {
+        const AStarPath &otherPath = pf.paths[other._path->index];
+        oncoming = otherPath.active && !otherPath.straight && otherPath.followsFaces;
+    }
+    return wayPast(other, _avoidance.passingLeft, velocity, otherVelocity, oncoming ? kOncomingPassShare : 1.0f);
 }
 
 // The next pace of a walk that went at \p pace: full speed until the ground
@@ -10291,7 +10321,7 @@ Creature::Avoidance Creature::planPastCreature(const std::shared_ptr<Creature> &
     // With room beside the blocker, the walker turns at once to pass it: away
     // from the side of its step the blocker stands on, or the way preferred,
     // unless only the other way has room.
-    if (auto passing = passingSide(pf, *blocker, stepDir)) {
+    if (auto passing = passingSide(pf, *blocker, stepDir, blocker->position())) {
         side = *passing;
     } else {
         // Otherwise the path is planned again from where the walker stands,
@@ -10658,6 +10688,17 @@ std::optional<glm::vec3> Creature::walkablePointBeside(const Object &target, con
         }
     }
     return std::nullopt;
+}
+
+// The steps the creature was carried since its last update: on a path,
+// driven, along the leader's trail or pushed, each a step through the area
+// (Area::stepCreatureTo), those taken in other creatures' updates included.
+void Creature::measureMoveVelocity(float dt) {
+    if (dt <= 0.0f) {
+        return;
+    }
+    _moveVelocity = _carried / dt;
+    _carried = glm::vec2(0.0f);
 }
 
 void Creature::advanceOnPath(const glm::vec3 &dest, const glm::vec3 &dir, bool run, float distance, float dt) {

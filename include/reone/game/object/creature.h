@@ -838,6 +838,15 @@ public:
     bool isRunLimited() const;
     void setRunLimited(bool limited) { _runLimited = limited; }
     MovementType movementType() const { return _movementType; }
+    /**
+     * How far, and which way across the ground plan, the creature was
+     * carried a second over its last update, whether on a path, driven,
+     * along the leader's trail or pushed; nothing while it stands or was held
+     * up. Being put somewhere does not count.
+     */
+    glm::vec2 moveVelocity() const { return _movementType == MovementType::None ? glm::vec2(0.0f) : _moveVelocity; }
+    /** Count a step the creature was carried, toward moveVelocity (see Area::stepCreatureTo). */
+    void addCarried(const glm::vec2 &step) { _carried += step; }
 
     bool canMove() const { return canExecuteActions() && (_effectAIStateMask & kAIStateMove) != 0; }
     bool canAttack() const {
@@ -2879,6 +2888,10 @@ private:
     RuntimeObjectRef<Object> _attemptedMovementTarget;
     /** The way a steered walk heads, across the ground plan; nothing until its first step. */
     glm::vec2 _steerHeading {0.0f};
+    /** See moveVelocity. */
+    glm::vec2 _moveVelocity {0.0f};
+    /** The steps the creature was carried since moveVelocity was last taken. */
+    glm::vec2 _carried {0.0f};
     /**
      * How much of its full speed a path walk goes at, which it carries from
      * one walk to the next; and the same for the pace of its walk and run
@@ -3207,26 +3220,33 @@ private:
      */
     bool stopsForEnemy(const std::shared_ptr<Creature> &blocker);
     /**
-     * Which way the walker turns to pass \p other, heading along \p heading:
-     * true for counter-clockwise. It turns away from the side the other
-     * stands on, or the preferred way when it stands straight ahead, unless
-     * only the other way has room for the walker on the walkable ground.
-     * Empty when neither has.
+     * Which way the walker turns to pass \p other, closing on it along
+     * \p heading, and passing it at \p at: true for counter-clockwise. It
+     * turns away from the side of that line the other stands on, or the
+     * preferred way when it stands straight ahead, unless only the other way
+     * has room for the walker on the walkable ground at \p at. Empty when
+     * neither has.
      */
-    std::optional<bool> passingSide(const Pathfinder &pf, const Creature &other, const glm::vec2 &heading) const;
+    std::optional<bool> passingSide(const Pathfinder &pf, const Creature &other, const glm::vec2 &heading, const glm::vec3 &at) const;
     /**
-     * The way a steered walk heading along \p heading turns to pass the first
-     * creature in its way within \p lookahead, when there is one with room to
-     * pass. The side is kept while the same creature is passed.
+     * The way a steered walk heading along \p heading at \p speed turns to
+     * pass the first creature it closes on (see Area::findOncomingCreature),
+     * when there is one with room to pass where they would meet. The side is
+     * kept while the same creature is passed.
      */
     std::optional<glm::vec2> steerPastCreature(const Area &area, const Pathfinder &pf, const glm::vec2 &heading,
-                                               float lookahead);
+                                               float speed);
     /**
      * The way past \p other: the line that touches the circle round it within
      * which the walker keeps clear, counter-clockwise when \p left is set.
      * From inside that circle, more than a quarter turn from the way to it.
+     * Going at \p velocity, past a creature going at \p otherVelocity, it is
+     * the way the walker turns to so that its motion relative to the other
+     * follows that line; it makes \p share of that turn, the other making
+     * the rest.
      */
-    std::optional<glm::vec2> wayPast(const Creature &other, bool left) const;
+    std::optional<glm::vec2> wayPast(const Creature &other, bool left, const glm::vec2 &velocity = glm::vec2(0.0f),
+                                     const glm::vec2 &otherVelocity = glm::vec2(0.0f), float share = 1.0f) const;
     /** Drop any walk under way and plan one along the straight line to a point. */
     void planStraightPath(const glm::vec3 &point);
     /** A walk ends where the creature stands, and \p target hears that as a click by it. */
@@ -3260,6 +3280,8 @@ private:
     void startSwitchWeaponsCooldown();
     void updateExcitement();
     void updateForcedMove(float dt);
+    /** Takes moveVelocity from the steps carried over the last \p dt seconds. */
+    void measureMoveVelocity(float dt);
     AnimationUpdater animationUpdater() const;
     void updateTurning();
     void rotateStep(float target);

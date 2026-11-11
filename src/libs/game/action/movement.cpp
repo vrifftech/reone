@@ -1037,7 +1037,9 @@ void FollowLeaderAction::execute(std::shared_ptr<Action> self, Object &actor, fl
         speed = follower->runSpeed() * kFollowNearShare;
     }
     const float scale = lag2 <= kFollowCloseLag2 ? kFollowCloseScale : (lag2 <= kFollowMidLag2 ? kFollowMidScale : kFollowFarScale);
-    float budget = speed * scale * dt;
+    // How far the follower goes this update at its pace.
+    const float pace = speed * scale * dt;
+    float budget = pace;
 
     if (_state == State::FollowingPath) {
         _followingTime += dt;
@@ -1062,17 +1064,29 @@ void FollowLeaderAction::execute(std::shared_ptr<Action> self, Object &actor, fl
     if (_state != State::PlannedWalk) {
         const bool clear = lineClear(*follower, _safePosition, start, 0.0f, false);
         glm::vec3 to {start};
+        Area::MoveKind kind = Area::MoveKind::Step;
         if (glm::distance2(_safePosition, start) >= 0.001f) {
             if (clear) {
                 to = start + (_safePosition - start) * (1.0f - std::pow(1.0f - kSpringShare, kSpringUpdatesPerSecond * dt));
             } else if (area->isSafeLocationPoint(_safePosition, *follower)) {
                 to = _safePosition;
+                kind = Area::MoveKind::Put;
             }
         } else if (clear) {
             to = _safePosition;
         }
         if (to != start) {
-            area->stepCreatureTo(follower, glm::vec3(glm::vec2(to), area->roomLookupHeight(start.z)), Area::MoveFacing::Keep);
+            // A spring further than the follower's pace, as after it jumps
+            // ahead along the trail, carries it only that far: the rest puts
+            // it there.
+            const glm::vec2 step {glm::vec2(to) - glm::vec2(start)};
+            const float length = glm::length(step);
+            const bool beyondPace = kind == Area::MoveKind::Step && length > pace;
+            const glm::vec3 point {glm::vec2(to), area->roomLookupHeight(start.z)};
+            const bool stepped = area->stepCreatureTo(follower, point, Area::MoveFacing::Keep, beyondPace ? Area::MoveKind::Put : kind);
+            if (stepped && beyondPace) {
+                follower->addCarried(step / length * pace);
+            }
         }
     }
     _lastPosition = glm::vec2(follower->position());
