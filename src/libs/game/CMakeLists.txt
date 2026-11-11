@@ -498,6 +498,7 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/object/module.cpp
     ${GAME_SOURCE_DIR}/object/placeable.cpp
     ${GAME_SOURCE_DIR}/object/sound.cpp
+    ${GAME_SOURCE_DIR}/object/staticwalls.cpp
     ${GAME_SOURCE_DIR}/object/store.cpp
     ${GAME_SOURCE_DIR}/object/trap.cpp
     ${GAME_SOURCE_DIR}/object/trigger.cpp

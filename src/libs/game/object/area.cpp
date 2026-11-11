@@ -89,6 +89,8 @@
 #include "reone/system/logutil.h"
 #include "reone/system/randomutil.h"
 
+#include "staticwalls.h"
+
 using namespace reone::audio;
 using namespace reone::gui;
 using namespace reone::graphics;
@@ -2140,62 +2142,6 @@ static float standingHeight(const Creature &creature) {
 static bool clearsHeights(const Creature &creature, float low, float high) {
     const float feet = creature.position().z;
     return feet > high || feet + standingHeight(creature) < low;
-}
-
-// Blocking faces are the non-walkable ones that walking is checked against,
-// in the rooms and in doors and placeables alike.
-static std::set<uint32_t> blockingSurfaces(const ISurfaces &surfaces) {
-    const auto walkable = surfaces.getWalkableSurfaces();
-    std::set<uint32_t> blocking;
-    for (uint32_t material : surfaces.getWalkcheckSurfaces()) {
-        if (walkable.count(material) == 0) {
-            blocking.insert(material);
-        }
-    }
-    return blocking;
-}
-
-// Whether an enabled walkmesh has a blocking face within radius of the level
-// segment between two points, between two heights.
-static bool hasBlockingFaceWithin(const std::shared_ptr<scene::WalkmeshSceneNode> &node, const std::set<uint32_t> &blocking,
-                                  const glm::vec3 &from, const glm::vec3 &to, float radius, float minZ, float maxZ) {
-    if (!node || !node->isEnabled()) {
-        return false;
-    }
-    const glm::vec3 localFrom {node->absoluteTransformInverse() * glm::vec4(from, 1.0f)};
-    const glm::vec3 localTo {node->absoluteTransformInverse() * glm::vec4(to, 1.0f)};
-    const float shift = localFrom.z - from.z;
-    return node->walkmesh().hasFaceWithin(blocking, localFrom, localTo, radius, minZ + shift, maxZ + shift);
-}
-
-// Where a walker of the given radius, swept along the level segment between
-// two points, first meets a blocking face of an enabled walkmesh between two
-// heights; the contact's normal in world coordinates.
-static std::optional<graphics::Walkmesh::Contact> sweepWalkmesh(const std::shared_ptr<scene::WalkmeshSceneNode> &node, const std::set<uint32_t> &blocking,
-                                                                const glm::vec3 &from, const glm::vec3 &to, float radius, float minZ, float maxZ) {
-    if (!node || !node->isEnabled()) {
-        return std::nullopt;
-    }
-    const glm::vec3 localFrom {node->absoluteTransformInverse() * glm::vec4(from, 1.0f)};
-    const glm::vec3 localTo {node->absoluteTransformInverse() * glm::vec4(to, 1.0f)};
-    const float shift = localFrom.z - from.z;
-    auto contact = node->walkmesh().sweep(blocking, localFrom, localTo, radius, minZ + shift, maxZ + shift);
-    if (contact) {
-        contact->normal = glm::vec3(node->absoluteTransform() * glm::vec4(contact->normal, 0.0f));
-    }
-    return contact;
-}
-
-// Whether a wall of a door as it stands lies within radius of the level
-// segment between two points, between two heights.
-static bool hasDoorWallWithin(const Door &door, const std::set<uint32_t> &blocking,
-                              const glm::vec3 &from, const glm::vec3 &to, float radius, float minZ, float maxZ) {
-    for (const auto &node : {door.walkmeshOpen1(), door.walkmeshOpen2(), door.walkmeshClosed()}) {
-        if (hasBlockingFaceWithin(node, blocking, from, to, radius, minZ, maxZ)) {
-            return true;
-        }
-    }
-    return false;
 }
 
 bool Area::hasDoorWallAlong(const glm::vec3 &from, const glm::vec3 &to, const Creature &creature, float minZ, float maxZ) const {
