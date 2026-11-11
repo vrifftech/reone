@@ -1602,7 +1602,21 @@ static float groundDistanceToFace(const Uniwalk &uni, uint32_t face, const glm::
     return std::abs(sides) == 3 ? 0.0f : nearest;
 }
 
-// Where the path's legs first meet a wall \p legs finds.
+LegBlocker nearestLegBlock(LegBlocker first, LegBlocker second) {
+    if (!first || !second) {
+        return first ? first : second;
+    }
+    return [first = std::move(first), second = std::move(second)](const glm::vec3 &from, const glm::vec3 &to) {
+        auto a = first(from, to);
+        auto b = second(from, to);
+        if (!a || (b && glm::distance2(glm::vec2(from), glm::vec2(*b)) < glm::distance2(glm::vec2(from), glm::vec2(*a)))) {
+            return b;
+        }
+        return a;
+    };
+}
+
+// Where the path's legs first meet what \p legs finds.
 static std::optional<glm::vec3> findLegBlock(const AStarPath &path, const LegBlocker &legs) {
     for (size_t i = 0; i + 1 < path.points.size(); ++i) {
         if (auto meets = legs(path.points[i], path.points[i + 1])) {
@@ -1622,19 +1636,19 @@ static float pathLength(const AStarPath &path) {
 }
 
 // A path is looked for as searchPath does. When \p legs finds one of its legs
-// meeting a wall, the path's faces where the walker meets it are kept off
+// meeting something, the path's faces where the walker meets it are kept off
 // and the path looked for again, a few times at most; met on the face the
 // path starts or ends on, which is always crossed, the face it leaves or
 // reaches that one by is kept off instead. A path so found is kept only when
-// its legs meet no wall, it took no more searches than the first, and it is
+// its legs meet nothing, it took no more searches than the first, and it is
 // no more than a short way round: little longer than the first. Otherwise the
-// first path stands, and the walk meets the wall as it would have.
+// first path stands, and the walk meets what is in its way as it would have.
 static bool findPath(AStarPath &path, Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to,
                      const FacePassable &passable, float radius, const FacePassable &keepOff = {},
                      const LegBlocker &legs = {}) {
     static constexpr int kLegReplans = 3;
-    // Faces within this far of where the walker meets a wall, or within its
-    // radius if wider, are kept off.
+    // Faces within this far of where the walker meets something, or within
+    // its radius if wider, are kept off.
     static constexpr float kLegKeepOff = 0.1f;
     // A way round may be longer than the first path by this share of it, or
     // by this many metres if more.

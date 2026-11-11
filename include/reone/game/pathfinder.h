@@ -149,12 +149,16 @@ struct AStarContext {
 using FacePassable = std::function<bool(uint32_t)>;
 
 /**
- * Where a walker, walking the straight leg between two points, first meets a
- * wall the unified walkmesh does not show, standing short of it; empty when
- * it meets none. A wall the walker is within reach of at the leg's start is
- * not counted: the leg before, ending there, meets it.
+ * Where a walker, walking the straight leg between two points, first meets
+ * something the unified walkmesh does not show, such as a door's wall or a
+ * creature standing in the way, standing short of it; empty when it meets
+ * none. Something the walker is within reach of at the leg's start is not
+ * counted: the leg before, ending there, meets it.
  */
 using LegBlocker = std::function<std::optional<glm::vec3>(const glm::vec3 &, const glm::vec3 &)>;
+
+/** Where a leg first meets what either \p first or \p second finds. */
+LegBlocker nearestLegBlock(LegBlocker first, LegBlocker second);
 
 /// Fully calculated path.
 struct AStarPath {
@@ -260,7 +264,7 @@ void replaceUniwalk(Pathfinder &pf, Uniwalk uni);
  * corners it turns at. The faces it starts and ends on always count as
  * passable. When no such path is found, one over every face and gap but those
  * inside obstacles is looked for, then one over every face and gap. A path
- * whose legs \p legs finds meeting a wall is looked for again off the faces
+ * whose legs \p legs finds meeting something is looked for again off the faces
  * where the walker meets it, a few times at most, and kept only when found as
  * readily and little longer; otherwise the first path stands.
  */

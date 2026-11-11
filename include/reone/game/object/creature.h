@@ -2044,6 +2044,14 @@ public:
      * when the other has been dealt with.
      */
     bool pushAside(Creature &other, glm::vec3 a, glm::vec3 b, const glm::vec2 &moverDir);
+    /**
+     * Whether this creature walking into the other pushes it aside. In TSL the
+     * party leader pushes party members and puppets, but not while a
+     * conversation is under way: from the moment one is asked for, such as the
+     * click to talk that sends the leader walking over, until it ends. Nobody
+     * else pushes, and in KotOR nobody does.
+     */
+    bool canPushAside(const Creature &other) const;
 
     uint32_t getAttemptedAttackTarget() const {
         auto target = _combatState.attemptedAttackTarget.resolve();
@@ -3176,14 +3184,6 @@ private:
 
     ModelType parseModelType(const std::string &s) const;
 
-    /**
-     * Whether this creature walking into the other pushes it aside. In TSL the
-     * party leader pushes party members and puppets, but not while a
-     * conversation is under way: from the moment one is asked for, such as the
-     * click to talk that sends the leader walking over, until it ends. Nobody
-     * else pushes, and in KotOR nobody does.
-     */
-    bool canPushAside(const Creature &other) const;
     /** Deals with walking into \p blocker on a step along \p stepDir, of a frame \p dt long. */
     Bump bumpIntoCreature(const std::shared_ptr<Creature> &blocker, Pathfinder &pf, const glm::vec2 &stepDir, float dt);
     /**

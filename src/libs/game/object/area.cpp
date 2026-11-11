@@ -2451,6 +2451,48 @@ std::optional<std::reference_wrapper<const Creature>> Area::findBlockingCreature
     return collision.creature;
 }
 
+// The walker and the target are looked up by id when a leg is asked about,
+// so a path kept for planning again outlives neither safely.
+LegBlocker Area::legsClearOfStandingCreatures(const Creature &walker, const glm::vec3 &destination,
+                                              std::optional<std::reference_wrapper<const Object>> target) const {
+    const uint32_t walkerId = walker.id();
+    const std::optional<uint32_t> targetId = target ? std::optional<uint32_t>(target->get().id()) : std::nullopt;
+    return [this, walkerId, targetId, destination](const glm::vec3 &from, const glm::vec3 &to) -> std::optional<glm::vec3> {
+        auto walker = _game.getObjectById<Creature>(walkerId);
+        if (!walker) {
+            return std::nullopt;
+        }
+        // Where floors lie over others, a creature counts only across the
+        // heights the walker spans along the leg.
+        const bool stacked = hasStackedFloors();
+        const float low = std::min(from.z, to.z);
+        const float high = std::max(from.z, to.z) + standingHeight(*walker);
+        std::optional<float> nearest;
+        for (const auto &object : _objectsByType.at(ObjectType::Creature)) {
+            const auto &other = static_cast<const Creature &>(*object);
+            if (other.id() == walkerId || (targetId && other.id() == *targetId) || other.isDead() || other.isTemporarilyDead() ||
+                other.movementType() != Creature::MovementType::None || walker->canPushAside(other) ||
+                other.isInvisibleTo(*walker) || (stacked && clearsHeights(other, low, high))) {
+                continue;
+            }
+            const float radius = walker->creaturePersonalSpace() + other.creaturePersonalSpace() + kCreatureCollisionEpsilon;
+            const glm::vec2 centre {other.position()};
+            if (glm::distance(glm::vec2(from), centre) <= radius || glm::distance(glm::vec2(destination), centre) <= radius) {
+                continue;
+            }
+            float time;
+            glm::vec2 normal;
+            if (sweepCircle(glm::vec2(from), glm::vec2(to), centre, radius, time, normal) && (!nearest || time < *nearest)) {
+                nearest = time;
+            }
+        }
+        if (!nearest) {
+            return std::nullopt;
+        }
+        return from + (to - from) * *nearest;
+    };
+}
+
 std::vector<std::reference_wrapper<const Creature>> Area::findCreaturesNear(const Creature &mover, float margin) const {
     std::vector<std::reference_wrapper<const Creature>> near;
     // Where floors lie over others, a creature counts only across the heights

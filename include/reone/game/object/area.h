@@ -410,6 +410,16 @@ public:
      */
     std::vector<std::reference_wrapper<const Creature>> findCreaturesNear(const Creature &mover, float margin) const;
     /**
+     * Where a walker's planned leg first meets a creature standing in its way,
+     * as they stand when the leg is asked about, by the rules of
+     * findBlockingCreature. Only creatures standing still count; moving ones
+     * are steered past. The walk's \p target, creatures the walker pushes
+     * aside or cannot see, and those the walker is within reach of at the
+     * leg's start or would be at \p destination, are passed over.
+     */
+    LegBlocker legsClearOfStandingCreatures(const Creature &walker, const glm::vec3 &destination,
+                                            std::optional<std::reference_wrapper<const Object>> target) const;
+    /**
      * Whether the creature can walk straight from one point to another. The
      * walk is followed over the rooms it passes (see ISceneGraph::walkRooms),
      * and settled in each room before the next, with the creature's personal
