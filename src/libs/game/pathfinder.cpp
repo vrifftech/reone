@@ -1504,9 +1504,10 @@ static void planPoints(AStarPath &path, const Uniwalk &uni) {
 // inside obstacles, and of gaps too narrow for it; when no path does, it is
 // found over every face and gap but those inside obstacles, then over every
 // one, and the funnel closes the gaps too narrow to a point. Faces \p keepOff
-// turns down are kept off throughout.
-static bool findPath(AStarPath &path, Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to,
-                     const FacePassable &passable, float radius, const FacePassable &keepOff = {}) {
+// turns down are kept off throughout. \p tier counts the searches it took
+// beyond the first.
+static bool searchPath(AStarPath &path, Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to,
+                       const FacePassable &passable, float radius, const FacePassable &keepOff, int &tier) {
     const Uniwalk &uni = pf.uni;
     AStarContext &astar = pf.astar;
     uint32_t fromFace = findFaceAt(pf, from);
@@ -1528,11 +1529,14 @@ static bool findPath(AStarPath &path, Pathfinder &pf, const glm::vec3 &from, con
     // over are, and longer: a path over every face and gap but those is
     // looked for before one over them.
     const bool hasBlocked = !uni.blocked.empty();
+    tier = 0;
     bool found = findPathAStar(path, astar, uni, fromFace, toFace, first, radius, hasBlocked);
     if (!found && hasBlocked) {
+        tier = 1;
         found = findPathAStar(path, astar, uni, fromFace, toFace, keepOff, 0.0f, true);
     }
     if (!found && (passable || radius > 0.0f || hasBlocked)) {
+        tier = 2;
         found = findPathAStar(path, astar, uni, fromFace, toFace, keepOff, 0.0f, false);
     }
     if (!found) {
@@ -1576,6 +1580,124 @@ static bool findPath(AStarPath &path, Pathfinder &pf, const glm::vec3 &from, con
     return true;
 }
 
+// How far a point lies from a face across the ground plan: nothing when
+// inside it.
+static float groundDistanceToFace(const Uniwalk &uni, uint32_t face, const glm::vec2 &point) {
+    glm::vec2 corners[3];
+    for (int i = 0; i < 3; ++i) {
+        corners[i] = glm::vec2(uni.vertices[uni.faces[face].vertices[i]]);
+    }
+    float nearest = FLT_MAX;
+    int sides = 0;
+    for (int i = 0; i < 3; ++i) {
+        const glm::vec2 &a = corners[i];
+        const glm::vec2 &b = corners[(i + 1) % 3];
+        const glm::vec2 along {b - a};
+        const float cross = along.x * (point.y - a.y) - along.y * (point.x - a.x);
+        sides += cross > 0.0f ? 1 : (cross < 0.0f ? -1 : 0);
+        const float length2 = glm::dot(along, along);
+        const float t = length2 > 0.0f ? std::clamp(glm::dot(point - a, along) / length2, 0.0f, 1.0f) : 0.0f;
+        nearest = std::min(nearest, glm::distance(point, a + along * t));
+    }
+    return std::abs(sides) == 3 ? 0.0f : nearest;
+}
+
+// Where the path's legs first meet a wall \p legs finds.
+static std::optional<glm::vec3> findLegBlock(const AStarPath &path, const LegBlocker &legs) {
+    for (size_t i = 0; i + 1 < path.points.size(); ++i) {
+        if (auto meets = legs(path.points[i], path.points[i + 1])) {
+            return meets;
+        }
+    }
+    return std::nullopt;
+}
+
+// How far the walker walks along the path's points.
+static float pathLength(const AStarPath &path) {
+    float length = 0.0f;
+    for (size_t i = 0; i + 1 < path.points.size(); ++i) {
+        length += glm::distance(path.points[i], path.points[i + 1]);
+    }
+    return length;
+}
+
+// A path is looked for as searchPath does. When \p legs finds one of its legs
+// meeting a wall, the path's faces where the walker meets it are kept off
+// and the path looked for again, a few times at most; met on the face the
+// path starts or ends on, which is always crossed, the face it leaves or
+// reaches that one by is kept off instead. A path so found is kept only when
+// its legs meet no wall, it took no more searches than the first, and it is
+// no more than a short way round: little longer than the first. Otherwise the
+// first path stands, and the walk meets the wall as it would have.
+static bool findPath(AStarPath &path, Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to,
+                     const FacePassable &passable, float radius, const FacePassable &keepOff = {},
+                     const LegBlocker &legs = {}) {
+    static constexpr int kLegReplans = 3;
+    // Faces within this far of where the walker meets a wall, or within its
+    // radius if wider, are kept off.
+    static constexpr float kLegKeepOff = 0.1f;
+    // A way round may be longer than the first path by this share of it, or
+    // by this many metres if more.
+    static constexpr float kLegDetourShare = 0.25f;
+    static constexpr float kLegDetourLength = 2.0f;
+    int tier = 0;
+    if (!searchPath(path, pf, from, to, passable, radius, keepOff, tier)) {
+        return false;
+    }
+    if (!legs) {
+        return true;
+    }
+    auto meets = findLegBlock(path, legs);
+    const float firstLength = pathLength(path);
+    const float longest = firstLength + std::max(firstLength * kLegDetourShare, kLegDetourLength);
+    std::vector<uint32_t> kept;
+    AStarPath trial;
+    const AStarPath *blocked = &path;
+    for (int attempt = 0; meets && attempt < kLegReplans; ++attempt) {
+        const size_t before = kept.size();
+        const float reach = std::max(radius, kLegKeepOff);
+        const auto keep = [&kept](uint32_t face) {
+            if (!std::binary_search(kept.begin(), kept.end(), face)) {
+                kept.insert(std::upper_bound(kept.begin(), kept.end(), face), face);
+            }
+        };
+        const std::vector<uint32_t> &faces = blocked->faces;
+        const glm::vec2 at {*meets};
+        for (size_t i = 1; i + 1 < faces.size(); ++i) {
+            if (groundDistanceToFace(pf.uni, faces[i], at) <= reach) {
+                keep(faces[i]);
+            }
+        }
+        if (faces.size() > 2) {
+            if (groundDistanceToFace(pf.uni, faces.front(), at) <= reach) {
+                keep(faces[1]);
+            }
+            if (groundDistanceToFace(pf.uni, faces.back(), at) <= reach) {
+                keep(faces[faces.size() - 2]);
+            }
+        }
+        if (kept.size() == before) {
+            break;
+        }
+        const FacePassable off = [&kept, &keepOff](uint32_t face) {
+            return !std::binary_search(kept.begin(), kept.end(), face) && (!keepOff || keepOff(face));
+        };
+        trial = path;
+        int trialTier = 0;
+        if (!searchPath(trial, pf, from, to, passable, radius, off, trialTier) || trialTier > tier ||
+            pathLength(trial) > longest) {
+            break;
+        }
+        meets = findLegBlock(trial, legs);
+        if (!meets) {
+            path = std::move(trial);
+            return true;
+        }
+        blocked = &trial;
+    }
+    return true;
+}
+
 bool pathExists(const Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to) {
     const uint32_t fromFace = findFaceAt(pf, from);
     const uint32_t toFace = findFaceAt(pf, to);
@@ -1586,18 +1708,19 @@ bool pathExists(const Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to
 }
 
 std::optional<Path> createPath(Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to, const FacePassable &passable,
-                               float radius) {
+                               float radius, const LegBlocker &legs) {
     for (int32_t i = 0; i < pf.paths.size(); ++i) {
         AStarPath &path = pf.paths[i];
         if (path.active) {
             continue;
         }
 
-        bool found = findPath(path, pf, from, to, passable, radius);
+        bool found = findPath(path, pf, from, to, passable, radius, {}, legs);
         if (!found) {
             return std::nullopt;
         }
         path.passable = passable;
+        path.legs = legs;
         path.index = i;
         return Path {i};
     }
@@ -1627,6 +1750,7 @@ std::optional<Path> createStraightPath(Pathfinder &pf, const glm::vec3 &from, co
         path.points = {from, to};
         path.pointNext = 1;
         path.passable = {};
+        path.legs = {};
         path.active = true;
         path.index = i;
         return Path {i};
@@ -1641,7 +1765,7 @@ bool replanPath(Pathfinder &pf, Path p, const glm::vec3 &from, const FacePassabl
     }
     // The search runs on a copy, so a failed one leaves the path as it was.
     AStarPath planned = path;
-    if (!findPath(planned, pf, from, path.to, path.passable, path.radius, keepOff)) {
+    if (!findPath(planned, pf, from, path.to, path.passable, path.radius, keepOff, path.legs)) {
         return false;
     }
     path = std::move(planned);
@@ -1694,6 +1818,7 @@ void markPathsAcross(Pathfinder &pf, const glm::vec2 &min, const glm::vec2 &max)
 void releasePath(Pathfinder &pf, Path path) {
     pf.paths[path.index].active = false;
     pf.paths[path.index].passable = {};
+    pf.paths[path.index].legs = {};
 
     if (isShowPathEnabled()) {
         drawdebug::pushId(path.index);
@@ -1734,7 +1859,7 @@ bool updatePath(Pathfinder &pf, Path p, const glm::vec3 &current) {
     if (path.generation != pf.generation || path.replan) {
         path.generation = pf.generation;
         path.replan = false;
-        if (!path.straight && path.followsFaces && !findPath(path, pf, current, path.to, path.passable, path.radius)) {
+        if (!path.straight && path.followsFaces && !findPath(path, pf, current, path.to, path.passable, path.radius, {}, path.legs)) {
             return false;
         }
     }
@@ -1763,7 +1888,7 @@ bool updatePath(Pathfinder &pf, Path p, const glm::vec3 &current) {
     }
     if (!isOnPath) {
         // Wandered off the path, recalculate.
-        bool foundNewPath = findPath(path, pf, current, path.to, path.passable, path.radius);
+        bool foundNewPath = findPath(path, pf, current, path.to, path.passable, path.radius, {}, path.legs);
         if (!foundNewPath) {
             return false;
         }

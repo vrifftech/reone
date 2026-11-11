@@ -10093,9 +10093,11 @@ bool Creature::navigateTo(const glm::vec3 &dest, bool run, float distance, float
     // A planned path keeps clear of doors by the walker's personal space and
     // off the placeables cut out of the walkmesh, passes only through gaps
     // wide enough for it and keeps that far from the corners it turns at,
-    // unless no path does.
+    // unless no path does. Its legs are looked along for the walls of doors,
+    // and of placeables not yet cut out, that the faces' centres miss.
     _path = straight ? createStraightPath(pf, position(), dest)
-                     : createPath(pf, position(), dest, area.pathing().facesClearOfStaticWalls(*this), _personalSpace);
+                     : createPath(pf, position(), dest, area.pathing().facesClearOfStaticWalls(*this), _personalSpace,
+                                  area.pathing().legsClearOfStaticWalls(*this));
     if (!_path) {
         // No path is found either when none reaches the destination or when
         // every path slot is taken. Only the first is a failure: the second

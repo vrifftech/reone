@@ -148,6 +148,14 @@ struct AStarContext {
  */
 using FacePassable = std::function<bool(uint32_t)>;
 
+/**
+ * Where a walker, walking the straight leg between two points, first meets a
+ * wall the unified walkmesh does not show, standing short of it; empty when
+ * it meets none. A wall the walker is within reach of at the leg's start is
+ * not counted: the leg before, ending there, meets it.
+ */
+using LegBlocker = std::function<std::optional<glm::vec3>(const glm::vec3 &, const glm::vec3 &)>;
+
 /// Fully calculated path.
 struct AStarPath {
     std::vector<uint32_t> faces;
@@ -181,6 +189,8 @@ struct AStarPath {
     bool followsFaces {true};
     /** The faces the walker may pass over, kept for planning the path again. */
     FacePassable passable;
+    /** The walls the walkmesh does not show that its legs keep off, kept for planning the path again. */
+    LegBlocker legs;
     /** The unified walkmesh the path was planned over (see Pathfinder::generation). */
     uint32_t generation {0};
     /**
@@ -249,10 +259,13 @@ void replaceUniwalk(Pathfinder &pf, Uniwalk uni);
  * wide enough for it, when there is such a path, and keeping that far from the
  * corners it turns at. The faces it starts and ends on always count as
  * passable. When no such path is found, one over every face and gap but those
- * inside obstacles is looked for, then one over every face and gap.
+ * inside obstacles is looked for, then one over every face and gap. A path
+ * whose legs \p legs finds meeting a wall is looked for again off the faces
+ * where the walker meets it, a few times at most, and kept only when found as
+ * readily and little longer; otherwise the first path stands.
  */
 std::optional<Path> createPath(Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to, const FacePassable &passable = {},
-                               float radius = 0.0f);
+                               float radius = 0.0f, const LegBlocker &legs = {});
 /**
  * A path along the straight line from one point to another, when the walkmesh
  * joins them.

@@ -160,6 +160,63 @@ FacePassable AreaPathing::facesClearOfStaticWalls(const Creature &walker) const 
     };
 }
 
+// The same walls as facesClearOfStaticWalls, met along a leg: each door, and
+// each placeable not yet cut out, near the leg is swept along it as it stands
+// when the leg is asked about, and the nearest wall met is taken. A wall the
+// walker is within reach of at the leg's start is passed over: from where the
+// walker stands it cannot be kept off, and from a corner of the path the leg
+// before, which ends there, has met it.
+LegBlocker AreaPathing::legsClearOfStaticWalls(const Creature &walker) const {
+    auto doors = std::make_shared<const std::vector<DoorBox>>(doorBoxes(_area.getObjectsByType(ObjectType::Door)));
+    const auto blocking = std::make_shared<const std::set<uint32_t>>(blockingSurfaces(_area.services().game.surfaces));
+    const float radius = walker.personalSpace();
+    // The band is the same distance under and over any floor height.
+    const auto band = _area.staticWallBand(walker, 0.0f, 0.0f);
+    return [this, doors, blocking, radius, band](const glm::vec3 &from, const glm::vec3 &to) -> std::optional<glm::vec3> {
+        const glm::vec2 low {glm::min(glm::vec2(from), glm::vec2(to)) - radius};
+        const glm::vec2 high {glm::max(glm::vec2(from), glm::vec2(to)) + radius};
+        const float minZ = std::min(from.z, to.z) + band.low;
+        const float maxZ = std::max(from.z, to.z) + band.high;
+        std::optional<float> nearest;
+        const auto sweep = [&](const std::shared_ptr<scene::WalkmeshSceneNode> &node) {
+            if (hasBlockingFaceWithin(node, *blocking, from, from, radius, from.z + band.low, from.z + band.high)) {
+                return;
+            }
+            auto contact = sweepWalkmesh(node, *blocking, from, to, radius, minZ, maxZ);
+            if (contact && (!nearest || contact->distance < *nearest)) {
+                nearest = contact->distance;
+            }
+        };
+        const auto near = [&low, &high](const glm::vec2 &min, const glm::vec2 &max) {
+            return min.x <= high.x && max.x >= low.x && min.y <= high.y && max.y >= low.y;
+        };
+        for (const DoorBox &box : *doors) {
+            if (!near(box.min, box.max)) {
+                continue;
+            }
+            if (auto door = _area.game().getObjectById<Door>(box.id)) {
+                for (const auto &node : {door->walkmeshOpen1(), door->walkmeshOpen2(), door->walkmeshClosed()}) {
+                    sweep(node);
+                }
+            }
+        }
+        for (const Pose &pose : uncutPlaceables()) {
+            if (!near(pose.min, pose.max)) {
+                continue;
+            }
+            if (auto placeable = _area.game().getObjectById<Placeable>(pose.id)) {
+                sweep(placeable->walkmesh());
+            }
+        }
+        if (!nearest) {
+            return std::nullopt;
+        }
+        const float length = glm::distance(glm::vec2(from), glm::vec2(to));
+        const float share = length > 0.0f ? std::min(*nearest / length, 1.0f) : 0.0f;
+        return from + (to - from) * share;
+    };
+}
+
 // How far a point lies from a triangle across the ground plan: nothing when
 // inside it.
 static float distanceToTriangle(const glm::vec2 &point, const std::vector<glm::vec2> &triangle) {

@@ -86,6 +86,15 @@ public:
      */
     FacePassable facesClearOfStaticWalls(const Creature &walker) const;
 
+    /**
+     * Where a walker's planned leg first meets a wall, within its personal
+     * space, of a door, or of a placeable not yet cut out of the walkmesh, as
+     * they stand: the walls facesClearOfStaticWalls tests at the faces'
+     * centres, met along the whole leg. A wall the walker stands within reach
+     * of at the leg's start is not counted.
+     */
+    LegBlocker legsClearOfStaticWalls(const Creature &walker) const;
+
 private:
     /** A placeable with a walkmesh: its id, where its walkmesh stands, and the box round it across the ground plan. */
     struct Pose {
