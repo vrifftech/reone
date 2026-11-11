@@ -44,6 +44,7 @@
 #include "../object/camera/thirdperson.h"
 #include "../pathfinder.h"
 #include "../types.h"
+#include "areapathing.h"
 
 namespace reone {
 
@@ -311,12 +312,6 @@ public:
      */
     std::optional<std::reference_wrapper<const Object>> findStaticWallAlong(
         const glm::vec3 &from, const glm::vec3 &to, const Creature &creature, float minZ, float maxZ) const;
-    /**
-     * The faces of the pathfinder's walkmesh a walker's planned path may pass
-     * over: those whose centre has no door or placeable wall, as it stands,
-     * within the walker's personal space.
-     */
-    FacePassable pathFacesClearOfStaticWalls(const Creature &walker) const;
     /** Which face of the room under a point gives the ground height there. */
     enum class GroundFace {
         Locating, /**< the walk-check face by which the room is found, within a thousand units of the point's height */
@@ -696,6 +691,9 @@ public:
     const glm::vec3 &ambientColor() const { return _ambientColor; }
 
     Pathfinder &pathfinder() { return _pathfinder; }
+    /** Keeps the pathfinder in step with the area's placeables and doors. */
+    AreaPathing &pathing() { return _pathing; }
+    const AreaPathing &pathing() const { return _pathing; }
 
     void setUnescapable(bool value);
     /** Whether the map's transit button is disabled; the area saves it. */
@@ -973,6 +971,7 @@ private:
     std::string _sceneName;
 
     Pathfinder _pathfinder;
+    AreaPathing _pathing {*this, _pathfinder};
     std::string _localizedName;
     AreaMapState _mapState;
     RoomMap _rooms;

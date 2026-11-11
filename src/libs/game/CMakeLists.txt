@@ -317,6 +317,7 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/object.h
     ${GAME_INCLUDE_DIR}/object/area.h
     ${GAME_INCLUDE_DIR}/object/areaofeffect.h
+    ${GAME_INCLUDE_DIR}/object/areapathing.h
     ${GAME_INCLUDE_DIR}/object/camera.h
     ${GAME_INCLUDE_DIR}/object/camera/animated.h
     ${GAME_INCLUDE_DIR}/object/camera/dialog.h
@@ -485,6 +486,7 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/object.cpp
     ${GAME_SOURCE_DIR}/object/area.cpp
     ${GAME_SOURCE_DIR}/object/areaofeffect.cpp
+    ${GAME_SOURCE_DIR}/object/areapathing.cpp
     ${GAME_SOURCE_DIR}/object/camera.cpp
     ${GAME_SOURCE_DIR}/object/camera/animated.cpp
     ${GAME_SOURCE_DIR}/object/camera/dialog.cpp

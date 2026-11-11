@@ -18,6 +18,7 @@
 #pragma once
 
 #include <array>
+#include <cfloat>
 #include <functional>
 #include <optional>
 
@@ -51,10 +52,24 @@ struct Uniroom {
     /** The room walkmesh the faces came from. */
     const graphics::Walkmesh *walkmesh {nullptr};
     /**
-     * For each face of the room walkmesh, by its index there, the face of the
-     * unified walkmesh it became; UINT32_MAX for a face that is not walkable.
+     * For each face of the room walkmesh, by its index there, the first face
+     * of the unified walkmesh it became and the one past its last: more than
+     * one once obstacles cut it. UINT32_MAX for a face that is not walkable.
      */
     std::vector<uint32_t> unifiedFaces;
+    std::vector<uint32_t> unifiedFaceEnds;
+};
+
+/**
+ * A convex outline across the ground plan, counter-clockwise seen from above,
+ * that walks keep off: a blocking face of a placeable, or a thin strip along
+ * one that stands upright. It cuts the faces of the walkable ground lying
+ * between two heights of floor.
+ */
+struct Obstacle {
+    std::vector<glm::vec2> outline;
+    float floorMin {-FLT_MAX};
+    float floorMax {FLT_MAX};
 };
 
 /**
@@ -79,9 +94,22 @@ struct Uniwalk {
     std::vector<Uniroom> rooms;
     /** Region of each face: faces joined through shared edges share one. */
     std::vector<uint32_t> regions;
-    /** Whether each vertex lies on the edge of the walkable ground: on an edge no other walkable face shares. */
+    /**
+     * Whether each vertex lies on the edge of the walkable ground: on an edge
+     * no other walkable face shares, or one between a face and one inside an
+     * obstacle.
+     */
     std::vector<uint8_t> boundary;
-    /** The edges no other walkable face shares, filed across the ground plan. */
+    /**
+     * Whether each face lies inside an obstacle: a path keeps off it while
+     * another way is found. Empty when no obstacle cut the walkmesh.
+     */
+    std::vector<uint8_t> blocked;
+    /**
+     * The edges of the walkable ground, filed across the ground plan: those
+     * no other walkable face shares, and those between a face and one inside
+     * an obstacle.
+     */
     EdgeGrid edgeGrid;
 };
 
@@ -153,6 +181,8 @@ struct AStarPath {
     bool followsFaces {true};
     /** The faces the walker may pass over, kept for planning the path again. */
     FacePassable passable;
+    /** The unified walkmesh the path was planned over (see Pathfinder::generation). */
+    uint32_t generation {0};
 
     int32_t index;
     bool active;
@@ -185,17 +215,30 @@ struct Pathfinder : public boost::noncopyable {
      * walkable faces (see graphics::Walkmesh::standingFace).
      */
     FaceLocator locate;
+    /**
+     * Counts the unified walkmeshes put in place: a path planned over an
+     * earlier one is planned again as it is next followed.
+     */
+    uint32_t generation {0};
 };
 
 void uniwalkLoadRoom(struct Uniwalk &wm, graphics::Walkmesh &data, std::set<uint32_t> &walkableMaterial);
-void uniwalkFinalize(struct Uniwalk &uni);
+/**
+ * Join the rooms' faces into one walkable ground. Each obstacle cuts the faces
+ * under it into pieces, those inside it marked blocked; pieces are joined to
+ * their neighbours as whole faces are.
+ */
+void uniwalkFinalize(struct Uniwalk &uni, const std::vector<Obstacle> &obstacles = {});
+/** Put a unified walkmesh in place of the pathfinder's own. */
+void replaceUniwalk(Pathfinder &pf, Uniwalk uni);
 
 /**
  * A path from one point to another for a walker of \p radius: over the faces
- * \p passable lets it cross and through the gaps wide enough for it, when there
- * is such a path, and keeping that far from the corners it turns at. The faces
- * it starts and ends on always count as passable. When no such path is found,
- * one over every face and gap is looked for instead.
+ * \p passable lets it cross, off those inside obstacles and through the gaps
+ * wide enough for it, when there is such a path, and keeping that far from the
+ * corners it turns at. The faces it starts and ends on always count as
+ * passable. When no such path is found, one over every face and gap but those
+ * inside obstacles is looked for, then one over every face and gap.
  */
 std::optional<Path> createPath(Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to, const FacePassable &passable = {},
                                float radius = 0.0f);
@@ -319,8 +362,8 @@ glm::vec2 computeKeepoutForce(const Uniwalk &uni, const glm::vec3 &position, flo
  */
 glm::vec2 slideAlongEdges(const Uniwalk &uni, const glm::vec3 &position, float radius, glm::vec2 direction);
 /**
- * Whether a point stands on the walkable ground, as a path's ends do, with no
- * edge within \p radius of it.
+ * Whether a point stands on the walkable ground, as a path's ends do, outside
+ * the obstacles and with no edge within \p radius of it.
  */
 bool isClearGround(const Pathfinder &pf, const glm::vec3 &point, float radius);
 

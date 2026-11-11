@@ -280,6 +280,7 @@ void Area::load(
     attachPartSounds();
     loadGIT(git, identityContext);
     loadVIS();
+    _pathing.rebuild();
 }
 
 void Area::activate() {
@@ -841,7 +842,6 @@ void Area::loadLYT() {
         throw ResourceNotFoundException("Area LYT not found: " + _name);
     }
     auto &sceneGraph = _services.scene.graphs.get(_sceneName);
-    auto walkableSurfaces = _services.game.surfaces.getWalkableSurfaces();
     for (auto &lytRoom : layout->rooms) {
         _layoutWalkmeshes.emplace_back();
         glm::vec3 position(lytRoom.position.x, lytRoom.position.y, lytRoom.position.z);
@@ -853,7 +853,7 @@ void Area::loadLYT() {
         if (walkmesh) {
             walkmeshSceneNode = sceneGraph.newWalkmesh(*walkmesh);
             sceneGraph.addRoot(walkmeshSceneNode);
-            uniwalkLoadRoom(_pathfinder.uni, *walkmesh, walkableSurfaces);
+            _pathing.addRoomWalkmesh(walkmesh);
         }
 
         if (!model && !walkmeshSceneNode) {
@@ -917,9 +917,10 @@ void Area::loadLYT() {
         _roomOrder.push_back(entry->second.get());
     }
 
-    uniwalkFinalize(_pathfinder.uni);
-    // The pathfinder finds the face a point stands on as the area does, so a
-    // walk's path keeps to the floor the walker stands on.
+    // The pathfinder's walkmesh is put together from the rooms' once the
+    // placeables are in place too (see Area::load). It finds the face a point
+    // stands on as the area does, so a walk's path keeps to the floor the
+    // walker stands on.
     _pathfinder.locate = [this](const glm::vec3 &point) -> std::optional<RoomFaceRef> {
         auto &sceneGraph = _services.scene.graphs.get(_sceneName);
         const auto room = sceneGraph.findRoomWalkmesh(point);
@@ -1384,6 +1385,7 @@ void Area::attachObjectToSceneGraph(const std::shared_ptr<Object> &object) {
         auto walkmesh = placeable->walkmesh();
         if (walkmesh) {
             sceneGraph.addRoot(walkmesh);
+            _pathing.markObstaclesStale();
         }
     } else if (object->type() == ObjectType::Door) {
         auto door = std::static_pointer_cast<Door>(object);
@@ -1548,6 +1550,7 @@ void Area::detachObjectRuntime(const std::shared_ptr<Object> &object) {
         auto walkmesh = placeable->walkmesh();
         if (walkmesh) {
             sceneGraph.removeRoot(*walkmesh);
+            _pathing.markObstaclesStale();
         }
     } else if (object->type() == ObjectType::Door) {
         auto door = std::static_pointer_cast<Door>(object);
@@ -2442,19 +2445,6 @@ void Area::jumpCarriedAreaEffects(const Creature &carrier) {
     }
 }
 
-FacePassable Area::pathFacesClearOfStaticWalls(const Creature &walker) const {
-    const uint32_t walkerId = walker.id();
-    return [this, walkerId](uint32_t face) {
-        auto walker = _game.getObjectById<Creature>(walkerId);
-        if (!walker || face >= _pathfinder.uni.faces.size()) {
-            return true;
-        }
-        const glm::vec3 &centre = _pathfinder.uni.faces[face].centroid;
-        const auto band = staticWallBand(*walker, centre.z, centre.z);
-        return !findStaticWallAlong(centre, centre, *walker, band.low, band.high);
-    };
-}
-
 std::optional<std::reference_wrapper<const Creature>> Area::findBlockingCreature(const Creature &mover, const glm::vec3 &from, const glm::vec3 &to) const {
     CreatureCollision collision;
     findCreatureCollision(mover, from, to, collision);
@@ -3094,6 +3084,7 @@ bool Area::handleKeyDown(const input::KeyEvent &event) {
 
 void Area::update(float dt) {
     doDestroyObjects();
+    _pathing.update();
     updatePartSounds();
     updateReleasedPresentation(dt);
     updateObjectSelection();

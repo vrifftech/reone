@@ -124,12 +124,14 @@ void uniwalkLoadRoom(struct Uniwalk &uni, graphics::Walkmesh &data, std::set<uin
     // Copy all walkable faces, noting which unified face each became.
     uni.faces.reserve(uni.faces.size() + data.faces.size());
     std::vector<uint32_t> unifiedFaces(data.faces.size(), UINT32_MAX);
+    std::vector<uint32_t> unifiedFaceEnds(data.faces.size(), UINT32_MAX);
     for (uint32_t i = 0; i < data.faces.size(); ++i) {
         uint32_t material = data.materials[i];
         if (!graphics::Walkmesh::hasSurfaceMaterial(walkableMaterial, material)) {
             continue;
         }
         unifiedFaces[i] = static_cast<uint32_t>(uni.faces.size());
+        unifiedFaceEnds[i] = unifiedFaces[i] + 1;
 
         const graphics::Walkmesh::FaceVertices inputFace = data.faces[i];
         Uniface face = {0};
@@ -151,6 +153,7 @@ void uniwalkLoadRoom(struct Uniwalk &uni, graphics::Walkmesh &data, std::set<uin
         min, max};
     room.walkmesh = &data;
     room.unifiedFaces = std::move(unifiedFaces);
+    room.unifiedFaceEnds = std::move(unifiedFaceEnds);
 
     uni.rooms.push_back(std::move(room));
 }
@@ -316,6 +319,514 @@ static void joinFaces(Uniwalk &uni) {
     }
 }
 
+// Cutting the walkable ground by obstacles. A face under an obstacle is cut
+// into convex pieces: those outside it, and the one inside, which is marked
+// blocked. Each edge of a piece lies on a carrier: an edge of a face, or the
+// line through an edge of an obstacle. The corner where two carriers cross is
+// made once and shared by every piece that has it, and a corner lying on a
+// carrier between the ends of a piece's edge there is put in that edge, so
+// pieces and faces still join edge to edge.
+
+// A corner this near a cutting line, in metres, lies on it, and corners this
+// near each other are one: where three lines or more cross at a point, each
+// pair makes its own corner there.
+static constexpr float kCutTolerance = 1e-4f;
+// Obstacles are filed by the cells of a grid this wide.
+static constexpr float kCutCellSize = 4.0f;
+// A piece is fanned from one of its corners only if every triangle has more
+// than this, twice its ground in square metres, under it.
+static constexpr float kMinFanArea = 1e-6f;
+
+struct CutPiece {
+    std::vector<uint32_t> corners;
+    /** For each corner, the carrier of the edge from it to the next. */
+    std::vector<uint64_t> carriers;
+    bool blocked {false};
+};
+
+// Twice a polygon's area across the ground plan, positive when its corners
+// run counter-clockwise seen from above.
+static float doubleArea(const std::vector<uint32_t> &corners, const std::vector<glm::vec3> &vertices) {
+    float area = 0.0f;
+    for (size_t i = 0; i < corners.size(); ++i) {
+        const glm::vec3 &p = vertices[corners[i]];
+        const glm::vec3 &q = vertices[corners[(i + 1) % corners.size()]];
+        area += p.x * q.y - q.x * p.y;
+    }
+    return area;
+}
+
+// The carrier of a face's edge between two vertices.
+static uint64_t faceEdgeCarrier(uint32_t a, uint32_t b) {
+    return (static_cast<uint64_t>(std::min(a, b)) << 32) | std::max(a, b);
+}
+
+// Obstacles' edges that lie on one line, as the faces of one placeable's
+// walkmesh share edges, share its carrier: each edge's carrier, by obstacle
+// and edge. Edges are sorted by the angle of their line; edges of near the
+// same angle lie on one line when both ends of the one lie this near the
+// other's line, in metres.
+static constexpr float kSameLineDistance = 1e-4f;
+static constexpr float kSameLineAngle = 1e-3f;
+
+static std::vector<std::vector<uint64_t>> obstacleLineCarriers(const std::vector<Obstacle> &obstacles) {
+    struct EdgeLine {
+        float angle;
+        uint32_t edge;
+    };
+    std::vector<glm::vec2> from, to;
+    std::vector<EdgeLine> lines;
+    std::vector<std::vector<uint64_t>> carriers(obstacles.size());
+    for (uint32_t o = 0; o < obstacles.size(); ++o) {
+        const auto &outline = obstacles[o].outline;
+        for (size_t k = 0; k < outline.size(); ++k) {
+            const glm::vec2 &p = outline[k];
+            const glm::vec2 &q = outline[(k + 1) % outline.size()];
+            float angle = std::atan2(q.y - p.y, q.x - p.x);
+            if (angle < 0.0f) {
+                angle += glm::pi<float>();
+            }
+            if (angle >= glm::pi<float>()) {
+                angle -= glm::pi<float>();
+            }
+            const uint32_t edge = static_cast<uint32_t>(from.size());
+            from.push_back(p);
+            to.push_back(q);
+            lines.push_back({angle, edge});
+            carriers[o].push_back(edge);
+        }
+    }
+    // A line near the end of the turn is the same as one near its start.
+    const size_t count = lines.size();
+    for (size_t i = 0; i < count; ++i) {
+        if (lines[i].angle < kSameLineAngle) {
+            lines.push_back({lines[i].angle + glm::pi<float>(), lines[i].edge});
+        }
+    }
+    std::sort(lines.begin(), lines.end(), [](const EdgeLine &a, const EdgeLine &b) {
+        return a.angle < b.angle || (a.angle == b.angle && a.edge < b.edge);
+    });
+    std::vector<uint32_t> root(from.size());
+    for (uint32_t i = 0; i < root.size(); ++i) {
+        root[i] = i;
+    }
+    const auto find = [&root](uint32_t e) {
+        while (root[e] != e) {
+            root[e] = root[root[e]];
+            e = root[e];
+        }
+        return e;
+    };
+    const auto onLine = [&](uint32_t line, const glm::vec2 &point) {
+        const glm::vec2 along {to[line] - from[line]};
+        const float length = glm::length(along);
+        return length > 0.0f && std::fabs(along.x * (point.y - from[line].y) - along.y * (point.x - from[line].x)) / length < kSameLineDistance;
+    };
+    for (size_t i = 0; i < lines.size(); ++i) {
+        for (size_t j = i + 1; j < lines.size() && lines[j].angle - lines[i].angle < kSameLineAngle; ++j) {
+            const uint32_t a = lines[i].edge;
+            const uint32_t b = lines[j].edge;
+            if (a != b && onLine(a, from[b]) && onLine(a, to[b])) {
+                root[find(b)] = find(a);
+            }
+        }
+    }
+    for (auto &obstacleCarriers : carriers) {
+        for (uint64_t &carrier : obstacleCarriers) {
+            carrier = (1ull << 63) | find(static_cast<uint32_t>(carrier));
+        }
+    }
+    return carriers;
+}
+
+// The corners made by the cuts: where two carriers cross, and the corners on
+// each carrier.
+struct CarrierPairHash {
+    size_t operator()(const std::pair<uint64_t, uint64_t> &pair) const {
+        size_t hash = 0;
+        boost::hash_combine(hash, pair.first);
+        boost::hash_combine(hash, pair.second);
+        return hash;
+    }
+};
+
+struct CutCorners {
+    std::unordered_map<std::pair<uint64_t, uint64_t>, uint32_t, CarrierPairHash> crossings;
+    std::unordered_map<uint64_t, std::vector<uint32_t>> onCarrier;
+};
+
+// The part of a convex piece on one side of the line through a and b, the
+// carrier \p line: the left, seen from a toward b, when keepLeft is set. Where
+// an edge crosses the line, the corner there is taken from \p cut, or made,
+// its height taken along the edge.
+static CutPiece clipToSide(const CutPiece &piece, std::vector<glm::vec3> &vertices, CutCorners &cut,
+                           const glm::vec2 &a, const glm::vec2 &b, uint64_t line, bool keepLeft) {
+    const glm::vec2 along {b - a};
+    const float length = glm::length(along);
+    CutPiece kept;
+    kept.blocked = piece.blocked;
+    if (length <= 0.0f) {
+        return kept;
+    }
+    kept.corners.reserve(piece.corners.size() + 1);
+    kept.carriers.reserve(piece.corners.size() + 1);
+    const auto side = [&](const glm::vec3 &p) {
+        const float left = (along.x * (p.y - a.y) - along.y * (p.x - a.x)) / length;
+        return keepLeft ? left : -left;
+    };
+    const auto crossing = [&](uint32_t pi, uint32_t qi, uint64_t carrier, float t) {
+        const auto key = std::minmax(carrier, line);
+        const auto found = cut.crossings.find(key);
+        if (found != cut.crossings.end()) {
+            return found->second;
+        }
+        const uint32_t index = static_cast<uint32_t>(vertices.size());
+        vertices.push_back(vertices[pi] + (vertices[qi] - vertices[pi]) * t);
+        cut.crossings.emplace(key, index);
+        cut.onCarrier[carrier].push_back(index);
+        cut.onCarrier[line].push_back(index);
+        return index;
+    };
+    const size_t count = piece.corners.size();
+    for (size_t i = 0; i < count; ++i) {
+        const uint32_t pi = piece.corners[i];
+        const uint32_t qi = piece.corners[(i + 1) % count];
+        const uint64_t carrier = piece.carriers[i];
+        const float sp = side(vertices[pi]);
+        const float sq = side(vertices[qi]);
+        const bool pIn = sp >= -kCutTolerance;
+        const bool qOut = sq < -kCutTolerance;
+        if (pIn) {
+            // From a corner on the line, an edge leaving the kept side is
+            // followed by the line instead.
+            kept.corners.push_back(pi);
+            kept.carriers.push_back(qOut && sp <= kCutTolerance ? line : carrier);
+        }
+        if ((sp > kCutTolerance && qOut) || (sp < -kCutTolerance && sq > kCutTolerance)) {
+            kept.corners.push_back(crossing(pi, qi, carrier, sp / (sp - sq)));
+            kept.carriers.push_back(qOut ? line : carrier);
+        }
+    }
+    if (kept.corners.size() < 3) {
+        kept.corners.clear();
+        kept.carriers.clear();
+    }
+    return kept;
+}
+
+// A convex piece less a convex obstacle: the parts outside each of the
+// obstacle's edges in turn, then what is left, inside the obstacle and so
+// blocked.
+static void subtractObstacle(const CutPiece &piece, const Obstacle &obstacle, const std::vector<uint64_t> &lines,
+                             std::vector<glm::vec3> &vertices, CutCorners &cut, std::vector<CutPiece> &out) {
+    CutPiece rest = piece;
+    const uint32_t count = static_cast<uint32_t>(obstacle.outline.size());
+    for (uint32_t k = 0; k < count && !rest.corners.empty(); ++k) {
+        const glm::vec2 &a = obstacle.outline[k];
+        const glm::vec2 &b = obstacle.outline[(k + 1) % count];
+        const uint64_t line = lines[k];
+        CutPiece outside = clipToSide(rest, vertices, cut, a, b, line, false);
+        if (!outside.corners.empty()) {
+            out.push_back(std::move(outside));
+        }
+        rest = clipToSide(rest, vertices, cut, a, b, line, true);
+    }
+    if (!rest.corners.empty()) {
+        rest.blocked = true;
+        out.push_back(std::move(rest));
+    }
+}
+
+// Cells of a grid across the ground plan, keyed for a hash map.
+static uint64_t cutCellKey(int x, int y) {
+    return (static_cast<uint64_t>(static_cast<uint32_t>(x)) << 32) | static_cast<uint32_t>(y);
+}
+
+static int cutCell(float coordinate) {
+    return static_cast<int>(std::floor(coordinate / kCutCellSize));
+}
+
+// Cuts every face under an obstacle, between the obstacle's heights of floor,
+// into pieces; puts each corner the cuts made in the edges it lies on; and
+// puts the pieces, as triangles, in place of the faces, each room's together
+// and in order. Uniwalk::blocked marks the triangles inside an obstacle.
+static void cutByObstacles(Uniwalk &uni, const std::vector<Obstacle> &obstacles) {
+    // The faces are put back room by room, so a face outside every room's
+    // range would be lost: a walkmesh put together otherwise is left whole.
+    size_t inRooms = 0;
+    for (const Uniroom &room : uni.rooms) {
+        inRooms += room.end - room.begin;
+    }
+    if (inRooms != uni.faces.size()) {
+        return;
+    }
+
+    // Obstacles are filed by the cells their boxes cover.
+    std::vector<glm::vec2> obstacleMin(obstacles.size()), obstacleMax(obstacles.size());
+    std::unordered_map<uint64_t, std::vector<uint32_t>> obstacleCells;
+    for (uint32_t o = 0; o < obstacles.size(); ++o) {
+        glm::vec2 min {FLT_MAX};
+        glm::vec2 max {-FLT_MAX};
+        for (const glm::vec2 &p : obstacles[o].outline) {
+            min = glm::min(min, p);
+            max = glm::max(max, p);
+        }
+        obstacleMin[o] = min;
+        obstacleMax[o] = max;
+        if (obstacles[o].outline.size() < 3) {
+            continue;
+        }
+        for (int y = cutCell(min.y); y <= cutCell(max.y); ++y) {
+            for (int x = cutCell(min.x); x <= cutCell(max.x); ++x) {
+                obstacleCells[cutCellKey(x, y)].push_back(o);
+            }
+        }
+    }
+
+    // Each face is cut by the obstacles over it, one after another.
+    const std::vector<std::vector<uint64_t>> lineCarriers = obstacleLineCarriers(obstacles);
+    CutCorners cut;
+    std::vector<std::vector<CutPiece>> pieces(uni.faces.size());
+    std::vector<uint32_t> seen(obstacles.size(), UINT32_MAX);
+    bool anyCut = false;
+    for (uint32_t f = 0; f < uni.faces.size(); ++f) {
+        const uint32_t *v = uni.faces[f].vertices;
+        pieces[f].push_back({{v[0], v[1], v[2]},
+                             {faceEdgeCarrier(v[0], v[1]), faceEdgeCarrier(v[1], v[2]), faceEdgeCarrier(v[2], v[0])},
+                             false});
+        glm::vec3 min {FLT_MAX};
+        glm::vec3 max {-FLT_MAX};
+        for (int i = 0; i < 3; ++i) {
+            min = glm::min(min, uni.vertices[v[i]]);
+            max = glm::max(max, uni.vertices[v[i]]);
+        }
+        for (int y = cutCell(min.y); y <= cutCell(max.y); ++y) {
+            for (int x = cutCell(min.x); x <= cutCell(max.x); ++x) {
+                const auto found = obstacleCells.find(cutCellKey(x, y));
+                if (found == obstacleCells.end()) {
+                    continue;
+                }
+                for (uint32_t o : found->second) {
+                    if (seen[o] == f) {
+                        continue;
+                    }
+                    seen[o] = f;
+                    const Obstacle &obstacle = obstacles[o];
+                    if (obstacleMin[o].x > max.x || obstacleMax[o].x < min.x || obstacleMin[o].y > max.y || obstacleMax[o].y < min.y ||
+                        obstacle.floorMin > max.z || obstacle.floorMax < min.z) {
+                        continue;
+                    }
+                    std::vector<CutPiece> next;
+                    for (const CutPiece &piece : pieces[f]) {
+                        subtractObstacle(piece, obstacle, lineCarriers[o], uni.vertices, cut, next);
+                    }
+                    pieces[f] = std::move(next);
+                    anyCut = true;
+                }
+            }
+        }
+    }
+    if (!anyCut) {
+        return;
+    }
+
+    // Corners at one point are made one, and each carries the carriers of
+    // all: each corner of a cut face's pieces, in order, joins the first
+    // corner before it within kCutTolerance. Only those corners are looked
+    // at, not vertices the first merge left unused, which no face shares. A
+    // piece left with fewer than three corners is dropped.
+    std::vector<uint32_t> dedup(uni.vertices.size(), UINT32_MAX);
+    {
+        std::vector<uint32_t> corners;
+        for (uint32_t f = 0; f < pieces.size(); ++f) {
+            if (pieces[f].size() == 1 && pieces[f][0].corners.size() == 3 && !pieces[f][0].blocked) {
+                continue;
+            }
+            for (const CutPiece &piece : pieces[f]) {
+                corners.insert(corners.end(), piece.corners.begin(), piece.corners.end());
+            }
+        }
+        std::sort(corners.begin(), corners.end());
+        corners.erase(std::unique(corners.begin(), corners.end()), corners.end());
+        const float cellSize = 2.0f * kCutTolerance;
+        const float eps2 = kCutTolerance * kCutTolerance;
+        std::unordered_map<GridCell, std::vector<uint32_t>, GridCellHash> cells;
+        for (uint32_t v : corners) {
+            const GridCell home = gridCellOf(uni.vertices[v], cellSize);
+            uint32_t into = UINT32_MAX;
+            for (int dz = -1; dz <= 1; ++dz) {
+                for (int dy = -1; dy <= 1; ++dy) {
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const auto found = cells.find({home.x + dx, home.y + dy, home.z + dz});
+                        if (found == cells.end()) {
+                            continue;
+                        }
+                        for (uint32_t u : found->second) {
+                            if (u < into && glm::distance2(uni.vertices[u], uni.vertices[v]) < eps2) {
+                                into = u;
+                            }
+                        }
+                    }
+                }
+            }
+            if (into != UINT32_MAX) {
+                dedup[v] = dedup[into] != UINT32_MAX ? dedup[into] : into;
+            } else {
+                cells[home].push_back(v);
+            }
+        }
+    }
+    const auto merged = [&dedup](uint32_t v) {
+        return dedup[v] != UINT32_MAX ? dedup[v] : v;
+    };
+    for (auto &facePieces : pieces) {
+        for (CutPiece &piece : facePieces) {
+            CutPiece kept;
+            kept.blocked = piece.blocked;
+            for (size_t i = 0; i < piece.corners.size(); ++i) {
+                const uint32_t v = merged(piece.corners[i]);
+                if (!kept.corners.empty() && kept.corners.back() == v) {
+                    // The edge before this corner has gone: the corner keeps
+                    // the carrier of the edge after it.
+                    kept.carriers.back() = piece.carriers[i];
+                    continue;
+                }
+                kept.corners.push_back(v);
+                kept.carriers.push_back(piece.carriers[i]);
+            }
+            if (kept.corners.size() > 1 && kept.corners.back() == kept.corners.front()) {
+                kept.corners.pop_back();
+                kept.carriers.pop_back();
+            }
+            if (kept.corners.size() < 3) {
+                kept.corners.clear();
+                kept.carriers.clear();
+            }
+            piece = std::move(kept);
+        }
+    }
+    for (auto &[carrier, corners] : cut.onCarrier) {
+        for (uint32_t &v : corners) {
+            v = merged(v);
+        }
+        std::sort(corners.begin(), corners.end());
+        corners.erase(std::unique(corners.begin(), corners.end()), corners.end());
+    }
+
+    // The pieces become triangles, each fanned out from a corner whose
+    // triangles all turn the piece's way with ground under them; failing one,
+    // from a corner added at its middle.
+    std::vector<Uniface> faces;
+    std::vector<uint8_t> blocked;
+    std::vector<uint32_t> newIndex(uni.faces.size(), UINT32_MAX);
+    std::vector<uint32_t> newEnd(uni.faces.size(), UINT32_MAX);
+    const auto addFace = [&](uint32_t a, uint32_t b, uint32_t c, bool isBlocked) {
+        if (a == b || b == c || c == a) {
+            return;
+        }
+        Uniface face;
+        face.vertices[0] = a;
+        face.vertices[1] = b;
+        face.vertices[2] = c;
+        for (uint32_t &adj : face.adjecent) {
+            adj = UINT32_MAX;
+        }
+        face.centroid = (uni.vertices[a] + uni.vertices[b] + uni.vertices[c]) * 0.333333f;
+        faces.push_back(face);
+        blocked.push_back(isBlocked ? 1 : 0);
+    };
+    for (Uniroom &room : uni.rooms) {
+        const uint32_t begin = static_cast<uint32_t>(faces.size());
+        for (uint32_t f = room.begin; f < room.end; ++f) {
+            newIndex[f] = static_cast<uint32_t>(faces.size());
+            for (const CutPiece &piece : pieces[f]) {
+                std::vector<uint32_t> corners;
+                for (size_t e = 0; e < piece.corners.size(); ++e) {
+                    const uint32_t a = piece.corners[e];
+                    const uint32_t b = piece.corners[(e + 1) % piece.corners.size()];
+                    corners.push_back(a);
+                    const auto found = cut.onCarrier.find(piece.carriers[e]);
+                    if (found == cut.onCarrier.end()) {
+                        continue;
+                    }
+                    // The corners on this edge's carrier between its ends, in
+                    // order along it.
+                    const glm::vec3 &pa = uni.vertices[a];
+                    const glm::vec3 along {uni.vertices[b] - pa};
+                    const float length2 = glm::dot(along, along);
+                    std::vector<std::pair<float, uint32_t>> between;
+                    for (uint32_t v : found->second) {
+                        if (v == a || v == b || length2 <= 0.0f) {
+                            continue;
+                        }
+                        const float t = glm::dot(uni.vertices[v] - pa, along) / length2;
+                        if (t > 1e-6f && t < 1.0f - 1e-6f) {
+                            between.push_back({t, v});
+                        }
+                    }
+                    std::sort(between.begin(), between.end());
+                    for (const auto &[t, v] : between) {
+                        if (corners.back() != v) {
+                            corners.push_back(v);
+                        }
+                    }
+                }
+                if (corners.size() < 3) {
+                    continue;
+                }
+                const size_t n = corners.size();
+                const float way = doubleArea(corners, uni.vertices) > 0.0f ? 1.0f : -1.0f;
+                const auto fans = [&](size_t root) {
+                    const glm::vec3 &a = uni.vertices[corners[root]];
+                    for (size_t j = 1; j + 1 < n; ++j) {
+                        const glm::vec3 &b = uni.vertices[corners[(root + j) % n]];
+                        const glm::vec3 &c = uni.vertices[corners[(root + j + 1) % n]];
+                        if (way * ((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) <= kMinFanArea) {
+                            return false;
+                        }
+                    }
+                    return true;
+                };
+                size_t root = n;
+                for (size_t i = 0; i < n && root == n; ++i) {
+                    if (fans(i)) {
+                        root = i;
+                    }
+                }
+                if (root < n) {
+                    for (size_t j = 1; j + 1 < n; ++j) {
+                        addFace(corners[root], corners[(root + j) % n], corners[(root + j + 1) % n], piece.blocked);
+                    }
+                    continue;
+                }
+                glm::vec3 middle {0.0f};
+                for (uint32_t v : corners) {
+                    middle += uni.vertices[v];
+                }
+                const uint32_t centre = static_cast<uint32_t>(uni.vertices.size());
+                uni.vertices.push_back(middle / static_cast<float>(corners.size()));
+                for (size_t i = 0; i < corners.size(); ++i) {
+                    addFace(centre, corners[i], corners[(i + 1) % corners.size()], piece.blocked);
+                }
+            }
+            newEnd[f] = static_cast<uint32_t>(faces.size());
+        }
+        room.begin = begin;
+        room.end = static_cast<uint32_t>(faces.size());
+        room.unifiedFaceEnds.resize(room.unifiedFaces.size(), UINT32_MAX);
+        for (size_t i = 0; i < room.unifiedFaces.size(); ++i) {
+            const uint32_t f = room.unifiedFaces[i];
+            if (f == UINT32_MAX) {
+                continue;
+            }
+            room.unifiedFaces[i] = newIndex[f];
+            room.unifiedFaceEnds[i] = newEnd[f];
+        }
+    }
+    uni.faces = std::move(faces);
+    uni.blocked = std::move(blocked);
+}
+
 // The cells of the edge grid a box across the ground plan covers, clamped to
 // the grid.
 struct GridSpan {
@@ -338,8 +849,16 @@ static void edgeBounds(const Uniwalk &uni, uint32_t edge, glm::vec2 &min, glm::v
     max = glm::max(a, b);
 }
 
-// Files every edge no other walkable face shares in each cell its box across
-// the ground plan covers.
+// Whether an edge of a face bounds the walkable ground: no other walkable face
+// shares it, or the face across it lies inside an obstacle and this one does
+// not.
+static bool isGroundEdge(const Uniwalk &uni, uint32_t face, uint32_t j) {
+    const uint32_t adj = uni.faces[face].adjecent[j];
+    return adj == UINT32_MAX || (!uni.blocked.empty() && uni.blocked[adj] && !uni.blocked[face]);
+}
+
+// Files every edge of the walkable ground in each cell its box across the
+// ground plan covers.
 static void buildEdgeGrid(Uniwalk &uni) {
     EdgeGrid &grid = uni.edgeGrid;
     grid = EdgeGrid();
@@ -348,7 +867,7 @@ static void buildEdgeGrid(Uniwalk &uni) {
     glm::vec2 max {-FLT_MAX};
     for (uint32_t i = 0; i < uni.faces.size(); ++i) {
         for (uint32_t j = 0; j < 3; ++j) {
-            if (uni.faces[i].adjecent[j] != UINT32_MAX) {
+            if (!isGroundEdge(uni, i, j)) {
                 continue;
             }
             const uint32_t edge = i * 3 + j;
@@ -401,7 +920,7 @@ static void buildEdgeGrid(Uniwalk &uni) {
     }
 }
 
-void uniwalkFinalize(struct Uniwalk &uni) {
+void uniwalkFinalize(struct Uniwalk &uni, const std::vector<Obstacle> &obstacles) {
     // Deduplicate vertices, so that the same vertex gets the same index in all
     // faces. This way we can compare indices of two vertices instead of
     // calculating distance between them every time.
@@ -414,15 +933,20 @@ void uniwalkFinalize(struct Uniwalk &uni) {
         }
     }
 
+    uni.blocked.clear();
+    if (!obstacles.empty()) {
+        cutByObstacles(uni, obstacles);
+    }
+
     // For each faces, find faces that are adjecent to it.
     joinFaces(uni);
 
-    // A vertex of an edge no other walkable face shares lies on the edge of
-    // the walkable ground.
+    // A vertex of an edge of the walkable ground lies on its edge.
     uni.boundary.assign(uni.vertices.size(), 0);
-    for (const Uniface &face : uni.faces) {
+    for (uint32_t i = 0; i < uni.faces.size(); ++i) {
+        const Uniface &face = uni.faces[i];
         for (uint32_t j = 0; j < 3; ++j) {
-            if (face.adjecent[j] == UINT32_MAX) {
+            if (isGroundEdge(uni, i, j)) {
                 uni.boundary[face.vertices[kTriangleEdges[j][0]]] = 1;
                 uni.boundary[face.vertices[kTriangleEdges[j][1]]] = 1;
             }
@@ -457,6 +981,11 @@ void uniwalkFinalize(struct Uniwalk &uni) {
     }
 
     drawDebugUniwalk(uni);
+}
+
+void replaceUniwalk(Pathfinder &pf, Uniwalk uni) {
+    pf.uni = std::move(uni);
+    ++pf.generation;
 }
 
 struct CastResult {
@@ -503,9 +1032,22 @@ static uint32_t findFaceAt(const Pathfinder &pf, const glm::vec3 &position) {
             return UINT32_MAX;
         }
         for (const Uniroom &room : uni.rooms) {
-            if (room.walkmesh == ref->walkmesh) {
-                return ref->face < room.unifiedFaces.size() ? room.unifiedFaces[ref->face] : UINT32_MAX;
+            if (room.walkmesh != ref->walkmesh) {
+                continue;
             }
+            if (ref->face >= room.unifiedFaces.size() || room.unifiedFaces[ref->face] == UINT32_MAX) {
+                return UINT32_MAX;
+            }
+            // A face cut by obstacles became several: the point stands on the
+            // one whose outline holds it, or the first.
+            const uint32_t first = room.unifiedFaces[ref->face];
+            const uint32_t end = ref->face < room.unifiedFaceEnds.size() ? room.unifiedFaceEnds[ref->face] : first + 1;
+            for (uint32_t f = first; f < end; ++f) {
+                if (castFace(uni, f, glm::vec3(position.x, position.y, uni.faces[f].centroid.z + kFloorHeadroom)).intersects) {
+                    return f;
+                }
+            }
+            return first < end ? first : UINT32_MAX;
         }
         return UINT32_MAX;
     }
@@ -603,7 +1145,8 @@ static AStarOpenFace popOpenFace(std::vector<AStarOpenFace> &open) {
 }
 
 static bool findPathAStar(AStarPath &path, AStarContext &ctx, const Uniwalk &uni,
-                          uint32_t fromFace, uint32_t toFace, const FacePassable &passable, float radius) {
+                          uint32_t fromFace, uint32_t toFace, const FacePassable &passable, float radius,
+                          bool keepsOffBlocked) {
     // Reset the context.
     ctx.state.resize(uni.faces.size());
     memset(&ctx.state[0], 0xFF, sizeof(ctx.state[0]) * ctx.state.size());
@@ -628,7 +1171,13 @@ static bool findPathAStar(AStarPath &path, AStarContext &ctx, const Uniwalk &uni
         ctx.passes.assign(uni.faces.size(), -1);
     }
     const auto mayPass = [&](uint32_t face) {
-        if (!passable || face == fromFace) {
+        if (face == fromFace) {
+            return true;
+        }
+        if (keepsOffBlocked && uni.blocked[face]) {
+            return false;
+        }
+        if (!passable) {
             return true;
         }
         int8_t &passes = ctx.passes[face];
@@ -869,10 +1418,11 @@ static void planPoints(AStarPath &path, const Uniwalk &uni) {
     path.pointNext = 1;
 }
 
-// A path keeps clear of the faces the walker may not pass over, and of gaps
-// too narrow for it; when no path does, it is found over every face and gap,
-// and the funnel closes the gaps too narrow to a point. Faces \p keepOff turns
-// down are kept off either way.
+// A path keeps clear of the faces the walker may not pass over, of those
+// inside obstacles, and of gaps too narrow for it; when no path does, it is
+// found over every face and gap but those inside obstacles, then over every
+// one, and the funnel closes the gaps too narrow to a point. Faces \p keepOff
+// turns down are kept off throughout.
 static bool findPath(AStarPath &path, Pathfinder &pf, const glm::vec3 &from, const glm::vec3 &to,
                      const FacePassable &passable, float radius, const FacePassable &keepOff = {}) {
     const Uniwalk &uni = pf.uni;
@@ -892,9 +1442,16 @@ static bool findPath(AStarPath &path, Pathfinder &pf, const glm::vec3 &from, con
             return keepOff(face) && (!passable || passable(face));
         };
     }
-    bool found = findPathAStar(path, astar, uni, fromFace, toFace, first, radius);
-    if (!found && (passable || radius > 0.0f)) {
-        found = findPathAStar(path, astar, uni, fromFace, toFace, keepOff, 0.0f);
+    // Faces inside obstacles are kept off as the faces the walker may not pass
+    // over are, and longer: a path over every face and gap but those is
+    // looked for before one over them.
+    const bool hasBlocked = !uni.blocked.empty();
+    bool found = findPathAStar(path, astar, uni, fromFace, toFace, first, radius, hasBlocked);
+    if (!found && hasBlocked) {
+        found = findPathAStar(path, astar, uni, fromFace, toFace, keepOff, 0.0f, true);
+    }
+    if (!found && (passable || radius > 0.0f || hasBlocked)) {
+        found = findPathAStar(path, astar, uni, fromFace, toFace, keepOff, 0.0f, false);
     }
     if (!found) {
         return false;
@@ -918,6 +1475,7 @@ static bool findPath(AStarPath &path, Pathfinder &pf, const glm::vec3 &from, con
     path.radius = radius;
     path.current = 0;
     path.active = true;
+    path.generation = pf.generation;
     path.straight = false;
     path.followsFaces = true;
     planPoints(path, uni);
@@ -980,6 +1538,7 @@ std::optional<Path> createStraightPath(Pathfinder &pf, const glm::vec3 &from, co
         path.radius = 0.0f;
         path.current = 0;
         path.straight = true;
+        path.generation = pf.generation;
         path.followsFaces = true;
         path.points = {from, to};
         path.pointNext = 1;
@@ -1042,6 +1601,14 @@ static void updatePathPoints(AStarPath &path, const glm::vec3 &current) {
 bool updatePath(Pathfinder &pf, Path p, const glm::vec3 &current) {
     AStarPath &path = pf.paths[p.index];
 
+    // A path planned over a walkmesh since put out of place is planned again
+    // from where the walker stands; one walked straight keeps its points.
+    if (path.generation != pf.generation) {
+        path.generation = pf.generation;
+        if (!path.straight && path.followsFaces && !findPath(path, pf, current, path.to, path.passable, path.radius)) {
+            return false;
+        }
+    }
     if (path.straight) {
         return true;
     }
@@ -1408,7 +1975,8 @@ glm::vec2 slideAlongEdges(const Uniwalk &uni, const glm::vec3 &position, float r
 }
 
 bool isClearGround(const Pathfinder &pf, const glm::vec3 &point, float radius) {
-    if (findFaceAt(pf, point) == UINT32_MAX) {
+    const uint32_t face = findFaceAt(pf, point);
+    if (face == UINT32_MAX || (!pf.uni.blocked.empty() && pf.uni.blocked[face])) {
         return false;
     }
     bool clear = true;
