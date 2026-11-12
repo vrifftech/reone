@@ -341,6 +341,10 @@ private:
     bool _notBlastable {false};
     bool _groundPile {false};
     uint32_t _appearance {0};
+    /** TSL: whether the placeable is drawn in its tint colour. */
+    uint8_t _useTweakColor {0};
+    /** TSL: the placeable's tint colour, a 0xBBGGRR value. */
+    uint32_t _tweakColor {0};
     int _appearanceNameStrRef {-1};
     float _canSeeHeight {kEyeHeight};
     uint8_t _hardness {0};

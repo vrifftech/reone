@@ -25,6 +25,7 @@ layout(std140) uniform Locals {
     vec4 uDiffuseColor;
     vec4 uSelfIllumColor;
     vec4 uForceSightColor;
+    vec4 uIllumination;
     int uFeatureMask;
     int uBumpMapFrame;
     float uBumpMapScale;

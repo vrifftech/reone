@@ -1546,6 +1546,10 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writeDoor(
     put(*result, Gff::Field::newResRef("LinkedToModule", door._linkedToModule));
     put(*result, Gff::Field::newCExoLocString(
         "TransitionDestin", -1, door._transitionDestin.str()));
+    if (_game.isTSL()) {
+        put(*result, Gff::Field::newByte("UseTweakColor", door._useTweakColor));
+        put(*result, Gff::Field::newDword("TweakColor", door._tweakColor));
+    }
     return result;
 }
 
@@ -1576,6 +1580,8 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writePlaceable(
     if (_game.isTSL()) {
         put(*result, Gff::Field::newInt("OwnerDemolitions", placeable.ownerDemolitionsSkill()));
         putLockDifficulty(*result, placeable.lock());
+        put(*result, Gff::Field::newByte("UseTweakColor", placeable._useTweakColor));
+        put(*result, Gff::Field::newDword("TweakColor", placeable._tweakColor));
     }
     // A portrait ID naming a row is saved in place of the portrait resref.
     if (placeable._portraitId != Placeable::kNoPortraitId) {

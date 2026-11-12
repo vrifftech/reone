@@ -96,6 +96,14 @@ static constexpr float kDefaultLightOffsetZ = 3.0f;
 
 // The fields a placeable placed from its template takes from its area entry.
 static const std::vector<std::string> kEntryFields {"ObjectId", "Bearing", "X", "Y", "Z"};
+// The fields a TSL placeable also takes from its entry.
+static const std::vector<std::string> kEntryFieldsTSL {"UseTweakColor", "TweakColor"};
+
+// TSL: placeables named for chemical or plasteel material are drawn this much
+// lighter. The game tells them by their display name, so only installs whose
+// display names are English have them lighter.
+static constexpr float kChemicalTintLift = 0.16f;
+static constexpr float kPlasteelTintLift = 0.1f;
 
 // Calls \p apply on every light node under \p root.
 static void forEachLight(scene::SceneNode &root, const std::function<void(scene::LightSceneNode &)> &apply) {
@@ -129,8 +137,9 @@ void Placeable::deserialize(
 }
 
 // A placeable placed from its template takes everything from the template;
-// its entry gives only its object id, bearing and position. A saved placeable
-// takes everything from its record.
+// its entry gives only its object id, bearing and position, and in TSL its
+// tint colour, none when the entry has none, which its save keeps. A saved
+// placeable takes everything from its record.
 void Placeable::deserializeRecord(
     const resource::Gff &gff,
     const SerializedIdentityContext &identityContext,
@@ -143,7 +152,15 @@ void Placeable::deserializeRecord(
     }
     if (utp) {
         deserializeAll(*utp, SerializedIdentityContext::templateResource(templateRes), placedTemplate);
-        captureAuthoredRecord(*utp, gff, kEntryFields);
+        std::vector<std::string> entryFields {kEntryFields};
+        if (_game.isTSL()) {
+            entryFields.insert(entryFields.end(), kEntryFieldsTSL.begin(), kEntryFieldsTSL.end());
+        }
+        captureAuthoredRecord(*utp, gff, entryFields);
+        if (_game.isTSL()) {
+            _useTweakColor = static_cast<uint8_t>(gff.getUint("UseTweakColor", 0));
+            _tweakColor = gff.getUint("TweakColor", 0);
+        }
         placeAtEntryPoint(gff);
     } else {
         deserializeAll(gff, identityContext, false);
@@ -195,6 +212,10 @@ void Placeable::deserializeAll(
     gff.readBool(_notBlastable, "NotBlastable");
     gff.readBool(_groundPile, "GroundPile");
     gff.readDword(_appearance, "Appearance");
+    if (_game.isTSL()) {
+        gff.readByte(_useTweakColor, "UseTweakColor");
+        gff.readDword(_tweakColor, "TweakColor");
+    }
     if (gff.readShort(_hitPoints, "HP")) {
         _maxHitPoints = _hitPoints;
     }
@@ -288,6 +309,16 @@ void Placeable::loadAppearance() {
     // A camera passes through a placeable whose appearance is not hit checked.
     sceneNode->setCameraPassesThrough(placeables->getInt(_appearance, "hitcheck", 0) == 0);
     sceneNode->setDrawDistance(_game.options().graphics.drawDistance);
+    if (_game.isTSL() && _useTweakColor != 0) {
+        glm::vec3 tint = resource::Gff::colorFromUint32(_tweakColor);
+        if (_name.find("Chemical") != std::string::npos) {
+            tint += kChemicalTintLift;
+        }
+        if (_name.find("Plasteel") != std::string::npos) {
+            tint += kPlasteelTintLift;
+        }
+        sceneNode->setIllumination(tint);
+    }
     // An appearance with a light colour carries the placeable light, in the
     // colour of its lightcolor.2da row. The games carry it uncoloured.
     _light.reset();
