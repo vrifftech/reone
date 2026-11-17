@@ -1484,6 +1484,11 @@ void Game::updateFrame(float frameTime) {
     }
     syncPartyCombatMode();
     commitTutorialWindow();
+    // While play shows the main interface, a TSL follower that can level up
+    // does so by itself rather than showing a mark.
+    if (_screen == Screen::InGame) {
+        _party.levelUpFollowersByThemselves();
+    }
     auto gui = getScreenGUI();
     if (gui) {
         gui->update(dt);
@@ -4920,6 +4925,13 @@ void Game::removeMotionBlurProgram() {
     _motionBlurPrograms = std::max(0, _motionBlurPrograms - 1);
     if (_motionBlurPrograms == 0 && !isMiniGameActive()) {
         setSpeedBlur(false);
+    }
+}
+
+void Game::setAutoLevelUpNPCs(bool on) {
+    _options.game.gameplay.autoLevelUpNPCs = on;
+    if (on) {
+        _party.levelUpCompanionsByThemselves();
     }
 }
 
@@ -9426,20 +9438,6 @@ void Game::returnToScreen(Screen underneath) {
         return;
     }
     changeScreen(underneath);
-}
-
-bool Game::autoLevelUp() {
-    auto leader = _party.getLeader();
-    if (!leader || !leader->isLevelUpPending()) {
-        return false;
-    }
-    if (!_charGen) {
-        _charGen = tryLoadGUI<CharacterGeneration>();
-    }
-    if (!_charGen) {
-        return false;
-    }
-    return _charGen->autoLevelUp();
 }
 
 static constexpr int kLevelUpAvailableStrRef = 1438;
