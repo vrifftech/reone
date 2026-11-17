@@ -758,6 +758,8 @@ private:
 
     // Input
 
+    /** 1 for up to pitch up, -1 while the minigame axis is reversed. */
+    int pitchSign() const;
     bool handleKeyDown(const input::KeyEvent &event);
     bool handleKeyUp(const input::KeyEvent &event);
     bool handleMouseMotion(const input::MouseMotionEvent &event);
