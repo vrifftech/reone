@@ -117,13 +117,16 @@ public:
 
     /**
      * Adds the powers a TSL character is granted with its newest level, which
-     * is in the last of its classes, to that class's powers. These come on
+     * is in the last of its classes, to that class's powers: the forms of a
+     * Jedi base class at the character's Jedi levels 11 to 14, and the powers
+     * of a prestige class at the levels of the newest class. These come on
      * top of the powers the player picks. A power without a row in the spell
-     * table is not granted.
+     * table is not granted. KotOR grants no powers this way.
      *
-     * @param tsl false in K1, which grants no powers this way
+     * @return the powers the grant lists as granted, in the order granted,
+     *         those without a row in the spell table included
      */
-    virtual void addGrantedPowers(CreatureAttributes &attributes, bool tsl) const = 0;
+    virtual std::vector<SpellType> addGrantedPowers(CreatureAttributes &attributes) const = 0;
 };
 
 class Spells : public ISpells, boost::noncopyable {
@@ -164,13 +167,15 @@ public:
         const CreatureAttributes &attributes,
         const CreatureClass &clazz,
         const std::set<SpellType> &chosen) const override;
-    void addGrantedPowers(CreatureAttributes &attributes, bool tsl) const override;
+    std::vector<SpellType> addGrantedPowers(CreatureAttributes &attributes) const override;
 
 private:
     /** The spells.2da rows, by spell. */
     std::unordered_map<SpellType, std::shared_ptr<Spell>> _spells;
     /** The ranges.2da rows, by row. */
     std::vector<RangeRow> _ranges;
+    /** Whether the table is TSL's, which grants powers at a level. */
+    bool _tsl {false};
 
     // Services
 

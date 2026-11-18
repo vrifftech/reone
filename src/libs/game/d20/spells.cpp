@@ -315,6 +315,8 @@ static std::optional<int> getSpellRangeRow(const std::string &range) {
 }
 
 void Spells::init(resource::GameID gameId) {
+    _tsl = gameId == resource::GameID::TSL;
+
     // A blank range stays blank; each use says what it counts as.
     const auto ranges = getRequiredTwoDA(_twoDas, "ranges");
     for (int row = 0; row < ranges->getRowCount(); ++row) {
@@ -563,9 +565,18 @@ std::vector<SpellDisplayEntry> Spells::getLevelUpDisplayEntries(
     return result;
 }
 
-void Spells::addGrantedPowers(CreatureAttributes &attributes, bool tsl) const {
-    if (!tsl) {
-        return;
+std::vector<SpellType> Spells::addGrantedPowers(CreatureAttributes &attributes) const {
+    // Every power the grant comes to is listed as granted, but one without a
+    // row in the spell table is not added.
+    std::vector<SpellType> granted;
+    auto grant = [this, &attributes, &granted](SpellType power) {
+        granted.push_back(power);
+        if (_spells.count(power) > 0) {
+            attributes.addSpell(power);
+        }
+    };
+    if (!_tsl) {
+        return granted;
     }
     const auto &classLevels = attributes.classLevels();
     assert(!classLevels.empty());
@@ -578,13 +589,8 @@ void Spells::addGrantedPowers(CreatureAttributes &attributes, bool tsl) const {
         auto forms = kJediLevelForms.find(type);
         if (forms != kJediLevelForms.end()) {
             int formIndex = jediLevel - kFirstFormJediLevel;
-            if (formIndex < 0 || formIndex >= static_cast<int>(forms->second.size())) {
-                continue;
-            }
-            // A power without a row in the spell table is not granted.
-            SpellType form = forms->second[formIndex];
-            if (_spells.count(form) > 0) {
-                attributes.addSpell(form);
+            if (formIndex >= 0 && formIndex < static_cast<int>(forms->second.size())) {
+                grant(forms->second[formIndex]);
             }
             continue;
         }
@@ -593,11 +599,12 @@ void Spells::addGrantedPowers(CreatureAttributes &attributes, bool tsl) const {
             continue;
         }
         for (auto &[level, power] : powers->second) {
-            if (level == classLevel && _spells.count(power) > 0) {
-                attributes.addSpell(power);
+            if (level == classLevel) {
+                grant(power);
             }
         }
     }
+    return granted;
 }
 
 } // namespace game

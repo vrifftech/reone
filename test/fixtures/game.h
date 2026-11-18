@@ -236,7 +236,7 @@ public:
     MOCK_METHOD(bool, isLevelUpCandidate, (SpellType type, const CreatureAttributes &attributes, const CreatureClass &clazz, const std::set<SpellType> &chosen), (const override));
     MOCK_METHOD(std::vector<SpellType>, getLevelUpCandidates, (const CreatureAttributes &attributes, const CreatureClass &clazz, const std::set<SpellType> &chosen), (const override));
     MOCK_METHOD(std::vector<SpellDisplayEntry>, getLevelUpDisplayEntries, (const CreatureAttributes &attributes, const CreatureClass &clazz, const std::set<SpellType> &chosen), (const override));
-    MOCK_METHOD(void, addGrantedPowers, (CreatureAttributes & attributes, bool tsl), (const override));
+    MOCK_METHOD(std::vector<SpellType>, addGrantedPowers, (CreatureAttributes & attributes), (const override));
 
 private:
     RangeRow _blankRange;
