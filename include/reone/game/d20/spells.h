@@ -101,6 +101,14 @@ public:
     std::vector<std::shared_ptr<Spell>> getActionSpells(
         const std::vector<SpellType> &candidates, bool hostileMenu,
         const std::function<bool(const Spell &)> &offered, bool mergeTiers) const;
+    /**
+     * Whether a level-up can choose the power, the number of picks aside: a
+     * named Force power (user type 1 or 5) the level-up screen offers, with a
+     * level of 0 or more for \p clazz that the character's total level after
+     * the level-up reaches, neither known through any class nor in
+     * \p chosen, whose master powers and prerequisites are each known or
+     * chosen.
+     */
     virtual bool isLevelUpCandidate(
         SpellType type,
         const CreatureAttributes &attributes,
@@ -110,20 +118,44 @@ public:
         const CreatureAttributes &attributes,
         const CreatureClass &clazz,
         const std::set<SpellType> &chosen) const = 0;
+    /**
+     * The entries of the powers screens: every spell, those the level-up
+     * screen offers to \p clazz visible.
+     *
+     * @param ownedForms true to show also the forms a TSL character owns, as
+     *        known, as the abilities screen does; the level-up screen leaves
+     *        them out, having no level for any class
+     */
     virtual std::vector<SpellDisplayEntry> getLevelUpDisplayEntries(
         const CreatureAttributes &attributes,
         const CreatureClass &clazz,
-        const std::set<SpellType> &chosen) const = 0;
+        const std::set<SpellType> &chosen,
+        bool ownedForms = false) const = 0;
+    /**
+     * Whether the power is kept from a creature: Affect Mind and Dominate are
+     * kept from one that may not take them.
+     *
+     * @param mayPickRestricted whether the creature may take them: on the
+     *        level-up screen one flagged as the player character, for a
+     *        recommendation or an automatic level-up one levelling as the
+     *        player character
+     */
+    static bool isPickDenied(SpellType power, bool mayPickRestricted) {
+        return !mayPickRestricted && (power == SpellType::AffectMind || power == SpellType::Dominate);
+    }
 
     /**
      * Adds the powers a TSL character is granted with its newest level, which
-     * is in the last of its classes, to that class's powers. These come on
-     * top of the powers the player picks. A power without a row in the spell
-     * table is not granted.
+     * is in the last of its classes, to that class's powers: the forms of a
+     * Jedi base class, one a level from the Jedi level they start at, and the
+     * powers of a prestige class at the levels of the newest class. These
+     * come on top of the powers the player picks. A power without a row in
+     * the spell table is not granted. KotOR grants no powers this way.
      *
-     * @param tsl false in K1, which grants no powers this way
+     * @return the powers granted, in the order granted, once for each grant:
+     *         two Jedi base classes can grant the same form
      */
-    virtual void addGrantedPowers(CreatureAttributes &attributes, bool tsl) const = 0;
+    virtual std::vector<SpellType> addGrantedPowers(CreatureAttributes &attributes) const = 0;
 };
 
 class Spells : public ISpells, boost::noncopyable {
@@ -144,7 +176,8 @@ public:
     /**
      * Loads every spells.2da row.
      *
-     * @param gameId the title, which decides the CastAnim codes it knows
+     * @param gameId the title, which decides the CastAnim codes it knows and
+     *        whether powers are granted at a level
      */
     void init(resource::GameID gameId);
 
@@ -163,14 +196,17 @@ public:
     std::vector<SpellDisplayEntry> getLevelUpDisplayEntries(
         const CreatureAttributes &attributes,
         const CreatureClass &clazz,
-        const std::set<SpellType> &chosen) const override;
-    void addGrantedPowers(CreatureAttributes &attributes, bool tsl) const override;
+        const std::set<SpellType> &chosen,
+        bool ownedForms = false) const override;
+    std::vector<SpellType> addGrantedPowers(CreatureAttributes &attributes) const override;
 
 private:
     /** The spells.2da rows, by spell. */
     std::unordered_map<SpellType, std::shared_ptr<Spell>> _spells;
     /** The ranges.2da rows, by row. */
     std::vector<RangeRow> _ranges;
+    /** Whether the table is TSL's, which grants powers at a level. */
+    bool _tsl {false};
 
     // Services
 

@@ -99,8 +99,9 @@ public:
      * no recommendation fills take the other choices, lowest row first.
      *
      * @return whether the level was applied: not when the leader has no level
-     *         pending, nor when an attribute point, feat pick or power pick
-     *         cannot be filled, which leaves the level pending
+     *         pending, nor when an attribute point or feat pick cannot be
+     *         filled, which leaves the level pending; power picks the
+     *         recommendation cannot fill are left open
      */
     bool autoLevelUp();
 
@@ -403,7 +404,7 @@ constexpr RacialType kNewCharacterRace = RacialType::Human;
  *
  * @return the feats the grant lists as granted
  */
-std::vector<FeatType> addCreationFeats(CreatureAttributes &attributes, const IFeats &feats, bool tsl, bool newCharacter);
+std::vector<FeatType> addCreationFeats(CreatureAttributes &attributes, const IFeats &feats, bool newCharacter);
 
 } // namespace game
 

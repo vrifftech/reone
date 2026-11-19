@@ -54,7 +54,7 @@ CreatureAttributes quickCharacterAttributes(
     const ISkills &skills,
     bool tsl) {
     CreatureAttributes attributes(clazz.defaultAttributes());
-    addCreationFeats(attributes, feats, tsl, true);
+    addCreationFeats(attributes, feats, true);
     // The recommended feats fill the first level's normal and bonus picks.
     const std::set<FeatType> noFeats;
     FeatChoice choice {
@@ -64,8 +64,7 @@ CreatureAttributes quickCharacterAttributes(
         clazz.getBonusFeatGain(kFirstLevel),
         noFeats,
         noFeats,
-        kObjectTagPlayer,
-        tsl};
+        kObjectTagPlayer};
     for (FeatType feat : recommendFeats(feats, choice, choice.normalPicks + choice.bonusPicks)) {
         attributes.addFeat(feat);
     }
